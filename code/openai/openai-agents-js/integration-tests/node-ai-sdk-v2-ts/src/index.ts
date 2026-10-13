@@ -1,0 +1,51 @@
+import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
+import { aisdk } from '@openai/agents-extensions/ai-sdk';
+import { z } from 'zod';
+import { openai } from '@ai-sdk/openai';
+
+export async function main() {
+  const getWeatherTool = tool({
+    name: 'get_weather',
+    description: 'Get the weather for a given city',
+    parameters: z.object({ city: z.string() }),
+    execute: async ({ city }) => `The weather in ${city} is sunny`,
+  });
+
+  const model = openai('gpt-5.2');
+  if (model.specificationVersion !== 'v2') {
+    throw new Error('Expected the AI SDK v2 fixture to use a v2 model.');
+  }
+
+  const agent = new Agent({
+    name: 'AI SDK v2 Test Agent',
+    instructions:
+      'You are a helpful assistant. When you need to get the weather, you must use tools.',
+    tools: [getWeatherTool],
+    model: aisdk(model),
+    modelSettings: {
+      providerData: {
+        providerOptions: {
+          openai: {
+            reasoningEffort: 'low',
+            textVerbosity: 'low',
+          },
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await run(
+      agent,
+      'Hello what is the weather in San Francisco?',
+    );
+    console.log(`[AISDK_V2_RESPONSE]${result.finalOutput}[/AISDK_V2_RESPONSE]`);
+  } finally {
+    await getGlobalTraceProvider().shutdown();
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

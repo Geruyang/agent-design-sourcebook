@@ -1,0 +1,115 @@
+---
+title: Harness UI
+sidebarTitle: Overview
+description: A terminal and browser workbench for working on real projects with Agents.
+---
+
+Harness UI is the [Harness](../a13n-harness/index.md) playground for individuals and trusted small teams. Ask an Agent to explain a codebase, edit files, run checks, or delegate an investigation. Choose the Models, tools, Skills, and execution Environment for each workflow.
+
+The TUI, the interactive interface in your terminal, offers a personal Agent workflow for coding. WebUI, the interface in your browser, adds shared conversations and drafts, files, Git changes, terminals, and configuration editing. Both use the same Harness UI application and Harness; neither requires SDK code or a Service deployment.
+
+```mermaid
+flowchart TB
+    Terminal["TUI: personal Agent workflow"] --> App["Harness UI application"]
+    Browser["WebUI: shared conversations, files, Git, terminals"] --> App
+    App <-.- Config["Configuration in ~/.a13n-harness-ui"]
+    App --> Harness["Harness runs the Agent"]
+    Harness --> Model["Model provider"]
+    Harness --> Execution["Commands and files: Full Control or Sandbox"]
+
+    class Terminal,Browser app
+    class App,Harness a13n
+    class Config store
+    class Model,Execution ext
+```
+
+## Install and start
+
+Install the `a13n-harness-ui` command with [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```console
+uv tool install a13n-harness-ui
+cd your-repository
+a13n-harness-ui
+```
+
+To start WebUI, run:
+
+```console
+a13n-harness-ui webui
+```
+
+Open the login link printed by the server in your browser. WebUI includes guided setup; see [WebUI](webui.md) for collaboration, authentication, native host access, and server lifecycle.
+
+The TUI supports macOS, Linux, and Windows. The installed application does not require Node.js or a repository checkout. If the command is missing from PATH, run `uv tool update-shell` and open a new terminal.
+
+On first launch:
+
+1. Connect a Model through a supported subscription or API key.
+2. Choose the model and settings offered by setup.
+3. Choose Full Control or Sandbox execution.
+4. Send a prompt after setup saves your configuration and opens the composer.
+
+Try a bounded first prompt:
+
+```text
+Explain this repository's main entry point and tests. Do not modify any files.
+```
+
+> [!WARNING]
+> Full Control uses your host account. Sandbox requires supported Linux/macOS isolation; Windows built-in execution is Full Control only. See [execution permissions](environments-and-projects.md#execution-permissions).
+
+[Installation and upgrades](installation.md) covers source development and dependency updates. [Setup](setup.md) covers login, cancellation, and advanced choices.
+
+## Where is my configuration?
+
+Run this in your shell:
+
+```console
+a13n-harness-ui config path
+a13n-harness-ui config show --format json
+a13n-harness-ui config validate
+```
+
+Or type `/config` in the TUI. The default root file is **`~/.a13n-harness-ui/a13n-harness-ui.yaml`**. Models and Agents live in sibling directories, not inside that file:
+
+| Change                                           | File or action                                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Default Agent, display, built-in tools           | `a13n-harness-ui.yaml` — [root reference](configuration.md#starter-root-document)            |
+| Model, endpoint, credentials, reasoning, context | `models/*.yaml` — [Model reference](models-and-authentication.md#model-file-reference)       |
+| Instructions, tools, MCP selection, children     | `agents/*.yaml` — [Agent reference](agents-and-subagents.md#agent-file-reference)            |
+| Global coding guidance                           | `AGENTS.md` beside the root YAML                                                             |
+| Project-specific guidance                        | `AGENTS.md` in the working directory                                                         |
+| Additional Project directories (roots)           | `projects/*.yaml` — [Project reference](environments-and-projects.md#project-file-reference) |
+
+Start with [common configuration recipes](configuration-recipes.md) for copyable edits, or [the configuration guide](configuration.md) for all root fields and precedence. `--config PATH` selects another configuration tree; it does not merge it with the default tree.
+
+## TUI controls
+
+| Action                                  | In the TUI                     |
+| --------------------------------------- | ------------------------------ |
+| See available commands                  | `/help`                        |
+| Switch Agent                            | `/agent`                       |
+| Select and remember a Model per Project | `/model`                       |
+| Change reasoning or priority service    | `/thinking`, `/fast`           |
+| Change execution permissions            | `/environment`                 |
+| Inspect current configuration and usage | `/status`                      |
+| Browse saved conversations              | `/resume`                      |
+| Steer running work                      | Type a message and press Enter |
+| Cancel work                             | Ctrl+C or `/cancel`            |
+
+See [Use the TUI](everyday-use.md) for attachments, approvals, questions, history, and recovery. Add reusable resources outside the TUI with `a13n-harness-ui add model` or `a13n-harness-ui add agent`.
+
+## Go further
+
+- **Customize:** [Agents and subagents](agents-and-subagents.md), [Models and authentication](models-and-authentication.md).
+- **Connect tools:** [MCP and extensions](extensions-and-mcp.md), [native tools and Web providers](native-and-web-tools.md).
+- **Work across directories:** [Environments and Projects](environments-and-projects.md).
+- **Automate Runs or diagnose a failure:** [Automation and troubleshooting](automation-and-troubleshooting.md).
+- **Build another interface:** [Embed the Python App](embedding.md) or [use the HTTP API](http-api.md).
+
+## Sharing and execution boundaries
+
+Share a WebUI instance only with trusted collaborators: they share credentials, configuration and accessible files, not separate participant permissions. Native Host Files and terminals are on by default; `--no-share-computer` turns them off independently of the Agent's execution mode.
+
+Keep the application running for active work. Closing a browser leaves Runs active. After an application restart, resume from the last saved checkpoint. Use [Service](../a13n-service/index.md) for managed identities and recoverable Runs.

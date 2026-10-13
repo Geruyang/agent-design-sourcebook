@@ -1,0 +1,116 @@
+---
+title: Guardrails
+description: Validate or transform agent input and output
+---
+
+import { Code } from '@astrojs/starlight/components';
+import inputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
+import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
+import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
+
+Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
+
+There are three guardrail families:
+
+1. **Input guardrails** run on the initial user input.
+2. **Output guardrails** run on the final agent output.
+3. **Tool guardrails** run around each custom function-tool invocation.
+
+## Workflow boundaries
+
+Guardrails are attached to agents, but they do not necessarily run on every agent in a workflow:
+
+- **Input guardrails** run only for the first agent in the chain.
+- **Output guardrails** run only for the agent that produces the final output.
+- **Tool guardrails** run on every function-tool invocation, with input guardrails before execution and output guardrails after execution.
+
+If you need checks around each custom function-tool call in a workflow that includes managers or handoffs, use **tool guardrails** instead of agent-level input guardrails and output guardrails.
+
+## Input guardrails
+
+Input guardrails run in three steps:
+
+1. The guardrail receives the same input passed to the agent.
+2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult).
+3. If `tripwireTriggered` is `true`, an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) error is thrown.
+
+> **Note** Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
+
+### Execution modes
+
+- `runInParallel: true` (default) starts input guardrails concurrently with agent execution. Concurrent execution minimizes latency, but the model may already have consumed tokens or run tools if the guardrail later triggers.
+- `runInParallel: false` runs the guardrail **before** calling the model, preventing token spend and tool execution when the guardrail blocks the request. Use this when you prefer safety and cost over latency.
+
+## Output guardrails
+
+Output guardrails run in 3 steps:
+
+1. The guardrail receives the output produced by the agent.
+2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
+3. If `tripwireTriggered` is `true`, an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error is thrown.
+
+> **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime spoken interactions see [the Voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
+
+Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
+
+### Rejected terminal tool outputs
+
+When `toolUseBehavior` makes a completed function-tool result the run's final output, output guardrails evaluate that result before the SDK treats the result as replayable final data. The guardrail receives the original candidate output. If the guardrail trips, the SDK replaces the rejected terminal result with `Output withheld by an output guardrail.` in SDK-owned run state, replay data, session history, and the public tripwire error.
+
+The SDK also sanitizes metadata that could retain aliases of the rejected output. For the current response, `OutputGuardrailResult.agentOutput` becomes the same placeholder and `OutputGuardrailResult.outputInfo` is removed. Current tool output guardrail results retain their verdict but omit `outputInfo`; a `rejectContent` result uses the placeholder as its message. Results and history from earlier accepted turns remain unchanged.
+
+For a recognized function call and result pair, the SDK preserves replay-safe identity and status fields while replacing the result content. If the SDK cannot prove which current response items belong to the rejected terminal output, it discards the ambiguous current-response suffix or fails closed instead of replaying it.
+
+This protection does not undo external tool side effects, retract output already emitted to application code, erase data already stored outside the SDK's control, or modify application-owned references to raw provider data.
+
+Set `outputGuardrailBlockedMessage` on `Runner` or in the options for an individual `run()` call when your application needs a different data-free placeholder. The per-run value takes precedence over the `Runner` value. You can provide either a non-empty string or a formatter that receives `defaultMessage`, `guardrailName`, `agent`, and `runContext`. The formatter can be asynchronous, but it does not receive the rejected output. If the formatter throws, rejects, or returns an empty or non-string value, the SDK fails closed with the default placeholder instead of exposing the formatter failure.
+
+## Tool guardrails
+
+Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. You can configure guardrails on an individual tool through `tool()` options or on a local MCP server so they run for every tool that the SDK converts from that server.
+
+For a custom function tool, set `inputGuardrails`, `outputGuardrails`, or both on `tool({...})`. For `MCPServerStreamableHttp`, `MCPServerStdio`, or `MCPServerSSE`, set `toolInputGuardrails`, `toolOutputGuardrails`, or both in the server constructor options. Server-wide MCP guardrails use the same local function-tool execution pipeline and apply to every converted tool from that server.
+
+- **Input tool guardrails** run before the tool executes and can reject the call with a message or throw a tripwire.
+- **Output tool guardrails** run after the tool executes and can replace the output with a rejection message or throw a tripwire.
+
+If a local function tool also requires human approval, input tool guardrails normally run after approval and immediately before execution. To run those input guardrails before the pending approval request as well, set `toolExecution: { preApprovalInputGuardrails: true }` on `run()` or `Runner`. The guardrails still run again after approval before the tool executes.
+
+Tool guardrails return a `behavior`:
+
+- `allow` — continue to the next guardrail or tool execution.
+- `rejectContent` — short‑circuit with a message (tool call is skipped or output is replaced).
+- `throwException` — throw a tripwire error immediately.
+
+Tool guardrails apply to function tools you define with `tool()` and to tools converted from local MCP servers when the server configures them. Handoffs are presented to the model as function-like tools, but they run through the SDK's handoff path rather than the normal function-tool pipeline, so tool guardrails do not apply to the handoff call itself. Hosted MCP tools, other hosted tools, and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) also do not use this guardrail pipeline, and `agent.asTool()` does not currently expose tool-guardrail options directly.
+
+## Tripwires
+
+When a guardrail fails, it signals this via a tripwire. The runner first waits for sibling guardrails that started in the same batch to settle and records their completed results. The runner then throws the corresponding error and halts further run processing. With parallel input guardrails, model or tool work may already have started as described in [Execution modes](#execution-modes).
+
+## Implementing a guardrail
+
+A guardrail is simply a function that returns a `GuardrailFunctionOutput`. Below is a minimal example that checks whether the user is asking for math homework help by running another agent under the hood.
+
+<Code
+  lang="typescript"
+  code={inputGuardrailExample}
+  title="Input guardrail example"
+/>
+
+Output guardrails work the same way.
+
+<Code
+  lang="typescript"
+  code={outputGuardrailExample}
+  title="Output guardrail example"
+/>
+
+Tool input guardrails and tool output guardrails look like this:
+
+<Code lang="typescript" code={toolGuardrailsExample} title="Tool guardrails" />
+
+1. `guardrailAgent` is used inside the guardrail functions.
+2. The guardrail function receives the agent input or output and returns the result.
+3. Extra information can be included in the guardrail result.
+4. `agent` defines the actual workflow where guardrails are applied.

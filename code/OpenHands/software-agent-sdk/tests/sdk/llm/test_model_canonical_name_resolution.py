@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from openhands.sdk.llm import LLM
+
+
+class DummyFeatures:
+    """Simple stub for get_features results."""
+
+    def __init__(self, model: str):
+        self.model = model
+        # Treat only the canonical model as feature-enabled
+        self.supports_prompt_cache = model == "openai/gpt-5-mini"
+        self.supports_responses_api = model == "openai/gpt-5-mini"
+        self.force_string_serializer = False
+        self.send_reasoning_content = False
+        self.requires_inline_image_data = False
+        self.supports_vision = model == "openai/gpt-5-mini"
+
+
+def test_model_canonical_name_used_for_capabilities(monkeypatch):
+    """Proxy/aliased model uses model_canonical_name for capability lookups."""
+
+    model_info_calls: list[str] = []
+    feature_calls: list[str] = []
+
+    def fake_get_model_info(secret_api_key, base_url, model):
+        model_info_calls.append(model)
+        if model == "openai/gpt-5-mini":
+            return {"supports_vision": True, "max_input_tokens": 128000}
+        return None
+
+    def fake_get_features(model: str, model_info=None, overrides=None):
+        feature_calls.append(model)
+        return DummyFeatures(model)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.get_litellm_model_info", fake_get_model_info
+    )
+    monkeypatch.setattr("openhands.sdk.llm.llm.get_features", fake_get_features)
+
+    real_llm = LLM(model="openai/gpt-5-mini")
+    proxy_llm = LLM(
+        model="proxy/test-renamed-model", model_canonical_name="openai/gpt-5-mini"
+    )
+
+    # Model info and vision support come from the canonical model name
+    assert real_llm.model_info == {"supports_vision": True, "max_input_tokens": 128000}
+    assert proxy_llm.model_info == real_llm.model_info
+    assert real_llm.vision_is_active() is True
+    assert proxy_llm.vision_is_active() is True
+
+    # Feature lookups (prompt cache / responses API) also respect model_canonical_name
+    assert real_llm.is_caching_prompt_active() is True
+    assert proxy_llm.is_caching_prompt_active() is True
+    assert real_llm.uses_responses_api() is True
+    assert proxy_llm.uses_responses_api() is True
+
+    # Ensure capability lookups invoked the canonical name at least once
+    assert "openai/gpt-5-mini" in model_info_calls
+    assert "openai/gpt-5-mini" in feature_calls
+
+
+def test_model_canonical_name_with_real_model_info():
+    """Integration-style check using litellm's built-in model info."""
+
+    base = LLM(model="gpt-4o-mini")
+    proxied = LLM(model="proxy/test-renamed-model", model_canonical_name="gpt-4o-mini")
+
+    # Model info and derived flags should align with the canonical model
+    assert proxied.model_info == base.model_info
+    assert proxied.vision_is_active() == base.vision_is_active()
+    assert proxied.is_caching_prompt_active() == base.is_caching_prompt_active()
+    assert proxied.uses_responses_api() == base.uses_responses_api()
+
+
+def test_api_mode_can_override_endpoint_discovery():
+    assert LLM(model="gpt-4o", api_mode="responses").uses_responses_api() is True
+    assert LLM(model="gpt-5", api_mode="chat").uses_responses_api() is False
+
+
+def test_reasoning_effort_accepts_forward_compatible_values():
+    assert LLM(model="future-model", reasoning_effort="max").reasoning_effort == "max"
+    assert (
+        LLM(model="future-model", reasoning_effort="future-tier").reasoning_effort
+        == "future-tier"
+    )
+
+
+def test_reasoning_effort_preserves_legacy_json_schema_enum():
+    schema = LLM.model_json_schema()["properties"]["reasoning_effort"]
+    enum_values = next(
+        branch["enum"]
+        for branch in schema["anyOf"]
+        if isinstance(branch, dict) and "enum" in branch
+    )
+
+    assert enum_values == ["low", "medium", "high", "xhigh", "none"]

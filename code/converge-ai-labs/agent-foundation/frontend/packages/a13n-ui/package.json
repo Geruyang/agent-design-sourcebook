@@ -1,0 +1,60 @@
+{
+  "name": "a13n-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./vite": "./vite.ts",
+    "./display": "./src/display.ts",
+    "./styles.css": "./src/styles/index.css",
+    "./theme.css": "./src/styles/theme.css",
+    "./tokens.css": "./src/styles/tokens.css",
+    "./fonts.css": "./src/styles/fonts.css",
+    "./brand/brands": "./src/brand/brands.ts",
+    "./brand/logo.svg": "./src/brand/a13n-logo.svg",
+    "./brand/mark": "./src/brand/mark.ts",
+    "./brand/wordmark": "./src/brand/wordmark.tsx"
+  },
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "pnpm run typecheck",
+    "sync:brands": "node scripts/sync-lobe-brands.mjs",
+    "test": "vitest run",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "dependencies": {
+    "@ag-ui/core": "1.0.1",
+    "@base-ui/react": "1.8.0",
+    "@daypicker/react": "^10.0.1",
+    "@phosphor-icons/react": "^2.1.10",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "jsdom": "^29.1.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

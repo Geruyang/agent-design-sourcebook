@@ -1,0 +1,110 @@
+import { Icon } from '@lobehub/ui';
+import { Avatar } from '@lobehub/ui/base-ui';
+import { FileTextIcon } from 'lucide-react';
+import { type MouseEvent } from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
+import { isDesktop } from '@/const/version';
+import NavItem from '@/features/NavPanel/components/NavItem';
+import { buildWorkspaceAwarePath } from '@/features/Workspace/workspaceAwarePath';
+import { useElectronStore } from '@/store/electron';
+import { pageActions, pageSelectors, usePageStore } from '@/store/page';
+
+import Actions from './Actions';
+import Editing from './Editing';
+import { useDropdownMenu } from './useDropdownMenu';
+
+interface DocumentItemProps {
+  className?: string;
+  pageId: string;
+}
+
+const PageListItem = memo<DocumentItemProps>(({ pageId, className }) => {
+  const { t } = useTranslation('file');
+  const [editing, selectedPageId, document] = usePageStore((s) => {
+    const doc = pageSelectors.getDocumentById(pageId)(s);
+    return [s.renamingPageId === pageId, s.selectedPageId, doc] as const;
+  });
+
+  const addTab = useElectronStore((s) => s.addTab);
+  const activeWorkspaceSlug = useActiveWorkspaceSlug();
+
+  const active = selectedPageId === pageId;
+  const title = document?.title || t('pageList.untitled');
+  const emoji = document?.metadata?.emoji;
+
+  const toggleEditing = useCallback(
+    (visible?: boolean) => {
+      pageActions.setRenamingPageId(visible ? pageId : null);
+    },
+    [pageId],
+  );
+
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleClick = useCallback(
+    (e: MouseEvent) => {
+      // Skip navigation in current tab when opening in new tab
+      if (e.metaKey || e.ctrlKey) return;
+      if (!editing) {
+        if (isDesktop) {
+          clickTimerRef.current = setTimeout(() => {
+            clickTimerRef.current = null;
+            pageActions.selectPage(pageId);
+          }, 250);
+        } else {
+          pageActions.selectPage(pageId);
+        }
+      }
+    },
+    [editing, pageId],
+  );
+
+  const handleDoubleClick = useCallback(() => {
+    if (!isDesktop) return;
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    addTab(buildWorkspaceAwarePath(`/page/${pageId}`, activeWorkspaceSlug));
+    pageActions.selectPage(pageId);
+  }, [pageId, activeWorkspaceSlug, addTab]);
+
+  // Icon with emoji support
+  const icon = useMemo(() => {
+    if (emoji) {
+      return <Avatar avatar={emoji} size={28} />;
+    }
+    return <Icon icon={FileTextIcon} size={{ size: 18, strokeWidth: 1.5 }} />;
+  }, [emoji]);
+
+  const dropdownMenu = useDropdownMenu({ pageId, toggleEditing });
+
+  return (
+    <>
+      <NavItem
+        actions={<Actions dropdownMenu={dropdownMenu} />}
+        active={active}
+        className={className}
+        contextMenuItems={dropdownMenu}
+        disabled={editing}
+        href={`/page/${pageId}`}
+        icon={icon}
+        key={pageId}
+        title={title}
+        onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
+      />
+      <Editing
+        currentEmoji={emoji}
+        documentId={pageId}
+        title={title}
+        toggleEditing={toggleEditing}
+      />
+    </>
+  );
+});
+
+export default PageListItem;

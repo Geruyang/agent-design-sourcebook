@@ -1,0 +1,1764 @@
+import { getRunStateSessionTrustedConfig } from '../internal/sessionStateTrust';
+import type {
+  ApplyPatchOperation,
+  ApplyPatchResult,
+  Editor,
+} from '../../editor';
+import { UserError } from '../../errors';
+import type { ToolOutputImage } from '../../tool';
+import { applyDiff } from '../../utils/applyDiff';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { lstatSync, realpathSync } from 'node:fs';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path';
+import { tmpdir, userInfo } from 'node:os';
+import type {
+  SandboxClient,
+  SandboxClientOptions,
+  SandboxClientCreateArgs,
+  SandboxArchiveLimits,
+  SandboxClientResumeOptions,
+  SandboxConcurrencyLimits,
+} from '../client';
+import {
+  normalizeSandboxClientCreateArgs,
+  validateSandboxArchiveLimits,
+} from '../client';
+import {
+  normalizeExposedPort,
+  recordExposedPortEndpoint,
+  type ExposedPortEndpoint,
+  type ExecCommandArgs,
+  type ListDirectoryArgs,
+  type MaterializeEntryArgs,
+  type ReadFileArgs,
+  type SandboxDirectoryEntry,
+  type SandboxExecResult,
+  type SandboxSession,
+  type SandboxSessionState,
+  type ViewImageArgs,
+  type WriteStdinArgs,
+  type WorkspaceArchiveOptions,
+} from '../session';
+import { cloneManifest, Manifest, normalizeRelativePath } from '../manifest';
+import {
+  SandboxConfigurationError,
+  SandboxUnsupportedFeatureError,
+} from '../errors';
+import {
+  WorkspacePathPolicy,
+  type ResolveSandboxPathOptions,
+  type ResolvedSandboxPath,
+} from '../workspacePaths';
+import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from './types';
+import {
+  applyOwnershipRecursive,
+  assertLocalWorkspaceManifestMetadataSupported,
+  materializeLocalWorkspaceManifest,
+  materializeLocalWorkspaceManifestEntry,
+  materializeLocalWorkspaceManifestMounts,
+  restoreLocalWorkspaceManifestStickyPermissions,
+  pathExists,
+} from './shared/localWorkspace';
+import {
+  assertMountCredentialsRebound,
+  assertHostPathGrantsRebound,
+  mergeManifestEntryDelta,
+  mergeManifestDelta,
+  sanitizeEnvironmentForPersistence,
+  serializeMountCredentialRedactionMetadata,
+  serializeManifest,
+} from './shared/manifestPersistence';
+import {
+  assertExistingMountTopologyPreserved,
+  assertSandboxSessionStateUsable,
+  assertSandboxStateGenerationUnchanged,
+  captureLiveMountCredentialAuthority,
+  captureSandboxStateGeneration,
+  validateMountCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '../mountSecurity';
+import {
+  isHostPathWithinRoot,
+  relativeHostPathEscapesRoot,
+} from '../shared/hostPath';
+import { MAX_VIEW_IMAGE_BYTES, imageOutputFromBytes } from '../shared/media';
+import {
+  UnixLocalFiles,
+  preparedFileIO,
+  withUnixLocalFileAccess,
+  type LocalFileIOProtection,
+  type LocalFilePath,
+} from './shared/unixLocalFiles';
+export type { LocalFileIOProtection } from './shared/unixLocalFiles';
+import {
+  elapsedSeconds,
+  formatExecResponse,
+  truncateOutput,
+} from '../shared/output';
+import {
+  canReuseLocalSnapshotWorkspace,
+  createWorkspaceArchive,
+  localSnapshotIsRestorable,
+  persistLocalSnapshot,
+  restoreLocalSnapshotToWorkspace,
+  restoreWorkspaceArchive,
+  serializeLocalSnapshotSpec,
+} from './shared/localSnapshots';
+import { spawnInPseudoTerminal } from './shared/pty';
+import { runSandboxProcess } from './shared/runProcess';
+import { resolveLocalShellCommand } from './shared/shellCommand';
+import {
+  deserializeLocalSandboxSessionStateValues,
+  normalizeExposedPorts,
+} from './shared/sessionStateValues';
+
+const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
+const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
+const MAX_ACTIVE_PROCESS_OUTPUT_CHARS = 1024 * 1024;
+const RUN_AS_LOOKUP_TIMEOUT_MS = 10_000;
+const DEFAULT_SANDBOX_COMMAND_PATH =
+  '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+
+export interface UnixLocalSandboxClientOptions extends SandboxClientOptions {
+  /**
+   * Host file protection. Requires trusted Python 3 with descriptor-relative
+   * filesystem support. auto is an alias for required; off is rejected.
+   * Unavailable protection fails during preparation, before workspace setup.
+   * This does not confine shell commands.
+   */
+  fileIOProtection?: LocalFileIOProtection;
+  workspaceBaseDir?: string;
+  snapshot?: LocalSandboxSnapshotSpec;
+  defaultShell?: string;
+  exposedPorts?: number[];
+  concurrencyLimits?: SandboxConcurrencyLimits;
+  archiveLimits?: SandboxArchiveLimits | null;
+}
+
+export interface UnixLocalSandboxSessionState extends SandboxSessionState {
+  workspaceRootPath: string;
+  workspaceRootOwned: boolean;
+  environment: Record<string, string>;
+  snapshotSpec?: LocalSandboxSnapshotSpec | null;
+  snapshot?: LocalSandboxSnapshot | null;
+  snapshotFingerprint?: string | null;
+  snapshotFingerprintVersion?: string | null;
+  configuredExposedPorts?: number[];
+}
+
+type ActiveProcess = {
+  child: ChildProcessWithoutNullStreams;
+  tty: boolean;
+  output: string;
+  stdout: string;
+  stderr: string;
+  droppedOutputChars: number;
+  droppedStdoutChars: number;
+  droppedStderrChars: number;
+  exitCode: number | null;
+  done: boolean;
+  donePromise: Promise<void>;
+  resolveDone: () => void;
+  outputClosedPromise: Promise<void>;
+  resolveOutputClosed: () => void;
+};
+
+type UnixRunAsIdentity = {
+  username: string;
+  uid: number;
+  gid: number;
+  isCurrentUser: boolean;
+};
+
+export class UnixLocalSandboxSession<
+  TState extends UnixLocalSandboxSessionState = UnixLocalSandboxSessionState,
+> implements SandboxSession<TState> {
+  readonly state: TState;
+  protected readonly defaultShell?: string;
+  private archiveLimits?: SandboxArchiveLimits | null;
+  private readonly activeProcesses = new Map<number, ActiveProcess>();
+  private nextSessionId = 1;
+  private closePromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
+  private fileOperationGeneration = 0;
+  private readonly hostFiles: UnixLocalFiles | null;
+
+  private get files(): UnixLocalFiles {
+    if (!this.hostFiles) {
+      throw new UserError(
+        'Host file operations are unavailable for this sandbox.',
+      );
+    }
+    return this.hostFiles;
+  }
+  private readonly filesystemRoots = new Map<
+    string,
+    { content: string; entry: string } | Error
+  >();
+
+  constructor(args: {
+    state: TState;
+    defaultShell?: string;
+    archiveLimits?: SandboxArchiveLimits | null;
+    fileIOProtection?: LocalFileIOProtection;
+    [preparedFileIO]?: UnixLocalFiles | null;
+  }) {
+    this.hostFiles =
+      args[preparedFileIO] === null
+        ? null
+        : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
+    this.state = args.state;
+    this.defaultShell = args.defaultShell;
+    this.setArchiveLimits(args.archiveLimits);
+    this.captureFilesystemRoots();
+  }
+
+  /** Selected once at creation or resume; Docker subclasses use the container backend. */
+  get fileIOBackend(): 'python' | 'docker' {
+    return 'python';
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
+  }
+
+  createEditor(runAs?: string): Editor {
+    this.assertSessionUsable();
+    return new UnixLocalSandboxEditor(this, (operation) =>
+      this.applyFileOperation(operation, runAs),
+    );
+  }
+
+  supportsPty(): boolean {
+    return true;
+  }
+
+  async resolveExposedPort(port: number): Promise<ExposedPortEndpoint> {
+    this.assertSessionUsable();
+    const exposedPort = normalizeExposedPort(port);
+    const configuredPorts = this.state.configuredExposedPorts ?? [];
+    if (configuredPorts.length > 0 && !configuredPorts.includes(exposedPort)) {
+      throw new SandboxConfigurationError(
+        `UnixLocalSandboxClient was not configured to expose port ${exposedPort}.`,
+        {
+          provider: 'UnixLocalSandboxClient',
+          port: exposedPort,
+          configuredPorts,
+        },
+      );
+    }
+    return recordExposedPortEndpoint(this.state, {
+      host: '127.0.0.1',
+      port: exposedPort,
+      tls: false,
+    });
+  }
+
+  async execCommand(args: ExecCommandArgs): Promise<string> {
+    return formatExecResponse(await this.exec(args));
+  }
+
+  async exec(args: ExecCommandArgs): Promise<SandboxExecResult> {
+    this.assertSessionUsable();
+    const start = Date.now();
+    const cwd = this.resolveCommandWorkdir(args.workdir);
+    const logicalCwd = this.logicalWorkdirForPath(args.workdir);
+    const child = await this.spawnShellCommand(
+      this.translateCommandInput(args.cmd),
+      {
+        cwd,
+        logicalCwd,
+        shell: args.shell,
+        login: args.login ?? true,
+        runAs: args.runAs,
+        tty: args.tty ?? false,
+      },
+    );
+    const activeProcess = this.trackChildProcess(child, {
+      tty: args.tty ?? false,
+    });
+
+    if (!args.tty) {
+      await waitForProcessOrTimeout(
+        activeProcess,
+        args.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS,
+      );
+      const processOutput = consumeActiveProcessOutput(activeProcess);
+      if (activeProcess.done) {
+        const output = truncateOutput(
+          this.translateCommandOutput(processOutput.output),
+          args.maxOutputTokens,
+        );
+        return {
+          output: output.text,
+          stdout: this.translateCommandOutput(processOutput.stdout),
+          stderr: this.translateCommandOutput(processOutput.stderr),
+          wallTimeSeconds: elapsedSeconds(start),
+          exitCode: activeProcess.exitCode ?? 1,
+          originalTokenCount: output.originalTokenCount,
+        };
+      }
+
+      const output = truncateOutput(
+        this.translateCommandOutput(processOutput.output),
+        args.maxOutputTokens,
+      );
+      const sessionId = this.allocateProcessId(activeProcess);
+      return {
+        output: output.text,
+        stdout: this.translateCommandOutput(processOutput.stdout),
+        stderr: this.translateCommandOutput(processOutput.stderr),
+        wallTimeSeconds: elapsedSeconds(start),
+        sessionId,
+        originalTokenCount: output.originalTokenCount,
+      };
+    }
+
+    const yieldTimeMs = args.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS;
+
+    await waitForProcessOrTimeout(activeProcess, yieldTimeMs);
+
+    if (activeProcess.done) {
+      const processOutput = consumeActiveProcessOutput(activeProcess);
+      const output = truncateOutput(
+        this.translateCommandOutput(processOutput.output),
+        args.maxOutputTokens,
+      );
+      return {
+        output: output.text,
+        stdout: this.translateCommandOutput(processOutput.stdout),
+        stderr: this.translateCommandOutput(processOutput.stderr),
+        wallTimeSeconds: elapsedSeconds(start),
+        exitCode: activeProcess.exitCode ?? 1,
+        originalTokenCount: output.originalTokenCount,
+      };
+    }
+
+    const sessionId = this.allocateProcessId(activeProcess);
+    const processOutput = consumeActiveProcessOutput(activeProcess);
+    const output = truncateOutput(
+      this.translateCommandOutput(processOutput.output),
+      args.maxOutputTokens,
+    );
+    return {
+      output: output.text,
+      stdout: this.translateCommandOutput(processOutput.stdout),
+      stderr: this.translateCommandOutput(processOutput.stderr),
+      wallTimeSeconds: elapsedSeconds(start),
+      sessionId,
+      originalTokenCount: output.originalTokenCount,
+    };
+  }
+
+  async writeStdin(args: WriteStdinArgs): Promise<string> {
+    this.assertSessionUsable();
+    const activeProcess = this.activeProcesses.get(args.sessionId);
+    if (!activeProcess) {
+      return formatExecResponse({
+        output: `write_stdin failed: session not found: ${args.sessionId}`,
+        wallTimeSeconds: 0,
+        exitCode: 1,
+      });
+    }
+
+    const start = Date.now();
+    const chars = args.chars ?? '';
+    if (!activeProcess.tty && chars.includes('\u0003')) {
+      activeProcess.child.kill('SIGINT');
+    }
+    const remainingChars = activeProcess.tty
+      ? chars
+      : chars.split('\u0003').join('');
+    if (remainingChars.length > 0) {
+      activeProcess.child.stdin.write(remainingChars);
+    }
+
+    await waitForProcessOrTimeout(
+      activeProcess,
+      args.yieldTimeMs ?? DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
+    );
+
+    const processOutput = consumeActiveProcessOutput(activeProcess);
+    const output = truncateOutput(
+      this.translateCommandOutput(processOutput.output),
+      args.maxOutputTokens,
+    );
+    if (activeProcess.done) {
+      this.activeProcesses.delete(args.sessionId);
+      return formatExecResponse({
+        output: output.text,
+        wallTimeSeconds: elapsedSeconds(start),
+        exitCode: activeProcess.exitCode ?? 1,
+        originalTokenCount: output.originalTokenCount,
+      });
+    }
+
+    return formatExecResponse({
+      output: output.text,
+      wallTimeSeconds: elapsedSeconds(start),
+      sessionId: args.sessionId,
+      originalTokenCount: output.originalTokenCount,
+    });
+  }
+
+  async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
+    this.assertSessionUsable();
+    const identity = await this.resolveFilesystemRunAs(args.runAs);
+    const filePath = this.resolveFilesystemPath(args.path);
+    const bytes = await this.files
+      .run(
+        { operation: 'image', path: filePath, limit: MAX_VIEW_IMAGE_BYTES },
+        { identity },
+      )
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT')
+          throw new UserError(`Image file not found: ${args.path}`);
+        if (error.code === 'EINVAL')
+          throw new UserError(`Image path is not a file: ${args.path}`);
+        if (error.code === 'EFBIG')
+          throw new UserError(
+            `Image file exceeds the 10 MB limit: ${args.path}`,
+          );
+        throw error;
+      });
+    return imageOutputFromBytes(args.path, bytes);
+  }
+
+  async pathExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
+    const identity = await this.resolveFilesystemRunAs(runAs);
+    return JSON.parse(
+      (
+        await this.files.run(
+          {
+            operation: 'exists',
+            path: this.resolveFilesystemPath(path),
+          },
+          { identity },
+        )
+      ).toString('utf8'),
+    );
+  }
+
+  async directoryExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
+    const identity = await this.resolveCommandRunAs(runAs);
+    const resolvedPath = this.resolveFilesystemPath(path);
+    return JSON.parse(
+      (
+        await this.files.run(
+          { operation: 'directoryExists', path: resolvedPath },
+          { identity },
+        )
+      ).toString('utf8'),
+    );
+  }
+
+  async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    this.assertSessionUsable();
+    const identity = await this.resolveFilesystemRunAs(args.runAs);
+    const bytes = await this.files.run(
+      {
+        operation: 'read',
+        path: this.resolveFilesystemPath(args.path),
+      },
+      { identity },
+    );
+    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
+      return bytes.subarray(0, args.maxBytes);
+    }
+    return bytes;
+  }
+
+  async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
+    this.assertSessionUsable();
+    const identity = await this.resolveFilesystemRunAs(args.runAs);
+    const resolved = this.resolveSandboxPathTarget(args.path);
+    const logicalPath = resolved.workspaceRelativePath ?? resolved.path;
+    const entries: Array<{
+      name: string;
+      type: SandboxDirectoryEntry['type'];
+    }> = JSON.parse(
+      (
+        await this.files.run(
+          {
+            operation: 'list',
+            path: this.resolveFilesystemPath(args.path),
+          },
+          { identity },
+        )
+      ).toString('utf8'),
+    );
+    return entries.map((entry) => ({
+      name: entry.name,
+      path: logicalPath ? `${logicalPath}/${entry.name}` : entry.name,
+      type: entry.type,
+    }));
+  }
+
+  async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
+    const entry = structuredClone(args.entry);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.materializeEntryExclusive({ ...args, entry }),
+    );
+  }
+
+  private async materializeEntryExclusive(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
+    const logicalPath = this.resolveLogicalPath(args.path);
+    const nextManifest = mergeManifestEntryDelta(
+      this.state.manifest,
+      logicalPath,
+      args.entry,
+    );
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateMountCredentialBoundaries(nextManifest);
+    const runAs = await this.resolveFilesystemRunAs(args.runAs);
+    await materializeLocalWorkspaceManifestEntry(
+      this.state.workspaceRootPath,
+      logicalPath,
+      args.entry,
+      {
+        localSourceGrants: this.state.manifest.extraPathGrants,
+      },
+    );
+    if (runAs) {
+      await applyOwnershipRecursive(
+        this.resolveSandboxPath(args.path),
+        runAs.uid,
+        runAs.gid,
+      );
+    }
+    this.state.manifest = mergeManifestEntryDelta(
+      this.state.manifest,
+      logicalPath,
+      args.entry,
+    );
+    this.captureFilesystemRoots();
+    captureLiveMountCredentialAuthority(this.state.manifest);
+  }
+
+  async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
+    const manifestSnapshot = cloneManifest(manifest);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.applyManifestExclusive(manifestSnapshot, runAs),
+    );
+  }
+
+  private async applyManifestExclusive(
+    manifest: Manifest,
+    runAs?: string,
+  ): Promise<void> {
+    const nextManifest = mergeManifestDelta(this.state.manifest, manifest);
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateMountCredentialBoundaries(nextManifest);
+    assertUnixLocalHostPathGrantsUnsupported(manifest);
+    assertLocalWorkspaceManifestMetadataSupported(
+      'UnixLocalSandboxClient',
+      manifest,
+    );
+    const identity = await this.resolveFilesystemRunAs(runAs);
+    await materializeLocalWorkspaceManifest(
+      manifest,
+      this.state.workspaceRootPath,
+    );
+    const environment = await manifest.resolveEnvironment();
+    if (identity) {
+      for (const path of Object.keys(manifest.entries)) {
+        await applyOwnershipRecursive(
+          this.resolveSandboxPath(path),
+          identity.uid,
+          identity.gid,
+        );
+      }
+    }
+    this.state.environment = {
+      ...this.state.environment,
+      ...environment,
+    };
+    this.state.manifest = mergeManifestDelta(this.state.manifest, manifest);
+    this.captureFilesystemRoots();
+    captureLiveMountCredentialAuthority(this.state.manifest);
+  }
+
+  async persistWorkspace(): Promise<Uint8Array> {
+    return await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      return await createWorkspaceArchive(
+        this.state.workspaceRootPath,
+        this.state.manifest.ephemeralPersistencePaths(),
+      );
+    });
+  }
+
+  async hydrateWorkspace(
+    data: string | ArrayBuffer | Uint8Array,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
+    this.assertSessionUsable();
+    await restoreWorkspaceArchive(data, this.state.workspaceRootPath, {
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
+    });
+    await this.materializeRestoredWorkspaceMounts();
+  }
+
+  async stop(): Promise<void> {
+    this.stopPromise ??= this.stopResources().finally(() => {
+      this.stopPromise = undefined;
+    });
+    await this.stopPromise;
+  }
+
+  private async stopResources(): Promise<void> {
+    this.fileOperationGeneration++;
+    if (this.hostFiles) {
+      await this.hostFiles.stop();
+      await withUnixLocalFileAccess(this.state, async () => {});
+    }
+    await this.stopActiveProcesses();
+  }
+
+  async shutdown(): Promise<void> {
+    await this.close();
+  }
+
+  async delete(): Promise<void> {
+    await this.close();
+  }
+
+  async close(): Promise<void> {
+    this.closePromise ??= this.closeResources();
+    await this.closePromise;
+  }
+
+  private async closeResources(): Promise<void> {
+    await this.hostFiles?.close();
+    await this.stop();
+
+    if (this.state.workspaceRootOwned) {
+      await rm(this.state.workspaceRootPath, { recursive: true, force: true });
+    }
+  }
+
+  private async stopActiveProcesses(): Promise<void> {
+    await Promise.all(
+      [...this.activeProcesses.values()].map(async (activeProcess) => {
+        if (!activeProcess.done) {
+          activeProcess.child.kill('SIGTERM');
+          await waitForProcessOrTimeout(activeProcess, 250);
+        }
+        if (!activeProcess.done) {
+          activeProcess.child.kill('SIGKILL');
+          await activeProcess.donePromise.catch(() => {});
+        }
+      }),
+    );
+    this.activeProcesses.clear();
+  }
+
+  resolveSandboxPath(
+    path?: string,
+    options: ResolveSandboxPathOptions = {},
+  ): string {
+    return this.resolveHostPath(path, options, 'content').accessPath;
+  }
+
+  private resolveFilesystemPath(
+    path: string,
+    options: ResolveSandboxPathOptions = {},
+    mode: 'content' | 'entry' = 'content',
+  ): LocalFilePath {
+    // Preserve provider overrides that reject container-only paths before host I/O.
+    if (mode === 'content') {
+      this.resolveSandboxPath(path, options);
+    }
+    return this.resolveHostPath(path, options, mode);
+  }
+
+  private resolveHostPath(
+    path: string | undefined,
+    options: ResolveSandboxPathOptions,
+    mode: 'content' | 'entry',
+  ): LocalFilePath {
+    this.assertSessionUsable();
+    const resolved = this.resolveSandboxPathTarget(path, options);
+    const workspaceRelativePath = resolved.workspaceRelativePath ?? '';
+    if (resolved.grant) {
+      const authority = this.filesystemRoot(resolved.grant.path);
+      const root = authority.content;
+      return validateResolvedHostPath({
+        path,
+        accessPath: resolved.path,
+        resolvedPath: resolve(
+          root,
+          relative(resolved.grant.path, resolved.path),
+        ),
+        allowedRoot: root,
+        entryRoot: authority.entry,
+        preserveLeaf: mode === 'entry',
+      });
+    }
+
+    const mountPath = this.resolveLocalBindMountPath(
+      workspaceRelativePath,
+      path,
+      options,
+      mode,
+    );
+    if (mountPath) {
+      return mountPath;
+    }
+
+    const authority = this.filesystemRoot(this.state.workspaceRootPath);
+    const root = authority.content;
+    const resolvedPath = resolve(root, workspaceRelativePath);
+    const relativeToRoot = relative(root, resolvedPath);
+    if (relativeHostPathEscapesRoot(relativeToRoot)) {
+      throw new UserError(`Sandbox path "${path}" escapes the workspace root.`);
+    }
+    return validateResolvedHostPath({
+      path,
+      accessPath: resolve(this.state.workspaceRootPath, workspaceRelativePath),
+      resolvedPath,
+      allowedRoot: root,
+      entryRoot: authority.entry,
+      preserveLeaf: mode === 'entry',
+    });
+  }
+
+  protected resolveCommandWorkdir(path?: string): string {
+    return this.resolveSandboxPath(path);
+  }
+
+  protected assertSessionUsable(): void {
+    assertSandboxSessionStateUsable(this.state);
+  }
+
+  private captureFilesystemRoots(): void {
+    if (!this.hostFiles) return;
+    const paths = [
+      this.state.workspaceRootPath,
+      ...this.state.manifest.extraPathGrants.map((grant) => grant.path),
+      ...this.state.manifest.mountTargets().flatMap(({ entry }) => {
+        const source = localBindMountSource(entry);
+        return source ? [source] : [];
+      }),
+    ];
+    for (const path of paths) {
+      if (!this.filesystemRoots.has(path)) {
+        try {
+          this.filesystemRoots.set(path, {
+            content: realpathSync(path),
+            entry: resolve(realpathSync(dirname(path)), basename(path)),
+          });
+        } catch {
+          this.filesystemRoots.set(
+            path,
+            new UserError(`Sandbox filesystem root is unavailable: ${path}`),
+          );
+        }
+      }
+    }
+  }
+
+  private filesystemRoot(path: string): { content: string; entry: string } {
+    if (!this.hostFiles) {
+      return { content: realpathForValidation(path), entry: path };
+    }
+    this.captureFilesystemRoots();
+    const root = this.filesystemRoots.get(path)!;
+    if (root instanceof Error) throw root;
+    return root;
+  }
+
+  private async applyFileOperation(
+    operation: ApplyPatchOperation,
+    runAs?: string,
+  ): Promise<void> {
+    const generation = this.fileOperationGeneration;
+    const assertCurrent = () => {
+      if (this.closePromise) {
+        throw new UserError('UnixLocal file operations are closed.');
+      }
+      if (this.stopPromise || generation !== this.fileOperationGeneration) {
+        throw new UserError('UnixLocal file operation cancelled.');
+      }
+    };
+    assertCurrent();
+    return await withUnixLocalFileAccess(this.state, async () => {
+      assertCurrent();
+      this.assertSessionUsable();
+      const identity = await this.resolveFilesystemRunAs(runAs);
+      assertCurrent();
+      const path = this.resolveFilesystemPath(
+        operation.path,
+        { forWrite: true },
+        operation.type === 'delete_file' ? 'entry' : 'content',
+      );
+      if (operation.type === 'create_file') {
+        const input = applyDiff('', operation.diff, 'create');
+        await this.files.run(
+          { operation: 'create', path },
+          { input, identity },
+        );
+      } else if (operation.type === 'update_file') {
+        const destination = operation.moveTo
+          ? this.resolveFilesystemPath(operation.moveTo, { forWrite: true })
+          : path;
+        const unlinkPath =
+          operation.moveTo &&
+          this.resolveSandboxPath(operation.moveTo, { forWrite: true }) !==
+            this.resolveSandboxPath(operation.path, { forWrite: true })
+            ? this.resolveFilesystemPath(
+                operation.path,
+                { forWrite: true },
+                'entry',
+              )
+            : undefined;
+        await this.files.run(
+          { operation: 'update', path, destination, unlinkPath },
+          { identity, update: (current) => applyDiff(current, operation.diff) },
+        );
+      } else {
+        await this.files.run({ operation: 'delete', path }, { identity });
+      }
+    });
+  }
+
+  private resolveSandboxPathTarget(
+    path?: string,
+    options: ResolveSandboxPathOptions = {},
+  ): ResolvedSandboxPath {
+    return new WorkspacePathPolicy({
+      root: this.state.manifest.root,
+      extraPathGrants: this.state.manifest.extraPathGrants,
+    }).resolve(path, options);
+  }
+
+  private resolveLocalBindMountPath(
+    workspaceRelativePath: string,
+    path: string | undefined,
+    options: ResolveSandboxPathOptions,
+    mode: 'content' | 'entry',
+  ): LocalFilePath | undefined {
+    for (const { entry, mountPath } of this.state.manifest.mountTargets()) {
+      const source = localBindMountSource(entry);
+      if (!source) {
+        continue;
+      }
+      const mountRelativePath = new WorkspacePathPolicy({
+        root: this.state.manifest.root,
+      }).resolve(mountPath).workspaceRelativePath;
+      if (typeof mountRelativePath !== 'string') {
+        continue;
+      }
+      if (!pathWithinLogicalRoot(workspaceRelativePath, mountRelativePath)) {
+        continue;
+      }
+      if (options.forWrite && entry.readOnly !== false) {
+        throw new UserError(
+          `Sandbox path "${path}" is inside a read-only local bind mount.`,
+        );
+      }
+      const childPath =
+        workspaceRelativePath === mountRelativePath
+          ? ''
+          : workspaceRelativePath.slice(mountRelativePath.length + 1);
+      const authority = this.filesystemRoot(source);
+      const root = authority.content;
+      const resolvedPath = childPath ? resolve(root, childPath) : root;
+      return validateResolvedHostPath({
+        path,
+        accessPath: childPath ? resolve(source, childPath) : source,
+        resolvedPath,
+        allowedRoot: root,
+        entryRoot: authority.entry,
+        preserveLeaf: mode === 'entry',
+      });
+    }
+    return undefined;
+  }
+
+  protected resolveLogicalPath(path?: string): string {
+    if (!path || path.trim().length === 0) {
+      return '';
+    }
+
+    const logicalRoot = this.state.manifest.root;
+    const trimmed = path.trim();
+    if (trimmed === logicalRoot) {
+      return '';
+    }
+
+    if (logicalRoot === '/') {
+      return normalizeRelativePath(
+        trimmed.startsWith('/') ? trimmed.slice(1) : trimmed,
+      );
+    }
+
+    if (trimmed.startsWith(`${logicalRoot}/`)) {
+      return normalizeRelativePath(trimmed.slice(logicalRoot.length + 1));
+    }
+
+    if (trimmed.startsWith('/')) {
+      throw new UserError(
+        `Sandbox path "${path}" must stay within ${logicalRoot}.`,
+      );
+    }
+
+    return normalizeRelativePath(trimmed);
+  }
+
+  protected async spawnShellCommand(
+    command: string,
+    args: {
+      cwd: string;
+      logicalCwd: string;
+      shell?: string;
+      login: boolean;
+      runAs?: string;
+      tty?: boolean;
+    },
+  ): Promise<ChildProcessWithoutNullStreams> {
+    const { shellPath, flag } = resolveLocalShellCommand({
+      shell: args.shell,
+      defaultShell: this.defaultShell,
+      envShell: process.env.SHELL,
+      login: args.login,
+    });
+    const runAs = await this.resolveCommandRunAs(args.runAs);
+    const env = buildCommandEnvironment({
+      environment: this.state.environment,
+      shellPath,
+      home: this.state.workspaceRootPath,
+      pwd: args.logicalCwd,
+    });
+    if (args.tty) {
+      return spawnInPseudoTerminal(shellPath, [flag, command], {
+        cwd: args.cwd,
+        env,
+        ...(runAs
+          ? {
+              uid: runAs.uid,
+              gid: runAs.gid,
+            }
+          : {}),
+      });
+    }
+
+    return spawn(shellPath, [flag, command], {
+      cwd: args.cwd,
+      env,
+      ...(runAs
+        ? {
+            uid: runAs.uid,
+            gid: runAs.gid,
+          }
+        : {}),
+      stdio: 'pipe',
+    });
+  }
+
+  protected translateCommandInput(command: string): string {
+    // Unix-local is not a chroot; command rewriting preserves manifest-root UX while
+    // filesystem APIs continue to enforce host-path containment separately.
+    if (this.state.manifest.root === '/') {
+      return translateRootManifestCommandInput(
+        command,
+        this.state.workspaceRootPath,
+      );
+    }
+    return translateManifestRootCommandInput(
+      command,
+      this.state.manifest.root,
+      this.state.workspaceRootPath,
+    );
+  }
+
+  protected translateCommandOutput(output: string): string {
+    if (this.state.manifest.root === '/') {
+      return translateRootManifestCommandOutput(
+        output,
+        this.state.workspaceRootPath,
+      );
+    }
+    return translateManifestRootCommandOutput(
+      output,
+      this.state.manifest.root,
+      this.state.workspaceRootPath,
+    );
+  }
+
+  protected async materializeRestoredWorkspaceMounts(): Promise<void> {
+    await materializeLocalWorkspaceManifestMounts(
+      this.state.manifest,
+      this.state.workspaceRootPath,
+    );
+  }
+
+  protected logicalWorkdirForPath(path?: string): string {
+    return this.resolveSandboxPathTarget(path).path;
+  }
+
+  protected async resolveCommandRunAs(
+    runAs?: string,
+  ): Promise<UnixRunAsIdentity | undefined> {
+    const identity = await this.resolveRunAsIdentity(runAs);
+    if (!identity || identity.isCurrentUser) {
+      return identity;
+    }
+    if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+      throw new UserError(
+        `Unix-local sandbox runAs="${runAs}" requires the host process to run as root or the requested user.`,
+      );
+    }
+    return identity;
+  }
+
+  async resolveFilesystemRunAs(
+    runAs?: string,
+  ): Promise<UnixRunAsIdentity | undefined> {
+    const identity = await this.resolveRunAsIdentity(runAs);
+    if (!identity || identity.isCurrentUser) {
+      return identity;
+    }
+    if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+      throw new UserError(
+        `Unix-local sandbox filesystem operations cannot honor runAs="${runAs}" without root privileges.`,
+      );
+    }
+    return identity;
+  }
+
+  protected async resolveRunAsIdentity(
+    runAs?: string,
+  ): Promise<UnixRunAsIdentity | undefined> {
+    if (!runAs || runAs.trim().length === 0) {
+      return undefined;
+    }
+
+    const requestedUser = runAs.trim();
+    const currentUser = userInfo().username;
+    const currentUid =
+      typeof process.getuid === 'function' ? process.getuid() : undefined;
+    const currentGid =
+      typeof process.getgid === 'function' ? process.getgid() : undefined;
+
+    if (
+      requestedUser === currentUser &&
+      currentUid !== undefined &&
+      currentGid !== undefined
+    ) {
+      return {
+        username: currentUser,
+        uid: currentUid,
+        gid: currentGid,
+        isCurrentUser: true,
+      };
+    }
+
+    const [uidResult, gidResult] = await Promise.all([
+      runSandboxProcess('id', ['-u', requestedUser], {
+        timeoutMs: RUN_AS_LOOKUP_TIMEOUT_MS,
+      }),
+      runSandboxProcess('id', ['-g', requestedUser], {
+        timeoutMs: RUN_AS_LOOKUP_TIMEOUT_MS,
+      }),
+    ]);
+    if (uidResult.status !== 0 || gidResult.status !== 0) {
+      throw new UserError(
+        `Sandbox runAs user "${requestedUser}" could not be resolved on this host.`,
+      );
+    }
+
+    const uid = Number(uidResult.stdout.trim());
+    const gid = Number(gidResult.stdout.trim());
+    return {
+      username: requestedUser,
+      uid,
+      gid,
+      isCurrentUser:
+        currentUid !== undefined &&
+        currentGid !== undefined &&
+        uid === currentUid &&
+        gid === currentGid,
+    };
+  }
+
+  private trackChildProcess(
+    child: ChildProcessWithoutNullStreams,
+    options: { tty?: boolean } = {},
+  ): ActiveProcess {
+    let resolveDone = () => {};
+    const donePromise = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    let resolveOutputClosed = () => {};
+    const outputClosedPromise = new Promise<void>((resolve) => {
+      resolveOutputClosed = resolve;
+    });
+
+    const activeProcess: ActiveProcess = {
+      child,
+      tty: options.tty ?? false,
+      output: '',
+      stdout: '',
+      stderr: '',
+      droppedOutputChars: 0,
+      droppedStdoutChars: 0,
+      droppedStderrChars: 0,
+      exitCode: null,
+      done: false,
+      donePromise,
+      resolveDone,
+      outputClosedPromise,
+      resolveOutputClosed,
+    };
+    let openOutputStreams = 2;
+    const markOutputStreamClosed = () => {
+      openOutputStreams -= 1;
+      if (openOutputStreams === 0) {
+        activeProcess.resolveOutputClosed();
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      appendActiveProcessOutput(activeProcess, chunk, 'stdout');
+    });
+    child.stderr.on('data', (chunk: string) => {
+      appendActiveProcessOutput(activeProcess, chunk, 'stderr');
+    });
+    child.stdout.once('close', markOutputStreamClosed);
+    child.stderr.once('close', markOutputStreamClosed);
+    child.on('close', (code, signal) => {
+      activeProcess.exitCode = code ?? signalToExitCode(signal);
+      activeProcess.done = true;
+      activeProcess.resolveDone();
+    });
+    child.on('error', (error) => {
+      appendActiveProcessOutput(activeProcess, `${error.message}\n`, 'stderr');
+      activeProcess.exitCode = 1;
+      activeProcess.done = true;
+      activeProcess.resolveOutputClosed();
+      activeProcess.resolveDone();
+    });
+
+    return activeProcess;
+  }
+
+  private allocateProcessId(activeProcess: ActiveProcess): number {
+    const sessionId = this.nextSessionId++;
+    this.activeProcesses.set(sessionId, activeProcess);
+    return sessionId;
+  }
+}
+
+/**
+ * Local sandbox client for Unix hosts.
+ * Host file operations require trusted Python 3 with descriptor-relative
+ * filesystem support. Set the host OPENAI_AGENTS_PYTHON to an absolute trusted
+ * executable to override discovery. Unavailable protection and fileIOProtection:
+ * 'off' fail during preparation. Resumed sessions use current client configuration.
+ * File tools honor runAs using host permissions. Editor updates replace files,
+ * require writable parent directories, and leave other hardlinks unchanged.
+ */
+export class UnixLocalSandboxClient implements SandboxClient<
+  UnixLocalSandboxClientOptions,
+  UnixLocalSandboxSessionState
+> {
+  readonly backendId = 'unix_local';
+  readonly supportsDefaultOptions = true;
+  private readonly options: UnixLocalSandboxClientOptions;
+
+  constructor(options: UnixLocalSandboxClientOptions = {}) {
+    this.options = options;
+  }
+
+  async create(
+    args?: SandboxClientCreateArgs<UnixLocalSandboxClientOptions> | Manifest,
+    manifestOptions?: UnixLocalSandboxClientOptions,
+  ): Promise<UnixLocalSandboxSession> {
+    const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const manifest = createArgs.manifest;
+    const resolvedOptions = {
+      ...this.options,
+      ...createArgs.options,
+      ...(createArgs.snapshot
+        ? { snapshot: createArgs.snapshot as LocalSandboxSnapshotSpec }
+        : {}),
+      ...(createArgs.concurrencyLimits
+        ? { concurrencyLimits: createArgs.concurrencyLimits }
+        : {}),
+      ...(createArgs.archiveLimits !== undefined
+        ? { archiveLimits: createArgs.archiveLimits }
+        : {}),
+    };
+    validateMountCredentialBoundaries(manifest);
+    assertUnixLocalHostPathGrantsUnsupported(manifest);
+    assertLocalWorkspaceManifestMetadataSupported(
+      'UnixLocalSandboxClient',
+      manifest,
+    );
+    const files = new UnixLocalFiles(resolvedOptions.fileIOProtection);
+    const workspaceRootPath = await mkdtemp(
+      join(
+        resolvedOptions.workspaceBaseDir ?? tmpdir(),
+        'openai-agents-sandbox-',
+      ),
+    );
+
+    await materializeLocalWorkspaceManifest(manifest, workspaceRootPath, {
+      concurrencyLimits: resolvedOptions.concurrencyLimits,
+    });
+    const environment = await manifest.resolveEnvironment();
+    const configuredExposedPorts = normalizeExposedPorts(
+      resolvedOptions.exposedPorts,
+    );
+
+    return new UnixLocalSandboxSession({
+      [preparedFileIO]: files,
+      state: {
+        manifest,
+        workspaceRootPath,
+        workspaceRootOwned: true,
+        environment,
+        snapshotSpec: resolvedOptions.snapshot ?? null,
+        snapshot: null,
+        configuredExposedPorts,
+      },
+      defaultShell: resolvedOptions.defaultShell,
+      archiveLimits: resolvedOptions.archiveLimits,
+    });
+  }
+
+  async resume(
+    state: UnixLocalSandboxSessionState,
+    options: SandboxClientResumeOptions<UnixLocalSandboxClientOptions> = {},
+  ): Promise<UnixLocalSandboxSession> {
+    assertMountCredentialsRebound(state);
+    validateMountCredentialBoundaries(state.manifest);
+    assertHostPathGrantsRebound(state);
+    assertUnixLocalHostPathGrantsUnsupported(state.manifest);
+    const archiveLimits =
+      options.archiveLimits === undefined
+        ? this.options.archiveLimits
+        : options.archiveLimits;
+    const currentOptions = (getRunStateSessionTrustedConfig(state)
+      ?.clientOptions ?? options.clientOptions) as
+      UnixLocalSandboxClientOptions | undefined;
+    const files = new UnixLocalFiles(
+      currentOptions?.fileIOProtection ?? this.options.fileIOProtection,
+    );
+    const restoredState = await this.restoreIfNeeded(state, archiveLimits);
+    return new UnixLocalSandboxSession({
+      [preparedFileIO]: files,
+      state: restoredState,
+      defaultShell: this.options.defaultShell,
+      archiveLimits,
+    });
+  }
+
+  async serializeSessionState(
+    state: UnixLocalSandboxSessionState,
+  ): Promise<Record<string, unknown>> {
+    assertSandboxSessionStateUsable(state);
+    const stateGeneration = captureSandboxStateGeneration(state);
+    assertUnixLocalHostPathGrantsUnsupported(state.manifest);
+    const snapshotSpec = state.snapshotSpec ?? this.options.snapshot ?? null;
+    const snapshot = await persistLocalSnapshot(
+      'UnixLocalSandboxClient',
+      state,
+      snapshotSpec,
+      (capture) => withUnixLocalFileAccess(state, capture),
+    );
+    state.snapshotSpec = snapshotSpec;
+
+    const serialized = {
+      ...serializeMountCredentialRedactionMetadata(state),
+      manifest: serializeManifest(state.manifest),
+      workspaceRootPath: state.workspaceRootPath,
+      workspaceRootOwned: state.workspaceRootOwned,
+      environment: sanitizeEnvironmentForPersistence(state),
+      snapshotSpec: serializeLocalSnapshotSpec(snapshotSpec),
+      snapshot,
+      snapshotFingerprint: state.snapshotFingerprint ?? null,
+      snapshotFingerprintVersion: state.snapshotFingerprintVersion ?? null,
+      configuredExposedPorts: state.configuredExposedPorts ?? [],
+      exposedPorts: state.exposedPorts ?? null,
+    };
+    assertSandboxStateGenerationUnchanged(state, stateGeneration);
+    return serialized;
+  }
+
+  async deserializeSessionState(
+    state: Record<string, unknown>,
+  ): Promise<UnixLocalSandboxSessionState> {
+    return deserializeLocalSandboxSessionStateValues(
+      state,
+      this.options.snapshot,
+    );
+  }
+
+  private async restoreIfNeeded(
+    state: UnixLocalSandboxSessionState,
+    archiveLimits?: SandboxArchiveLimits | null,
+  ): Promise<UnixLocalSandboxSessionState> {
+    if (await pathExists(state.workspaceRootPath)) {
+      if (await canReuseLocalSnapshotWorkspace(state)) {
+        return state;
+      }
+      if (await localSnapshotIsRestorable(state)) {
+        return await restoreSnapshotAndMounts(
+          state,
+          state.workspaceRootPath,
+          archiveLimits,
+        );
+      }
+      return state;
+    }
+
+    if (!(await localSnapshotIsRestorable(state))) {
+      throw new UserError(
+        'UnixLocal sandbox workspace is unavailable and no local snapshot could be restored.',
+      );
+    }
+
+    const workspaceRootPath = await mkdtemp(
+      join(this.options.workspaceBaseDir ?? tmpdir(), 'openai-agents-sandbox-'),
+    );
+
+    return await restoreSnapshotAndMounts(
+      {
+        ...state,
+        workspaceRootPath,
+        workspaceRootOwned: true,
+      },
+      workspaceRootPath,
+      archiveLimits,
+    );
+  }
+}
+
+async function restoreSnapshotAndMounts(
+  state: UnixLocalSandboxSessionState,
+  workspaceRootPath: string,
+  archiveLimits?: SandboxArchiveLimits | null,
+): Promise<UnixLocalSandboxSessionState> {
+  const restoredState = await restoreLocalSnapshotToWorkspace(
+    state,
+    workspaceRootPath,
+    { archiveLimits },
+  );
+  // Restore sticky intent before mounts can expose host-owned directories.
+  await restoreLocalWorkspaceManifestStickyPermissions(
+    restoredState.manifest,
+    restoredState.workspaceRootPath,
+  );
+  await materializeLocalWorkspaceManifestMounts(
+    restoredState.manifest,
+    restoredState.workspaceRootPath,
+  );
+  return restoredState;
+}
+
+function localBindMountSource(entry: {
+  mountStrategy?: { type: string };
+  source?: unknown;
+  type: string;
+}): string | undefined {
+  if (entry.type !== 'mount' || typeof entry.source !== 'string') {
+    return undefined;
+  }
+  if (
+    entry.mountStrategy !== undefined &&
+    entry.mountStrategy.type !== 'local_bind'
+  ) {
+    return undefined;
+  }
+  return isAbsolute(entry.source) ? entry.source : undefined;
+}
+
+function pathWithinLogicalRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function assertUnixLocalHostPathGrantsUnsupported(manifest: Manifest): void {
+  const grant = manifest.extraPathGrants.find(
+    ({ hostPath }) => hostPath !== undefined,
+  );
+  if (!grant) {
+    return;
+  }
+
+  throw new SandboxUnsupportedFeatureError(
+    `UnixLocalSandboxClient does not support path grant hostPath for "${grant.path}". Omit hostPath when the host and sandbox paths are the same, or use DockerSandboxClient when they differ.`,
+    {
+      provider: 'UnixLocalSandboxClient',
+      feature: 'manifest.extraPathGrants.hostPath',
+      path: grant.path,
+    },
+  );
+}
+
+function validateResolvedHostPath(args: {
+  path?: string;
+  accessPath: string;
+  resolvedPath: string;
+  allowedRoot: string;
+  entryRoot?: string;
+  preserveLeaf?: boolean;
+}): LocalFilePath {
+  const allowedRootRealPath = args.allowedRoot;
+  if (args.preserveLeaf && args.resolvedPath !== allowedRootRealPath) {
+    // Unlink owns the leaf entry, so only its parent needs target validation.
+    const parent = realpathForValidation(dirname(args.resolvedPath), args.path);
+    if (!isHostPathWithinRoot(allowedRootRealPath, parent)) {
+      throw new UserError(
+        `Sandbox path "${args.path}" escapes the workspace root.`,
+      );
+    }
+    return {
+      path: resolve(parent, basename(args.resolvedPath)),
+      accessPath: args.accessPath,
+      preserveLeaf: true,
+    };
+  }
+  const existingPath = nearestExistingPath(args.resolvedPath);
+  if (!existingPath) {
+    throw new UserError(
+      `Sandbox path "${args.path}" escapes the workspace root.`,
+    );
+  }
+  const realPath = realpathForValidation(existingPath, args.path);
+  if (!isHostPathWithinRoot(allowedRootRealPath, realPath)) {
+    throw new UserError(
+      `Sandbox path "${args.path}" escapes the workspace root.`,
+    );
+  }
+  if (args.preserveLeaf) {
+    return {
+      path: args.entryRoot!,
+      accessPath: args.accessPath,
+      preserveLeaf: true,
+      rootTarget: allowedRootRealPath,
+    };
+  }
+  return {
+    path: resolve(realPath, relative(existingPath, args.resolvedPath)),
+    accessPath: args.accessPath,
+    preserveLeaf: false,
+  };
+}
+
+function nearestExistingPath(path: string): string | undefined {
+  let current = path;
+  while (true) {
+    try {
+      lstatSync(current);
+      return current;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function realpathForValidation(path: string, originalPath?: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    throw new UserError(
+      `Sandbox path "${originalPath}" escapes the workspace root.`,
+    );
+  }
+}
+
+class UnixLocalSandboxEditor implements Editor {
+  private readonly session: UnixLocalSandboxSession;
+  private readonly apply: (operation: ApplyPatchOperation) => Promise<void>;
+
+  constructor(
+    session: UnixLocalSandboxSession,
+    apply: (operation: ApplyPatchOperation) => Promise<void>,
+  ) {
+    this.session = session;
+    this.apply = apply;
+  }
+
+  canAccessPathForEdit(path: string): boolean {
+    try {
+      this.session.resolveSandboxPath(path, { forWrite: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async createFile(
+    operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+  ): Promise<ApplyPatchResult> {
+    await this.apply(operation);
+    return {};
+  }
+
+  async updateFile(
+    operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+  ): Promise<ApplyPatchResult> {
+    await this.apply(operation);
+    return {};
+  }
+
+  async deleteFile(
+    operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+  ): Promise<ApplyPatchResult> {
+    await this.apply(operation);
+    return {};
+  }
+}
+
+function buildCommandEnvironment(args: {
+  environment: Record<string, string>;
+  shellPath: string;
+  home: string;
+  pwd: string;
+}): NodeJS.ProcessEnv {
+  return {
+    PATH: DEFAULT_SANDBOX_COMMAND_PATH,
+    HOME: args.home,
+    USER: 'sandbox',
+    LOGNAME: 'sandbox',
+    SHELL: args.shellPath,
+    TMPDIR: '/tmp',
+    ...args.environment,
+    PWD: args.pwd,
+  };
+}
+
+function translateRootManifestCommandInput(
+  command: string,
+  workspaceRootPath: string,
+): string {
+  return command.replace(
+    /(^|[\s"'=<>])\/([^\s"'|&;<>(){}]*)/g,
+    (_match, prefix: string, pathSuffix: string) =>
+      `${prefix}${workspaceRootPath}/${pathSuffix}`,
+  );
+}
+
+function translateManifestRootCommandInput(
+  command: string,
+  manifestRoot: string,
+  workspaceRootPath: string,
+): string {
+  const escapedManifestRoot = escapeRegExp(manifestRoot);
+  const pathPrefix = String.raw`(^|[\s"'=<>])`;
+  const pathSuffix = String.raw`(?=$|[\/\s"'|&;<>(){}])`;
+  return command.replace(
+    new RegExp(`${pathPrefix}${escapedManifestRoot}${pathSuffix}`, 'g'),
+    (_match, prefix: string) => `${prefix}${workspaceRootPath}`,
+  );
+}
+
+function translateRootManifestCommandOutput(
+  output: string,
+  workspaceRootPath: string,
+): string {
+  return translateWorkspaceRootCommandOutput(output, '/', workspaceRootPath);
+}
+
+function translateManifestRootCommandOutput(
+  output: string,
+  manifestRoot: string,
+  workspaceRootPath: string,
+): string {
+  return translateWorkspaceRootCommandOutput(
+    output,
+    manifestRoot,
+    workspaceRootPath,
+  );
+}
+
+function translateWorkspaceRootCommandOutput(
+  output: string,
+  manifestRoot: string,
+  workspaceRootPath: string,
+): string {
+  const nestedPathReplacement = manifestRoot === '/' ? '/' : `${manifestRoot}/`;
+  let translated = output;
+  for (const path of workspaceRootOutputPaths(workspaceRootPath)) {
+    translated = translated
+      .split(`${path}/`)
+      .join(nestedPathReplacement)
+      .split(path)
+      .join(manifestRoot);
+  }
+  return translated;
+}
+
+function workspaceRootOutputPaths(workspaceRootPath: string): string[] {
+  const paths = [workspaceRootPath];
+  try {
+    paths.push(realpathSync(workspaceRootPath));
+  } catch {
+    return paths;
+  }
+  return Array.from(new Set(paths)).sort((a, b) => b.length - a.length);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+type ActiveProcessOutputStream = 'stdout' | 'stderr';
+
+type ConsumedActiveProcessOutput = {
+  output: string;
+  stdout: string;
+  stderr: string;
+};
+
+function appendActiveProcessOutput(
+  activeProcess: ActiveProcess,
+  chunk: string,
+  stream: ActiveProcessOutputStream,
+): void {
+  if (chunk.length === 0) {
+    return;
+  }
+
+  const combined = appendBoundedOutput(
+    activeProcess.output,
+    activeProcess.droppedOutputChars,
+    chunk,
+  );
+  activeProcess.output = combined.output;
+  activeProcess.droppedOutputChars = combined.droppedChars;
+
+  if (stream === 'stdout') {
+    const stdout = appendBoundedOutput(
+      activeProcess.stdout,
+      activeProcess.droppedStdoutChars,
+      chunk,
+    );
+    activeProcess.stdout = stdout.output;
+    activeProcess.droppedStdoutChars = stdout.droppedChars;
+    return;
+  }
+
+  const stderr = appendBoundedOutput(
+    activeProcess.stderr,
+    activeProcess.droppedStderrChars,
+    chunk,
+  );
+  activeProcess.stderr = stderr.output;
+  activeProcess.droppedStderrChars = stderr.droppedChars;
+}
+
+function appendBoundedOutput(
+  output: string,
+  droppedChars: number,
+  chunk: string,
+): { output: string; droppedChars: number } {
+  const nextLength = output.length + chunk.length;
+  if (nextLength <= MAX_ACTIVE_PROCESS_OUTPUT_CHARS) {
+    return {
+      output: output + chunk,
+      droppedChars,
+    };
+  }
+
+  const nextDroppedChars =
+    droppedChars + nextLength - MAX_ACTIVE_PROCESS_OUTPUT_CHARS;
+  if (chunk.length >= MAX_ACTIVE_PROCESS_OUTPUT_CHARS) {
+    return {
+      output: chunk.slice(-MAX_ACTIVE_PROCESS_OUTPUT_CHARS),
+      droppedChars: nextDroppedChars,
+    };
+  }
+
+  const existingCharsToKeep = MAX_ACTIVE_PROCESS_OUTPUT_CHARS - chunk.length;
+  return {
+    output: output.slice(-existingCharsToKeep) + chunk,
+    droppedChars: nextDroppedChars,
+  };
+}
+
+function consumeActiveProcessOutput(
+  activeProcess: ActiveProcess,
+): ConsumedActiveProcessOutput {
+  const output = withDroppedOutputPrefix(
+    activeProcess.output,
+    activeProcess.droppedOutputChars,
+  );
+  const stdout = withDroppedOutputPrefix(
+    activeProcess.stdout,
+    activeProcess.droppedStdoutChars,
+  );
+  const stderr = withDroppedOutputPrefix(
+    activeProcess.stderr,
+    activeProcess.droppedStderrChars,
+  );
+  activeProcess.output = '';
+  activeProcess.stdout = '';
+  activeProcess.stderr = '';
+  activeProcess.droppedOutputChars = 0;
+  activeProcess.droppedStdoutChars = 0;
+  activeProcess.droppedStderrChars = 0;
+
+  return { output, stdout, stderr };
+}
+
+function withDroppedOutputPrefix(output: string, droppedChars: number): string {
+  if (droppedChars === 0) {
+    return output;
+  }
+
+  return `[...${droppedChars} characters truncated from process output...]\n${output}`;
+}
+
+async function waitForProcessOrTimeout(
+  activeProcess: ActiveProcess,
+  timeoutMs: number,
+): Promise<void> {
+  if (activeProcess.done) {
+    await activeProcess.outputClosedPromise;
+    return;
+  }
+
+  await Promise.race([
+    activeProcess.donePromise,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+  if (activeProcess.done) {
+    await activeProcess.outputClosedPromise;
+  }
+}
+
+function signalToExitCode(signal: NodeJS.Signals | null): number {
+  if (signal === 'SIGINT') {
+    return 130;
+  }
+  return 1;
+}

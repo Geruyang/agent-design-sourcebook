@@ -1,0 +1,737 @@
+import { Agent, AgentOutputType } from '../agent';
+import { UserError } from '../errors';
+import { RunInputItem, RunItem, RunToolSearchOutputItem } from '../items';
+import { ModelResponse } from '../model';
+import { RunContext } from '../runContext';
+import { AgentInputItem } from '../types';
+import { addErrorToCurrentSpan } from '../tracing/context';
+import {
+  buildAgentInputPool,
+  deduplicateAgentInputItemsPreferringLatest,
+  extractOutputItemsFromRunItems,
+  getAgentInputItemKey,
+  removeAgentInputFromPool,
+  takeAgentInputFromPool,
+  toAgentInputList,
+  type ReasoningItemIdPolicy,
+} from './items';
+import {
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
+  getUnresolvedToolResultCorrelationsForResponse,
+  type ToolResultCorrelation,
+} from './toolResultCorrelation';
+
+export { getTurnInput } from './items';
+
+export type ModelInputData = {
+  input: AgentInputItem[];
+  instructions?: string;
+};
+
+export type CallModelInputFilterArgs<TContext = unknown> = {
+  modelData: ModelInputData;
+  agent: Agent<TContext, AgentOutputType>;
+  context: TContext | undefined;
+};
+
+export type CallModelInputFilter<TContext = unknown> = ((
+  args: CallModelInputFilterArgs<TContext>,
+) => ModelInputData | Promise<ModelInputData>) & {
+  /**
+   * Preserve prepared input item identities by passing a shallow-copied array
+   * to the filter. The SDK does not freeze these items; enable this only when
+   * the filter and every helper it calls treat each input item and its nested
+   * values as immutable. Model and session inputs remain isolated copies after
+   * the filter returns.
+   */
+  preserveInputIdentity?: boolean;
+};
+
+/**
+ * Result of applying a `callModelInputFilter`.
+ * - `modelInput` is the payload that goes to the model.
+ * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
+ *   This lets the conversation tracker know which originals reached the model.
+ * - `persistedItems` are the normalized clones we should commit to session memory so the stored
+ *   history reflects identity-aware replacement plus any redactions or truncation from the filter.
+ * - `filterApplied` signals whether a filter ran so callers can distinguish empty filtered results
+ *   from the filter being skipped entirely.
+ */
+export type FilterApplicationResult = {
+  modelInput: { input: AgentInputItem[]; instructions?: string };
+  sourceItems: (AgentInputItem | undefined)[];
+  persistedItems: AgentInputItem[];
+  sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
+  filterApplied: boolean;
+  preserveInputIdentity: boolean;
+};
+
+export type ServerConversationOwner =
+  | { type: 'conversation'; id: string }
+  | { type: 'previous_response'; id: string };
+
+/**
+ * Resolves the single server-side continuation owner for an accepted response.
+ */
+export function getServerConversationOwner(
+  conversationId: string | undefined,
+  previousResponseId: string | undefined,
+): ServerConversationOwner | undefined {
+  if (
+    typeof conversationId === 'string' &&
+    conversationId.length > 0 &&
+    previousResponseId === undefined
+  ) {
+    return { type: 'conversation', id: conversationId };
+  }
+  if (
+    typeof previousResponseId === 'string' &&
+    previousResponseId.length > 0 &&
+    conversationId === undefined
+  ) {
+    return { type: 'previous_response', id: previousResponseId };
+  }
+  return undefined;
+}
+
+/**
+ * Applies the optional callModelInputFilter and returns the filtered input alongside the original
+ * items so downstream tracking and session persistence stay in sync with what the model saw.
+ */
+export async function applyCallModelInputFilter<TContext>(
+  agent: Agent<TContext, AgentOutputType>,
+  callModelInputFilter: CallModelInputFilter<any> | undefined,
+  context: RunContext<TContext>,
+  inputItems: AgentInputItem[],
+  systemInstructions: string | undefined,
+): Promise<FilterApplicationResult> {
+  const cloneInputItems = (
+    items: AgentInputItem[],
+    map?: WeakMap<object, AgentInputItem>,
+  ) =>
+    items.map((item) => {
+      const cloned = structuredClone(item) as AgentInputItem;
+      if (map && cloned && typeof cloned === 'object') {
+        map.set(cloned as object, item);
+      }
+      return cloned;
+    });
+
+  // Record the relationship between the array passed to filters and the original inputs.
+  const cloneMap = new WeakMap<object, AgentInputItem>();
+
+  // Identity-preserving filters may opt into stable item identities. Other filters still
+  // receive deep copies so their mutations cannot affect the cached turn state.
+  const preserveInputIdentity =
+    callModelInputFilter?.preserveInputIdentity === true;
+  const clonedBaseInput = preserveInputIdentity
+    ? [...inputItems]
+    : cloneInputItems(inputItems, cloneMap);
+  if (preserveInputIdentity) {
+    for (const item of inputItems) {
+      if (item && typeof item === 'object') {
+        cloneMap.set(item as object, item);
+      }
+    }
+  }
+  const base = {
+    input: clonedBaseInput,
+    instructions: systemInstructions,
+  };
+  if (!callModelInputFilter) {
+    const normalizedInput =
+      deduplicateAgentInputItemsPreferringLatest(clonedBaseInput);
+    return {
+      modelInput: { ...base, input: normalizedInput },
+      sourceItems: normalizedInput.map(
+        (item) => cloneMap.get(item as object) ?? item,
+      ),
+      persistedItems: cloneInputItems(normalizedInput),
+      sourceMatchKinds: normalizedInput.map(() => 'identity'),
+      filterApplied: false,
+      preserveInputIdentity,
+    };
+  }
+
+  try {
+    const result = await callModelInputFilter({
+      modelData: base,
+      agent,
+      context: context.context,
+    } as CallModelInputFilterArgs<any>);
+
+    if (!result || !Array.isArray(result.input)) {
+      throw new UserError(
+        'callModelInputFilter must return a ModelInputData object with an input array.',
+      );
+    }
+
+    const normalizedBaseSources = deduplicateAgentInputItemsPreferringLatest(
+      clonedBaseInput,
+    ).map((item) => cloneMap.get(item as object) ?? item);
+    const originalPool = buildAgentInputPool(normalizedBaseSources);
+    const fallbackOriginals = normalizedBaseSources.filter(
+      (item) => item && typeof item === 'object',
+    );
+    const removeFromFallback = (candidate: AgentInputItem | undefined) => {
+      if (!candidate || typeof candidate !== 'object') {
+        return;
+      }
+      const index = fallbackOriginals.findIndex(
+        (original) => original === candidate,
+      );
+      if (index !== -1) {
+        fallbackOriginals.splice(index, 1);
+      }
+    };
+    const takeFallbackOriginal = (): AgentInputItem | undefined => {
+      const next = fallbackOriginals.shift();
+      if (next) {
+        removeAgentInputFromPool(originalPool, next);
+      }
+      return next;
+    };
+
+    const normalizedInput = deduplicateAgentInputItemsPreferringLatest(
+      result.input,
+    );
+    const availableExactOccurrences = new WeakMap<object, number>();
+    for (const item of clonedBaseInput) {
+      if (item && typeof item === 'object') {
+        availableExactOccurrences.set(
+          item as object,
+          (availableExactOccurrences.get(item as object) ?? 0) + 1,
+        );
+      }
+    }
+    const consumedExactOccurrences = new WeakMap<object, number>();
+    const injectedExactCloneIndexes = new Set<number>();
+
+    // Preserve a pointer to the original object backing each filtered clone so downstream
+    // trackers can keep their bookkeeping consistent even after redaction.
+    const sourceItems: (AgentInputItem | undefined)[] = normalizedInput.map(
+      (item, index) => {
+        if (!item || typeof item !== 'object') {
+          return undefined;
+        }
+        const original = cloneMap.get(item as object);
+        if (!original) {
+          return undefined;
+        }
+        const consumedOccurrences =
+          consumedExactOccurrences.get(item as object) ?? 0;
+        if (
+          consumedOccurrences >=
+          (availableExactOccurrences.get(item as object) ?? 0)
+        ) {
+          injectedExactCloneIndexes.add(index);
+          return undefined;
+        }
+        consumedExactOccurrences.set(item as object, consumedOccurrences + 1);
+        removeFromFallback(original);
+        removeAgentInputFromPool(originalPool, original);
+        return original;
+      },
+    );
+    const sourceMatchKinds: FilterApplicationResult['sourceMatchKinds'] =
+      sourceItems.map((source) =>
+        source === undefined ? 'injected' : 'identity',
+      );
+
+    // Reserve all exact clone matches before considering equal-content items. A prepended clone
+    // that happens to equal a later unchanged item must remain an injected item.
+    for (let index = 0; index < sourceItems.length; index++) {
+      if (sourceItems[index] !== undefined) {
+        continue;
+      }
+      if (injectedExactCloneIndexes.has(index)) {
+        continue;
+      }
+      const item = normalizedInput[index];
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const key = getAgentInputItemKey(item as AgentInputItem);
+      const matchedByContent = takeAgentInputFromPool(originalPool, key);
+      if (matchedByContent) {
+        removeFromFallback(matchedByContent);
+        sourceItems[index] = matchedByContent;
+        sourceMatchKinds[index] = 'content';
+      }
+    }
+
+    // Assign replacement fallbacks only after every exact and content match has been reserved.
+    for (let index = 0; index < sourceItems.length; index++) {
+      if (sourceItems[index] !== undefined) {
+        continue;
+      }
+      if (injectedExactCloneIndexes.has(index)) {
+        continue;
+      }
+      const item = normalizedInput[index];
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const fallback = takeFallbackOriginal();
+      if (fallback) {
+        sourceItems[index] = fallback;
+        sourceMatchKinds[index] = 'fallback';
+      }
+    }
+
+    const clonedFilteredInput = cloneInputItems(normalizedInput);
+    return {
+      modelInput: {
+        input: clonedFilteredInput,
+        instructions:
+          typeof result.instructions === 'undefined'
+            ? systemInstructions
+            : result.instructions,
+      },
+      sourceItems,
+      persistedItems: clonedFilteredInput.map((item) => structuredClone(item)),
+      sourceMatchKinds,
+      filterApplied: true,
+      preserveInputIdentity,
+    };
+  } catch (error) {
+    addErrorToCurrentSpan({
+      message: 'Error in callModelInputFilter',
+      data: { error: String(error) },
+    });
+    throw error;
+  }
+}
+
+type ResumeResponseBoundary = {
+  latestResponseId: string | undefined;
+  acknowledgingResponseIndex: number;
+};
+
+function getResumeResponseBoundary(
+  modelResponses: ModelResponse[],
+  conversationId: string | undefined,
+): ResumeResponseBoundary {
+  let latestResponseId: string | undefined;
+  let latestResponseIdIndex = -1;
+  for (const [responseIndex, response] of modelResponses.entries()) {
+    if (response.responseId) {
+      latestResponseId = response.responseId;
+      latestResponseIdIndex = responseIndex;
+    }
+  }
+
+  // A conversation advances with every response. A previous-response chain only advances when the
+  // response has an ID that the next request can reference.
+  return {
+    latestResponseId,
+    acknowledgingResponseIndex: conversationId
+      ? modelResponses.length - 1
+      : latestResponseIdIndex,
+  };
+}
+
+function incrementCorrelationCount(
+  counts: Map<string, number>,
+  correlation: ToolResultCorrelation,
+): void {
+  const key = getToolResultCorrelationKey(correlation);
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function consumeCorrelationCount(
+  counts: Map<string, number>,
+  correlation: ToolResultCorrelation,
+): boolean {
+  const key = getToolResultCorrelationKey(correlation);
+  const remaining = counts.get(key) ?? 0;
+  if (remaining === 0) {
+    return false;
+  }
+  counts.set(key, remaining - 1);
+  return true;
+}
+
+// SDK discovery ownership does not change the item already stored by the provider.
+function getServerItemKey(item: AgentInputItem): string {
+  if (item.type === 'tool_search_output') {
+    const {
+      toolSearchAgentName: _owner,
+      toolSearchMcpToolNames: _provenance,
+      ...providerItem
+    } = item;
+    return getAgentInputItemKey(providerItem);
+  }
+  return getAgentInputItemKey(item);
+}
+
+/**
+ * Tracks which items have already been sent to or received from the Responses API when the caller
+ * supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
+ */
+export class ServerConversationTracker {
+  public conversationId?: string;
+  public previousResponseId?: string;
+  private readonly reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+
+  // Using this flag because WeakSet does not provide a way to check its size.
+  private sentInitialInput = false;
+  // The items already sent to the model; using WeakSet for memory efficiency.
+  private sentItems = new WeakSet<object>();
+  // The items received from the server; using WeakSet for memory efficiency.
+  private serverItems = new WeakSet<object>();
+  // Tracks which prepared turn-input item originated from which source object.
+  private preparedItemSources = new WeakMap<object, AgentInputItem>();
+  // Track initial input items that have not yet been sent so they can be retried on later turns.
+  private remainingInitialInput: AgentInputItem[] | null = null;
+
+  constructor({
+    conversationId,
+    previousResponseId,
+    reasoningItemIdPolicy,
+  }: {
+    conversationId?: string;
+    previousResponseId?: string;
+    reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+  }) {
+    this.conversationId = conversationId ?? undefined;
+    this.previousResponseId = previousResponseId ?? undefined;
+    this.reasoningItemIdPolicy = reasoningItemIdPolicy;
+  }
+
+  /**
+   * Pre-populates tracker caches from an existing RunState when resuming server-managed runs.
+   */
+  primeFromState({
+    originalInput,
+    generatedItems,
+    modelResponses,
+  }: {
+    originalInput: string | AgentInputItem[];
+    generatedItems: RunItem[];
+    modelResponses: ModelResponse[];
+  }) {
+    if (this.sentInitialInput) {
+      return;
+    }
+
+    const originalItems = toAgentInputList(originalInput);
+    const hasResponses = modelResponses.length > 0;
+
+    const serverItemKeys = new Set<string>();
+    const acknowledgedToolCallCounts = new Map<string, number>();
+    const { latestResponseId, acknowledgingResponseIndex } =
+      getResumeResponseBoundary(modelResponses, this.conversationId);
+
+    for (const [responseIndex, response] of modelResponses.entries()) {
+      if (responseIndex < acknowledgingResponseIndex) {
+        const unresolvedCorrelations =
+          getUnresolvedToolResultCorrelationsForResponse(
+            response.output as AgentInputItem[],
+          );
+        for (const correlation of unresolvedCorrelations) {
+          incrementCorrelationCount(acknowledgedToolCallCounts, correlation);
+        }
+      }
+
+      for (const item of response.output) {
+        if (item && typeof item === 'object') {
+          this.serverItems.add(item);
+          serverItemKeys.add(getServerItemKey(item as AgentInputItem));
+        }
+      }
+    }
+
+    if (hasResponses) {
+      for (const item of originalItems) {
+        if (item && typeof item === 'object') {
+          this.sentItems.add(item);
+        }
+      }
+
+      this.sentInitialInput = true;
+      this.remainingInitialInput = null;
+    }
+
+    // Mirror live tracking by preserving the last response that actually carried an id.
+    if (!this.conversationId && latestResponseId) {
+      this.previousResponseId = latestResponseId;
+    }
+
+    if (hasResponses) {
+      for (const item of generatedItems) {
+        const rawItem = item.rawItem;
+        if (!rawItem || typeof rawItem !== 'object') {
+          continue;
+        }
+        const rawItemKey = getServerItemKey(rawItem as AgentInputItem);
+        if (item instanceof RunInputItem) {
+          this.sentItems.add(rawItem);
+          continue;
+        }
+        if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
+          this.sentItems.add(rawItem);
+          continue;
+        }
+
+        const correlation = getToolResultCorrelationForResult(
+          rawItem as AgentInputItem,
+        );
+        if (
+          correlation &&
+          consumeCorrelationCount(acknowledgedToolCallCounts, correlation)
+        ) {
+          this.sentItems.add(rawItem);
+        }
+      }
+    }
+  }
+
+  /**
+   * Records the raw items returned by the server so future delta calculations skip them.
+   * Also captures the latest response identifier to chain follow-up calls when possible.
+   */
+  trackServerItems(
+    modelResponse: ModelResponse | undefined,
+    processedItems: RunItem[] = [],
+  ) {
+    if (!modelResponse) {
+      return;
+    }
+    for (const item of modelResponse.output) {
+      if (item && typeof item === 'object') {
+        this.serverItems.add(item);
+      }
+    }
+    const searchOutputs = processedItems.filter(
+      (item): item is RunToolSearchOutputItem =>
+        item instanceof RunToolSearchOutputItem,
+    );
+    if (searchOutputs.length > 0) {
+      const serverSearchKeys = new Set(
+        modelResponse.output
+          .filter((item) => item.type === 'tool_search_output')
+          .map(getServerItemKey),
+      );
+      // A client-generated result is unsent unless the response actually contains that output.
+      for (const item of searchOutputs) {
+        if (serverSearchKeys.has(getServerItemKey(item.rawItem))) {
+          this.serverItems.add(item.rawItem);
+        }
+      }
+    }
+    if (!this.conversationId && modelResponse.responseId) {
+      this.previousResponseId = modelResponse.responseId;
+    }
+  }
+
+  /**
+   * Returns the minimum set of items that still need to be delivered to the server for the
+   * current turn. This includes the original turn inputs (until acknowledged) plus any
+   * newly generated items that have not yet been echoed back by the API.
+   */
+  prepareInput(
+    originalInput: string | AgentInputItem[],
+    generatedItems: RunItem[],
+    supplementalGeneratedItems: AgentInputItem[] = [],
+    pendingInputItems: RunInputItem[] = [],
+  ): AgentInputItem[] {
+    const inputItems: AgentInputItem[] = [];
+    const generatedItemsForInput: RunItem[] = [];
+    const pendingInputItemSet = new Set<RunItem>(pendingInputItems);
+
+    if (!this.sentInitialInput) {
+      const initialItems = toAgentInputList(originalInput);
+      // Preserve the full initial payload so a filter can drop items without losing their originals.
+      inputItems.push(...initialItems);
+      for (const item of initialItems) {
+        this.registerPreparedItemSource(item);
+      }
+      this.remainingInitialInput = initialItems.filter(
+        (item): item is AgentInputItem =>
+          Boolean(item) && typeof item === 'object',
+      );
+      this.sentInitialInput = true;
+    } else if (
+      this.remainingInitialInput &&
+      this.remainingInitialInput.length > 0
+    ) {
+      // Re-queue prior initial items until the tracker confirms they were delivered to the API.
+      inputItems.push(...this.remainingInitialInput);
+      for (const item of this.remainingInitialInput) {
+        this.registerPreparedItemSource(item);
+      }
+    }
+
+    for (const item of generatedItems) {
+      if (item.type === 'tool_approval_item') {
+        continue;
+      }
+      const rawItem = item.rawItem;
+      if (!rawItem || typeof rawItem !== 'object') {
+        continue;
+      }
+      if (
+        !pendingInputItemSet.has(item) &&
+        (this.sentItems.has(rawItem) || this.serverItems.has(rawItem))
+      ) {
+        continue;
+      }
+      generatedItemsForInput.push(item);
+    }
+
+    const preparedGeneratedItems = extractOutputItemsFromRunItems(
+      generatedItemsForInput,
+      this.reasoningItemIdPolicy,
+    );
+    for (const [index, preparedItem] of preparedGeneratedItems.entries()) {
+      const sourceItem = generatedItemsForInput[index]?.rawItem as
+        AgentInputItem | undefined;
+      this.registerPreparedItemSource(preparedItem, sourceItem);
+    }
+    inputItems.push(...preparedGeneratedItems);
+    const filteredSupplementalItems = filterSupplementalGeneratedItems(
+      supplementalGeneratedItems,
+      preparedGeneratedItems,
+      this.sentItems,
+      this.serverItems,
+    );
+    for (const item of filteredSupplementalItems) {
+      this.registerPreparedItemSource(item);
+    }
+    inputItems.push(...filteredSupplementalItems);
+
+    return inputItems;
+  }
+
+  /**
+   * Marks the provided originals as delivered so future turns do not resend them and any
+   * pending initial inputs can be dropped once the server acknowledges receipt.
+   */
+  markInputAsSent(
+    items: (AgentInputItem | undefined)[],
+    options?: { filterApplied?: boolean; allTurnItems?: AgentInputItem[] },
+  ) {
+    const delivered = new Set<AgentInputItem>();
+    const dropRemainingInitialInput = options?.filterApplied ?? false;
+    const markFilteredItemsAsSent =
+      options?.filterApplied && Boolean(options.allTurnItems);
+
+    this.addDeliveredItems(delivered, items);
+
+    const allTurnItems = options?.allTurnItems;
+    if (markFilteredItemsAsSent && allTurnItems) {
+      this.addDeliveredItems(delivered, allTurnItems);
+    }
+
+    this.updateRemainingInitialInput(
+      delivered,
+      Boolean(dropRemainingInitialInput),
+    );
+  }
+
+  private addDeliveredItems(
+    delivered: Set<AgentInputItem>,
+    items: (AgentInputItem | undefined)[],
+  ) {
+    for (const item of items) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const sourceItem = this.resolvePreparedItemSource(item);
+      if (!sourceItem || typeof sourceItem !== 'object') {
+        continue;
+      }
+      if (delivered.has(sourceItem)) {
+        continue;
+      }
+      // Some inputs may be repeated in the filtered list; only mark unique originals once.
+      delivered.add(sourceItem);
+      this.sentItems.add(sourceItem);
+    }
+  }
+
+  private registerPreparedItemSource(
+    preparedItem: AgentInputItem,
+    sourceItem?: AgentInputItem,
+  ) {
+    if (!preparedItem || typeof preparedItem !== 'object') {
+      return;
+    }
+    if (!sourceItem || typeof sourceItem !== 'object') {
+      this.preparedItemSources.set(preparedItem, preparedItem);
+      return;
+    }
+    this.preparedItemSources.set(preparedItem, sourceItem);
+  }
+
+  private resolvePreparedItemSource(item: AgentInputItem): AgentInputItem {
+    if (!item || typeof item !== 'object') {
+      return item;
+    }
+    return this.preparedItemSources.get(item) ?? item;
+  }
+
+  private updateRemainingInitialInput(
+    delivered: Set<AgentInputItem>,
+    dropRemainingInitialInput: boolean,
+  ) {
+    if (
+      !this.remainingInitialInput ||
+      this.remainingInitialInput.length === 0 ||
+      delivered.size === 0
+    ) {
+      if (dropRemainingInitialInput && this.remainingInitialInput) {
+        this.remainingInitialInput = null;
+      }
+      return;
+    }
+
+    this.remainingInitialInput = this.remainingInitialInput.filter(
+      (item) => !delivered.has(item),
+    );
+    if (this.remainingInitialInput.length === 0) {
+      this.remainingInitialInput = null;
+    } else if (dropRemainingInitialInput) {
+      this.remainingInitialInput = null;
+    }
+  }
+}
+
+function filterSupplementalGeneratedItems(
+  supplementalGeneratedItems: AgentInputItem[],
+  preparedGeneratedItems: AgentInputItem[],
+  sentItems: WeakSet<object>,
+  serverItems: WeakSet<object>,
+): AgentInputItem[] {
+  const preparedFunctionResultCallIds = new Set(
+    preparedGeneratedItems.flatMap((item) => {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        item.type !== 'function_call_result' ||
+        typeof item.callId !== 'string'
+      ) {
+        return [];
+      }
+      return [item.callId];
+    }),
+  );
+
+  return supplementalGeneratedItems.filter((item) => {
+    if (!item || typeof item !== 'object') {
+      return true;
+    }
+    if (sentItems.has(item) || serverItems.has(item)) {
+      return false;
+    }
+    if (
+      item.type !== 'function_call_result' ||
+      typeof item.callId !== 'string'
+    ) {
+      return true;
+    }
+    return !preparedFunctionResultCallIds.has(item.callId);
+  });
+}

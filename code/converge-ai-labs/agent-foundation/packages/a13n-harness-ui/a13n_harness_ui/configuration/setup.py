@@ -1,0 +1,455 @@
+"""Validated, last-write-wins first-use configuration publication.
+
+The root defaults are published last. A failed multi-file publication reports its
+completed paths; it is deliberately not presented as a filesystem transaction.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Literal, Self
+
+import yaml
+from anyio import to_thread
+from pydantic import ConfigDict, Field, model_validator
+
+from a13n_harness_ui.errors import ConfigurationError, HarnessUiError
+from a13n_harness_ui.model_authoring import SUBSCRIPTION_CONNECTIONS, ModelRecipe, recipe_document, recipe_name
+from a13n_harness_ui.model_presets import starter_tool_capabilities
+from a13n_harness_ui.resource_names import coding_agent_name
+from a13n_harness_ui.subagents import BUILTIN_SUBAGENT_NAMES
+
+from .loader import _parse_yaml_mapping, _read_bounded_stable, _scan_directory, load_harness_ui_configuration
+from .models import (
+    CapabilitySelection,
+    ResourceId,
+    StrictModel,
+    ToolsConfiguration,
+)
+from .mutation import CandidateValidator, _publish_content
+
+_EMPTY_ROOT = b'schema_version: "1"\n'
+_DIRECTORIES = ("models", "extensions", "mcp", "agents", "projects", "subagents")
+
+
+class SetupSelection(StrictModel):
+    model: ModelRecipe | None = None
+    instructions: str = Field(default="", max_length=1024 * 1024)
+    new_agent_id: ResourceId | None = None
+    new_agent_name: str = Field(default="", max_length=128)
+    new_model_id: ResourceId | None = None
+    new_model_name: str = Field(default="", max_length=128)
+    existing_model_id: ResourceId | None = None
+    connect_default: bool = False
+    tool_capabilities: tuple[CapabilitySelection, ...] | None = None
+    default_agent: ResourceId = "agent-default"
+    project: ResourceId | None = None
+    project_path: str | None = Field(default=None, min_length=1, max_length=4096)
+    environment_profile: Literal["environment-native", "environment-sandbox"]
+    shell_review: bool = True
+    shell_review_model: str | None = Field(default=None, min_length=1, max_length=480, pattern=r"^\S+$")
+    include_default_subagents: bool | None = None
+
+    @property
+    def is_addition(self) -> bool:
+        return self.new_agent_id is not None or self.new_model_id is not None
+
+    @model_validator(mode="after")
+    def _creation_target(self) -> Self:
+        if (self.project is None) != (self.project_path is None):
+            raise ValueError("An optional setup Project requires both project and project_path")
+        if self.new_model_id is not None and (self.new_agent_id is not None or self.existing_model_id is not None):
+            raise ValueError("Add Model cannot also create an Agent or select an existing Model")
+        if self.new_model_id is not None and self.tool_capabilities is not None:
+            raise ValueError("Tools belong to an Agent; configure them when adding an Agent for this Model")
+        if self.existing_model_id is not None and (self.new_agent_id is None or self.model is not None):
+            raise ValueError("An existing Model can only be selected when adding an Agent without a new connection")
+        if self.shell_review_model is not None and (
+            self.model is None or self.model.authentication.kind != "api_key" or self.new_model_id is not None
+        ):
+            raise ValueError("A shell review model requires an API-key setup connection")
+        return self
+
+
+class SetupPreview(StrictModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, str_strip_whitespace=False)
+
+    files: dict[str, str]
+    preserved_paths: tuple[str, ...]
+    project_paths: tuple[str, ...]
+
+
+class SetupPublication(StrictModel):
+    completed: bool
+    published_paths: tuple[str, ...]
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+def _capture(path: Path) -> dict[str, bytes]:
+    entries: dict[str, bytes] = {}
+    for source in (path, path.parent / "AGENTS.md"):
+        if os.path.lexists(source):
+            entries[source.name], _fingerprint = _read_bounded_stable(source, 1024 * 1024)
+    for directory in _DIRECTORIES:
+        for relative, source, _fingerprint in _scan_directory(
+            path.parent / directory, markdown=directory == "subagents"
+        ):
+            entries[relative], _fingerprint = _read_bounded_stable(source, 1024 * 1024)
+            if len(entries) > 2048 or sum(map(len, entries.values())) > 16 * 1024 * 1024:
+                raise ConfigurationError("Configuration exceeds setup limits.", code="configuration_source_limit")
+    return entries
+
+
+def _templates(selection: SetupSelection, *, existing_model: dict[str, object] | None = None) -> dict[str, str]:
+    resources: dict[str, dict[str, object]] = {}
+    recipe = selection.model
+    selected: dict[str, object] = dict(existing_model or (recipe_document(recipe) if recipe is not None else {}))
+    authentication = selected.get("authentication")
+    kind = authentication.get("kind") if isinstance(authentication, dict) else None
+    connection = next(
+        (
+            item.account.provider
+            for item in SUBSCRIPTION_CONNECTIONS
+            if item.authentication == kind and item.account is not None
+        ),
+        "api-key",
+    )
+    display_name = recipe_name(recipe) if recipe is not None else str(selected.get("name", "Default Agent"))
+    model_id = selection.existing_model_id
+    if recipe is not None:
+        model_id = selection.new_model_id or (
+            f"model-{selection.new_agent_id}" if selection.new_agent_id else f"model-{connection}"
+        )
+        resources[f"models/{model_id.removeprefix('model-')}.yaml"] = {
+            "schema_version": "1",
+            "kind": "model",
+            "id": model_id,
+            "name": selection.new_model_name or display_name,
+            **selected,
+        }
+    if selection.new_model_id is not None:
+        if recipe is None or not selection.new_model_name.strip():
+            raise ConfigurationError("Adding a Model requires a connection and a name.", code="setup_model_invalid")
+        return {name: yaml.safe_dump(value, sort_keys=False, allow_unicode=True) for name, value in resources.items()}
+    if selection.new_agent_id is not None and (model_id is None or not selection.new_agent_name.strip()):
+        raise ConfigurationError("Adding an Agent requires a Model and a name.", code="setup_agent_invalid")
+    agent_id = selection.new_agent_id or selection.default_agent
+    capabilities: list[dict[str, object]] = [
+        {"capability": "dynamic_environment", "configuration": {"files_enabled": True, "shell_enabled": True}},
+        {"capability": "skills", "configuration": {}},
+        {"capability": "compaction", "configuration": {}},
+        {"capability": "handoff", "configuration": {}},
+        {"capability": "runtime_context", "configuration": {}},
+    ]
+    route = selected.get("route", "")
+    configuration = selected.get("model_configuration", {})
+    base_url = configuration.get("base_url") if isinstance(configuration, dict) else None
+    assert isinstance(route, str)
+    capabilities.extend(
+        [capability.model_dump(mode="json") for capability in selection.tool_capabilities]
+        if selection.tool_capabilities is not None
+        else [dict(item) for item in starter_tool_capabilities(route, authentication=kind, base_url=base_url)]
+    )
+    resources[f"agents/{agent_id.removeprefix('agent-')}.yaml"] = {
+        "schema_version": "1",
+        "kind": "agent",
+        "id": agent_id,
+        "name": selection.new_agent_name or (coding_agent_name(display_name) if model_id else "Default Agent"),
+        **({"model": model_id} if model_id else {}),
+        "capabilities": capabilities,
+        **({"instructions": selection.instructions} if selection.instructions.strip() else {}),
+    }
+    if selection.shell_review and kind == "api_key" and selection.shell_review_model is not None:
+        review = ModelRecipe.model_validate(
+            {
+                "route": f"{route.partition(':')[0]}:{selection.shell_review_model}",
+                "authentication": authentication,
+                "model_configuration": configuration,
+            }
+        )
+        resources["models/api-key-review.yaml"] = {
+            "schema_version": "1",
+            "kind": "model",
+            "id": "model-api-key-review",
+            "name": f"Shell review · {selection.shell_review_model}",
+            **recipe_document(review),
+        }
+    if selection.shell_review and kind in {"codex_subscription", "grok_subscription"}:
+        codex = kind == "codex_subscription"
+        reviewer = "codex-review" if codex else "grok-shell-review"
+        review = ModelRecipe.model_validate(
+            {
+                "route": "openai-codex:gpt-5.6-luna" if codex else "grok:grok-4.7",
+                "authentication": {"kind": kind},
+                "settings": {"thinking": "low"},
+            }
+        )
+        resources[f"models/{reviewer}.yaml"] = {
+            "schema_version": "1",
+            "kind": "model",
+            "id": f"model-{reviewer}",
+            "name": "Codex shell review" if codex else "Grok shell review",
+            **recipe_document(review),
+        }
+    if not selection.is_addition and selection.project is not None:
+        assert selection.project_path is not None
+        resources[f"projects/{selection.project}.yaml"] = {
+            "schema_version": "1",
+            "kind": "project",
+            "id": selection.project,
+            "name": Path(selection.project_path).name or selection.project_path,
+            "roots": [{"path": selection.project_path}],
+        }
+    return {name: yaml.safe_dump(value, sort_keys=False, allow_unicode=True) for name, value in resources.items()}
+
+
+def _same_connection(actual: dict[str, object], desired: dict[str, object]) -> bool:
+    def authentication(resource: dict[str, object]) -> object:
+        value = resource.get("authentication")
+        return {key: item for key, item in value.items() if item is not None} if isinstance(value, dict) else value
+
+    return (
+        actual.get("route") == desired.get("route")
+        and authentication(actual) == authentication(desired)
+        and actual.get("model_configuration", {}) == desired.get("model_configuration", {})
+    )
+
+
+async def preview_setup(
+    path: Path,
+    selection: SetupSelection,
+    *,
+    validate_candidate: CandidateValidator,
+    content_plugin_root: Path | None = None,
+) -> SetupPreview:
+    baseline = await to_thread.run_sync(_capture, path)
+    existing: dict[str, tuple[str, dict[str, object]]] = {}
+    for name, content in baseline.items():
+        if name != path.name and name.endswith(".yaml"):
+            resource = _parse_yaml_mapping(path.parent / name, content, code="configuration_resource_invalid")
+            if isinstance(resource, dict) and isinstance(resource.get("id"), str):
+                existing[resource["id"]] = (name, resource)
+    if selection.is_addition and path.name not in baseline:
+        raise ConfigurationError("Run setup before adding resources.", code="setup_required")
+    selected_model = existing.get(selection.existing_model_id) if selection.existing_model_id is not None else None
+    if selection.existing_model_id is not None and (selected_model is None or selected_model[1].get("kind") != "model"):
+        raise ConfigurationError("The selected Model is unavailable.", code="setup_model_invalid")
+    root = _parse_yaml_mapping(path, baseline.get(path.name, _EMPTY_ROOT), code="settings_invalid")
+    security = root.get("security", {})
+    if not isinstance(security, dict):
+        raise ConfigurationError("Configuration security must be a mapping.", code="settings_invalid")
+    seed_review = selection.new_model_id is None and "shell_review" not in security
+    templates = _templates(
+        selection if seed_review else selection.model_copy(update={"shell_review": False}),
+        existing_model=selected_model[1] if selected_model is not None else None,
+    )
+    connection_model: str | None = None
+    if selection.new_agent_id is not None:
+        connection_model = "model-" + selection.new_agent_id if selection.existing_model_id is None else None
+        current_agent = existing.get(selection.new_agent_id)
+        desired_agent = next(
+            yaml.safe_load(text) for text in templates.values() if yaml.safe_load(text)["id"] == selection.new_agent_id
+        )
+        if current_agent is not None and current_agent[1] != desired_agent:
+            raise ConfigurationError(
+                "This Agent name is already in use. Choose another name.", code="configuration_mutation_conflict"
+            )
+    elif selection.new_model_id is not None:
+        connection_model = selection.new_model_id
+    elif selection.model is not None:
+        # Setup never replaces an authored Model. A different connection gets a
+        # deterministic new identity so retries do not create duplicates.
+        connection_model = next(
+            resource["model"]
+            for text in templates.values()
+            if (resource := yaml.safe_load(text)).get("kind") == "agent" and resource.get("model")
+        )
+        assert connection_model is not None
+        old_model = existing.get(connection_model)
+        if old_model is not None:
+            model_path, desired = next(
+                (name, yaml.safe_load(text))
+                for name, text in templates.items()
+                if yaml.safe_load(text)["id"] == connection_model
+            )
+            if not _same_connection(old_model[1], desired):
+                suffix = hashlib.sha256(json.dumps(desired, sort_keys=True).encode()).hexdigest()[:12]
+                previous_model = connection_model
+                connection_model = f"{previous_model}-{suffix}"
+                desired["id"] = connection_model
+                del templates[model_path]
+                templates[f"models/{connection_model.removeprefix('model-')}.yaml"] = yaml.safe_dump(
+                    desired, sort_keys=False, allow_unicode=True
+                )
+                for name, text in list(templates.items()):
+                    resource = yaml.safe_load(text)
+                    if resource.get("model") == previous_model:
+                        resource["model"] = connection_model
+                        templates[name] = yaml.safe_dump(resource, sort_keys=False, allow_unicode=True)
+    if connection_model is not None and connection_model in existing:
+        desired = next(
+            yaml.safe_load(text) for text in templates.values() if yaml.safe_load(text)["id"] == connection_model
+        )
+        if (selection.is_addition and existing[connection_model][1] != desired) or not _same_connection(
+            existing[connection_model][1], desired
+        ):
+            raise ConfigurationError(
+                "The existing Model was edited and no longer matches this connection. Review the Model resource before retrying.",
+                code="configuration_mutation_conflict",
+            )
+    files: dict[str, str] = {}
+    for name, text in templates.items():
+        resource_id = yaml.safe_load(text)["id"]
+        if resource_id in existing:
+            if name == "models/api-key-review.yaml" and existing[resource_id][1] != yaml.safe_load(text):
+                raise ConfigurationError(
+                    "The shell review Model already exists with different settings. Configure shell review explicitly.",
+                    code="configuration_mutation_conflict",
+                )
+            continue
+        if name in baseline:
+            raise ConfigurationError(
+                f"Setup destination {name} belongs to another resource. Move it or use an existing Agent before retrying.",
+                code="configuration_mutation_conflict",
+            )
+        files[name] = text
+    if not selection.is_addition and selection.connect_default and connection_model is not None:
+        current_agent = existing.get(selection.default_agent)
+        if current_agent is not None:
+            name, resource = current_agent
+            updated = {**resource, "model": connection_model}
+            if selection.instructions.strip():
+                updated["instructions"] = selection.instructions
+            files[name] = yaml.safe_dump(updated, sort_keys=False, allow_unicode=True)
+        else:
+            for name, text in list(files.items()):
+                resource = yaml.safe_load(text)
+                if resource["id"] == (selection.new_agent_id or selection.default_agent):
+                    resource["model"] = connection_model
+                    files[name] = yaml.safe_dump(resource, sort_keys=False, allow_unicode=True)
+    if seed_review:
+        authentication = (
+            selected_model[1].get("authentication")
+            if selected_model is not None
+            else selection.model.authentication.model_dump()
+            if selection.model is not None
+            else None
+        )
+        guardian_credits = isinstance(authentication, dict) and authentication.get("kind") == "codex_subscription"
+        reviewer_model = next(
+            (
+                yaml.safe_load(text)["id"]
+                for name, text in templates.items()
+                if name in {"models/codex-review.yaml", "models/grok-shell-review.yaml", "models/api-key-review.yaml"}
+            ),
+            None
+            if isinstance(authentication, dict) and authentication.get("kind") == "api_key"
+            else selection.existing_model_id or connection_model,
+        )
+        root["security"] = {
+            **security,
+            "shell_review": {
+                "enable": selection.shell_review and reviewer_model is not None,
+                "guardian_credits": guardian_credits,
+                "risk_threshold": "extra_high",
+                "on_flagged": "approval_required",
+                "on_error": "allow",
+                **({"model": reviewer_model} if reviewer_model is not None and selection.shell_review else {}),
+            },
+        }
+        files[path.name] = yaml.safe_dump(root, sort_keys=False, allow_unicode=True)
+    if not selection.is_addition:
+        memory = root.setdefault("memory", {})
+        if isinstance(memory, dict):
+            memory.setdefault("enabled", True)
+            organize = memory.setdefault("auto_organize", {})
+            if isinstance(organize, dict):
+                organize.setdefault("enabled", True)
+                organize.setdefault("instructions", "")
+                organize.setdefault("model", None)
+        webui = root.setdefault("webui", {})
+        if isinstance(webui, dict):
+            webui.setdefault("sidekick", {})
+        tools = root.setdefault("tools", {})
+        if isinstance(tools, dict):
+            for name, value in ToolsConfiguration().model_dump(mode="json").items():
+                tools.setdefault(name, value)
+        root.setdefault(
+            "display",
+            {"mode": "concise", "show_status": True, "max_tool_result_lines": 5, "max_tool_argument_chars": 8192},
+        )
+        if not isinstance(root, dict):
+            raise ConfigurationError("The root configuration must be a mapping.", code="configuration_invalid")
+        defaults = root.get("defaults", {})
+        if not isinstance(defaults, dict):
+            raise ConfigurationError("Configuration defaults must be a mapping.", code="configuration_invalid")
+        root["defaults"] = {
+            **defaults,
+            "agent": selection.default_agent,
+            **({"project": selection.project} if selection.project is not None else {}),
+            "environment_profile": selection.environment_profile,
+        }
+        if selection.include_default_subagents is not None:
+            subagents = root.setdefault("subagents", {})
+            if not isinstance(subagents, dict):
+                raise ConfigurationError("Configuration subagents must be a mapping.", code="configuration_invalid")
+            subagents["include"] = list(BUILTIN_SUBAGENT_NAMES) if selection.include_default_subagents else []
+        files[path.name] = yaml.safe_dump(root, sort_keys=False, allow_unicode=True)
+    candidate = dict(baseline)
+    candidate.update({name: text.encode() for name, text in files.items()})
+    staging = Path(await to_thread.run_sync(tempfile.mkdtemp))
+    try:
+        await to_thread.run_sync(_write_candidate, staging, candidate)
+        loaded = await load_harness_ui_configuration(staging / path.name, content_plugin_root=content_plugin_root)
+        validate_candidate(loaded)
+    finally:
+        await to_thread.run_sync(shutil.rmtree, staging, True)
+    return SetupPreview(
+        files=files,
+        preserved_paths=tuple(sorted(name for name in baseline if name not in files)),
+        project_paths=()
+        if selection.is_addition or selection.project is None
+        else tuple(root.path for root in loaded.projects[selection.project].roots),
+    )
+
+
+def _write_candidate(staging: Path, candidate: dict[str, bytes]) -> None:
+    for name, content in candidate.items():
+        destination = staging / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+
+async def publish_setup(
+    path: Path,
+    selection: SetupSelection,
+    *,
+    validate_candidate: CandidateValidator,
+    content_plugin_root: Path | None = None,
+) -> SetupPublication:
+    preview = await preview_setup(
+        path, selection, validate_candidate=validate_candidate, content_plugin_root=content_plugin_root
+    )
+    published: list[str] = []
+    try:
+        for name, text in sorted(
+            preview.files.items(), key=lambda item: (item[0] == path.name, not item[0].startswith("models/"), item[0])
+        ):
+            await to_thread.run_sync(_publish_content, path.parent / name, text.encode())
+            published.append(name)
+        return SetupPublication(completed=True, published_paths=tuple(published))
+    except (HarnessUiError, OSError) as exc:
+        return SetupPublication(
+            completed=False,
+            published_paths=tuple(published),
+            error_code=exc.code if isinstance(exc, HarnessUiError) else "setup_publication_failed",
+            error_message=str(exc)
+            if isinstance(exc, HarnessUiError)
+            else "Cannot publish configuration files. Check directory permissions and retry.",
+        )

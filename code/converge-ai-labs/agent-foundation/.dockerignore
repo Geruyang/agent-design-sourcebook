@@ -1,0 +1,22 @@
+.git
+.venv
+.env
+.env.*
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.pyright
+dist
+build
+target
+**/node_modules
+frontend/**/dist
+packages/a13n-service/a13n_service/static
+**/*.tsbuildinfo
+.wrangler
+local-reference
+discussion
+
+# Checkout-local deployment workflows and private environment configuration
+.internal

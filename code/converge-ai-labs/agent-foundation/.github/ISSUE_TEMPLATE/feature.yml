@@ -1,0 +1,62 @@
+name: Feature or design proposal
+description: Propose a capability or a change to accepted behavior
+title: "[Proposal]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Agents must follow [Writing Issues and Pull Requests](https://github.com/converge-ai-labs/agent-foundation/blob/main/CONTRIBUTING.md#writing-issues-and-pull-requests); human contributors may adapt this writing guidance. In the problem description, use a small Mermaid diagram, diff, or other Markdown view when it helps explain the issue. Simple issues can use prose alone.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - a13n-harness
+        - a13n-service
+        - logging and observability
+        - a13n-envd and sandbox
+        - CI, release, or repository tooling
+        - cross-component architecture
+        - other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Initial checks
+      options:
+        - label: I searched existing issues for related proposals.
+          required: true
+        - label: I understand that discussion and open questions stay in Issues, while spec contains only accepted design.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Start with the user or system scenario, the problem, and its impact without assuming a specific implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior, public contract, or example API.
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and alternatives
+      description: Include compatibility, security, operational, or migration constraints and alternatives considered.
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link related issues, specifications, implementations, or research.

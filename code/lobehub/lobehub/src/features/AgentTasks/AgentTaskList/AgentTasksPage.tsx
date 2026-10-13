@@ -1,0 +1,515 @@
+import { Flexbox } from '@lobehub/ui';
+import {
+  ActionIcon,
+  Pagination,
+  TabsIndicator,
+  TabsList,
+  TabsRoot,
+  TabsTab,
+} from '@lobehub/ui/base-ui';
+import { Plus } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router';
+
+import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { DESKTOP_HEADER_ICON_SMALL_SIZE } from '@/const/layoutTokens';
+import NavHeader from '@/features/NavHeader';
+import ToggleRightPanelButton from '@/features/RightPanel/ToggleRightPanelButton';
+import WideScreenContainer from '@/features/WideScreenContainer';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { usePermission } from '@/hooks/usePermission';
+import { useGlobalStore } from '@/store/global';
+import type { TaskViewMode } from '@/store/global/initialState';
+import { systemStatusSelectors } from '@/store/global/selectors';
+import { useTaskStore } from '@/store/task';
+import { taskListSelectors } from '@/store/task/selectors';
+
+import { createTaskModal } from '../CreateTaskModal';
+import Breadcrumb from '../shared/Breadcrumb';
+import { taskDetailPath } from '../shared/taskDetailPath';
+import CreateTaskInlineEntry from './CreateTaskInlineEntry';
+import EmptyState from './EmptyState';
+import KanbanBoard from './KanbanBoard';
+import type { TaskListViewOptions } from './listViewOptions';
+import { getVisibleTaskStatuses, normalizeTaskListViewOptions } from './listViewOptions';
+import { shouldRenderTaskAgentPanelToggle } from './taskAgentPanelToggle';
+import TaskList from './TaskList';
+import TaskListVisibilityFilter from './TaskListVisibilityFilter';
+import TasksGroupConfig from './TasksGroupConfig';
+
+interface TaskCreateActionBehaviorParams {
+  canCreateTask: boolean;
+  inlineCollapsed: boolean;
+  viewMode: TaskViewMode;
+}
+
+export const getTaskCreateActionBehavior = ({
+  canCreateTask,
+  inlineCollapsed,
+  viewMode,
+}: TaskCreateActionBehaviorParams) => {
+  const shouldExpandInline = inlineCollapsed && viewMode === 'list';
+
+  return {
+    disabled: shouldExpandInline ? false : !canCreateTask,
+    mode: shouldExpandInline ? 'inline' : 'modal',
+  } as const;
+};
+
+interface TaskPageHeaderVisibilityParams {
+  agentId?: string;
+  isEmptyHero: boolean;
+  isMobile: boolean;
+  projectId?: string;
+}
+
+export const getTaskPageHeaderVisibility = ({
+  agentId,
+  isEmptyHero,
+  isMobile,
+  projectId,
+}: TaskPageHeaderVisibilityParams) => {
+  // The global page's own crumb is the `tasks` tab, so the breadcrumb only
+  // earns its place once the list is scoped to an agent or a project.
+  const isScoped = !!(agentId || projectId);
+  const isGlobalEmpty = !isScoped && isEmptyHero;
+
+  return {
+    showBreadcrumb: isScoped,
+    showTaskAgentPanelToggle: !isGlobalEmpty && shouldRenderTaskAgentPanelToggle(isMobile),
+    showViewOptions: !isGlobalEmpty,
+  };
+};
+
+interface AgentTasksPageProps {
+  /**
+   * When provided, the page is scoped to a single agent's tasks; otherwise it
+   * shows tasks across all agents.
+   */
+  agentId?: string;
+  /** When provided, shows the complete task workspace scoped to one project. */
+  projectId?: string;
+}
+
+export type TaskCollection = 'mine' | 'scheduled' | 'tasks';
+/** "My tasks" sub-view: assigned to me as a member, or created by me. */
+export type MyTaskScope = 'assigned' | 'created';
+const COLLECTION_PAGE_SIZE = 50;
+
+export const resolveTaskCollection = (
+  searchParams: URLSearchParams,
+  options: { allowMine?: boolean } = {},
+): TaskCollection => {
+  const value = searchParams.get('collection');
+  if (value === 'scheduled') return 'scheduled';
+  // The "My tasks" tab is only offered where member assignment exists; a deep
+  // link into it from a scope without the tab falls back to ordinary tasks.
+  if (value === 'mine' && options.allowMine) return 'mine';
+  return 'tasks';
+};
+
+export const resolveMyTaskScope = (searchParams: URLSearchParams): MyTaskScope =>
+  searchParams.get('scope') === 'created' ? 'created' : 'assigned';
+
+export const clampCollectionPage = (page: number, total: number): number =>
+  Math.min(page, Math.max(1, Math.ceil(total / COLLECTION_PAGE_SIZE)));
+
+/**
+ * View options every paginated (server-sliced) collection pins, because a
+ * client-side reorder or cut would only ever apply to the fetched page:
+ * - ordering follows the server's updatedAt DESC page order. `compareTaskItems`
+ *   inverts `orderDirection` for the date columns (see
+ *   `effectiveOrderDirection`), so the token that renders newest-first is 'asc';
+ * - every fetched row renders. With `showSubTasks: false` `TaskList` folds a
+ *   child away whenever its parent shares the page, which would leave the page
+ *   sparse while `total` still counts the hidden rows. Nesting (when enabled)
+ *   still tucks a child under a parent that is on the same page.
+ * Grouping stays client-side — it only arranges the rows of the current page.
+ */
+const PAGINATED_COLLECTION_VIEW = {
+  orderBy: 'updatedAt',
+  orderDirection: 'asc',
+  showSubTasks: true,
+} as const;
+
+export const getScheduledTaskViewOptions = (
+  viewOptions: TaskListViewOptions,
+): TaskListViewOptions => ({
+  ...viewOptions,
+  ...PAGINATED_COLLECTION_VIEW,
+  groupBy: 'automationMode',
+  hideCompleted: false,
+});
+
+/**
+ * "My tasks" additionally sends `hideCompleted` as a server status filter
+ * (`getVisibleTaskStatuses`) rather than applying it to the fetched page.
+ */
+export const getMyTaskViewOptions = (viewOptions: TaskListViewOptions): TaskListViewOptions => ({
+  ...viewOptions,
+  ...PAGINATED_COLLECTION_VIEW,
+});
+
+/**
+ * The display controls `PAGINATED_COLLECTION_VIEW` overrides, so the config
+ * panel can leave them out instead of offering a switch that changes nothing:
+ * ordering follows the server page, and every fetched row renders.
+ */
+export const PAGINATED_COLLECTION_PINNED_OPTIONS = ['ordering', 'showSubTasks'] as const;
+
+/**
+ * Which surface a collection renders in the active view mode. Single-sourced
+ * because every collection that is offered the list/board switch has to answer
+ * it: "My tasks" rendered its list unconditionally while still showing the
+ * switch, so picking Board did nothing at all. The scheduled tab is the one
+ * collection with no switch (its config entry is hidden), so it stays a list.
+ */
+export const resolveTaskCollectionView = (
+  collection: TaskCollection,
+  viewMode: TaskViewMode,
+): 'board' | 'list' => (collection !== 'scheduled' && viewMode === 'kanban' ? 'board' : 'list');
+
+const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId, projectId }) => {
+  const { t } = useTranslation('chat');
+  const navigate = useWorkspaceAwareNavigate();
+  const isMobile = useIsMobile();
+  const { allowed: canCreateTask, reason } = usePermission('create_content');
+  const viewMode = useGlobalStore(systemStatusSelectors.taskListViewMode);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [collectionPage, setCollectionPage] = useState(1);
+  const activeWorkspaceId = useActiveWorkspaceId();
+  // Member assignment is a workspace concept (a task now carries a member
+  // owner alongside its executor agent), so "My tasks" only earns its tab on
+  // the global page of a workspace: personal mode has no members, and the
+  // agent/project scopes keep their own focused lists.
+  const showMineCollection = !!activeWorkspaceId && !agentId && !projectId;
+  const collection = resolveTaskCollection(searchParams, { allowMine: showMineCollection });
+  const isScheduledCollection = collection === 'scheduled';
+  const isMineCollection = collection === 'mine';
+  const isOrdinaryCollection = collection === 'tasks';
+  const myTaskScope = resolveMyTaskScope(searchParams);
+  // "My tasks" honours the list/board switch like the ordinary tab does; the
+  // board fetches its own server groups, so the paginated list fetch below is
+  // gated off while it is up.
+  const isBoardView = resolveTaskCollectionView(collection, viewMode) === 'board';
+  const isMineBoard = isMineCollection && isBoardView;
+  const useFetchTaskList = useTaskStore((s) => s.useFetchTaskList);
+  // Keep the sync handle for `error` + `mutate` (the error/Retry state) and the
+  // `queryKey` the rows are read by. Every scope splits automated work out of the ordinary tab — it is the
+  // scheduled tab's content, and listing it twice makes the split meaningless.
+  // `complete`: this tab groups and sorts client-side with no pagination, so
+  // it needs the whole list — one server page would drop every task older
+  // than the newest 50 once the workspace grows past that. The scheduled and
+  // "My tasks" tabs render their own paginated collections, so the fetch is
+  // gated to the ordinary tab; and the kanban view fetches its own server
+  // groups, so there only the single page behind the empty-hero decision runs.
+  const isListView = !isBoardView;
+  const { error, isLoading, mutate, queryKey } = useFetchTaskList(
+    projectId
+      ? {
+          automated: false,
+          complete: isListView,
+          enabled: isOrdinaryCollection,
+          projectId,
+          visibility: 'all',
+        }
+      : agentId
+        ? { agentId, automated: false, complete: isListView, enabled: isOrdinaryCollection }
+        : {
+            allAgents: true,
+            automated: false,
+            complete: isListView,
+            enabled: isOrdinaryCollection,
+          },
+  );
+  // Drive the loading/empty boundary off the store entry of this exact query:
+  // each scope / visibility is its own entry, so the settled signal and the
+  // rows always describe the same list (a persisted entry paints at once).
+  const isTaskListInit = useTaskStore(taskListSelectors.isTaskListInit(queryKey));
+  const setActiveTaskListKey = useTaskStore((s) => s.setActiveTaskListKey);
+  // The task manager agent reads this page's list as "the viewed list".
+  useEffect(() => {
+    setActiveTaskListKey(queryKey);
+    return () => setActiveTaskListKey(undefined);
+  }, [queryKey, setActiveTaskListKey]);
+  const isEmptyHero = useTaskStore(taskListSelectors.isListEmpty(queryKey));
+  const useFetchScheduledTaskList = useTaskStore((s) => s.useFetchScheduledTaskList);
+  const scheduledSWR = useFetchScheduledTaskList({
+    agentId,
+    enabled: isScheduledCollection,
+    limit: COLLECTION_PAGE_SIZE,
+    offset: (collectionPage - 1) * COLLECTION_PAGE_SIZE,
+    projectId,
+  });
+  const rawViewOptions = useGlobalStore(systemStatusSelectors.taskListViewOptions);
+  const viewOptions = useMemo(() => normalizeTaskListViewOptions(rawViewOptions), [rawViewOptions]);
+  const useFetchMyTaskList = useTaskStore((s) => s.useFetchMyTaskList);
+  const mineSWR = useFetchMyTaskList({
+    enabled: isMineCollection && !isMineBoard,
+    limit: COLLECTION_PAGE_SIZE,
+    offset: (collectionPage - 1) * COLLECTION_PAGE_SIZE,
+    scope: myTaskScope,
+    statuses: getVisibleTaskStatuses(viewOptions),
+  });
+  // The scheduled and "My tasks" tabs share one paginated-list shape; pick the
+  // active tab's SWR handle so the pagination/empty/error plumbing is written
+  // once.
+  const collectionSWR = isMineCollection ? mineSWR : scheduledSWR;
+  const collectionTasks = collectionSWR.data?.data ?? [];
+  const collectionTasksTotal = collectionSWR.data?.total ?? 0;
+  const isCollectionListInit = collectionSWR.data !== undefined;
+  const scheduledViewOptions = useMemo(
+    () => getScheduledTaskViewOptions(viewOptions),
+    [viewOptions],
+  );
+  const myTaskViewOptions = useMemo(() => getMyTaskViewOptions(viewOptions), [viewOptions]);
+  useEffect(() => {
+    if (!isCollectionListInit) return;
+    setCollectionPage((page) => clampCollectionPage(page, collectionTasksTotal));
+  }, [isCollectionListInit, collectionTasksTotal]);
+  const inlineCollapsed = useGlobalStore(systemStatusSelectors.taskCreateInlineCollapsed);
+  const [showTaskAgentPanel, toggleTaskAgentPanel] = useGlobalStore((s) => [
+    systemStatusSelectors.showTaskAgentPanel(s),
+    s.toggleTaskAgentPanel,
+  ]);
+  const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
+  const routeScope = agentId ? 'agent' : 'global';
+  const setViewOptions = useCallback(
+    (updater: (prev: TaskListViewOptions) => TaskListViewOptions) => {
+      const normalized = normalizeTaskListViewOptions(updater(viewOptions));
+      const next = {
+        ...normalized,
+        groupBy: normalized.groupBy === 'automationMode' ? 'status' : normalized.groupBy,
+        subGroupBy: normalized.subGroupBy === 'automationMode' ? 'none' : normalized.subGroupBy,
+      };
+      updateSystemStatus({ taskListViewOptions: next }, 'updateTaskListViewOptions');
+    },
+    [updateSystemStatus, viewOptions],
+  );
+
+  const createActionBehavior = useMemo(
+    () =>
+      getTaskCreateActionBehavior({
+        canCreateTask,
+        inlineCollapsed,
+        viewMode,
+      }),
+    [canCreateTask, inlineCollapsed, viewMode],
+  );
+
+  const handleCreateTask = useCallback(() => {
+    if (createActionBehavior.mode === 'inline') {
+      updateSystemStatus({ taskCreateInlineCollapsed: false }, 'expandTaskCreateInline');
+      return;
+    }
+
+    if (!canCreateTask) return;
+    createTaskModal({
+      agentId,
+      lockAssignee: !!agentId,
+      projectId,
+      onCreated: (task) => {
+        navigate(taskDetailPath(task.identifier, agentId ? task.agentId : undefined, task.name));
+      },
+    });
+  }, [agentId, canCreateTask, createActionBehavior.mode, navigate, projectId, updateSystemStatus]);
+
+  const handleShowHiddenCompleted = useCallback(() => {
+    setViewOptions((prev) => ({ ...prev, hideCompleted: false }));
+  }, [setViewOptions]);
+
+  const handleCollectionChange = useCallback(
+    (value: string) => {
+      const next = new URLSearchParams(searchParams);
+      if (value === 'scheduled' || value === 'mine') {
+        next.set('collection', value);
+      } else {
+        next.delete('collection');
+      }
+      // The sub-view only means something inside "My tasks".
+      if (value !== 'mine') next.delete('scope');
+      setCollectionPage(1);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleMyTaskScopeChange = useCallback(
+    (value: string) => {
+      const next = new URLSearchParams(searchParams);
+      if (value === 'created') {
+        next.set('scope', 'created');
+      } else {
+        next.delete('scope');
+      }
+      setCollectionPage(1);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const headerVisibility = getTaskPageHeaderVisibility({
+    agentId,
+    isEmptyHero: isOrdinaryCollection ? isEmptyHero : false,
+    isMobile,
+    projectId,
+  });
+
+  const headerLeft = (
+    <Flexbox horizontal align={'center'} gap={8}>
+      {headerVisibility.showBreadcrumb && <Breadcrumb />}
+      <TabsRoot size={'small'} value={collection} onValueChange={handleCollectionChange}>
+        <TabsList>
+          <TabsIndicator />
+          <TabsTab value={'tasks'}>{t('taskList.title')}</TabsTab>
+          <TabsTab value={'scheduled'}>{t('taskList.scheduled.title')}</TabsTab>
+          {showMineCollection && <TabsTab value={'mine'}>{t('taskList.mine.title')}</TabsTab>}
+        </TabsList>
+      </TabsRoot>
+      {isMineCollection && (
+        <TabsRoot size={'small'} value={myTaskScope} onValueChange={handleMyTaskScopeChange}>
+          <TabsList>
+            <TabsIndicator />
+            <TabsTab value={'assigned'}>{t('taskList.mine.assigned')}</TabsTab>
+            <TabsTab value={'created'}>{t('taskList.mine.created')}</TabsTab>
+          </TabsList>
+        </TabsRoot>
+      )}
+    </Flexbox>
+  );
+
+  return (
+    <Flexbox flex={1} height={'100%'}>
+      <NavHeader
+        left={headerLeft}
+        right={
+          <Flexbox horizontal align={'center'} gap={4}>
+            {isOrdinaryCollection && !agentId && !projectId && <TaskListVisibilityFilter />}
+            {isOrdinaryCollection && (inlineCollapsed || viewMode === 'kanban') && (
+              <ActionIcon
+                disabled={createActionBehavior.disabled}
+                icon={Plus}
+                size={DESKTOP_HEADER_ICON_SMALL_SIZE}
+                title={createActionBehavior.disabled ? reason : undefined}
+                onClick={handleCreateTask}
+              />
+            )}
+            {!isScheduledCollection && headerVisibility.showViewOptions && (
+              <TasksGroupConfig
+                options={viewOptions}
+                pinnedOptions={isMineCollection ? PAGINATED_COLLECTION_PINNED_OPTIONS : undefined}
+                setOptions={setViewOptions}
+              />
+            )}
+            {headerVisibility.showTaskAgentPanelToggle && (
+              <ToggleRightPanelButton
+                hideWhenExpanded
+                expand={showTaskAgentPanel}
+                onToggle={() => toggleTaskAgentPanel()}
+              />
+            )}
+          </Flexbox>
+        }
+        styles={{
+          left: {
+            paddingLeft: 4,
+            gap: 8,
+          },
+        }}
+      />
+      {isMineBoard ? (
+        <Flexbox flex={1} style={{ overflowX: 'auto', overflowY: 'hidden' }}>
+          <KanbanBoard
+            myTaskScope={myTaskScope}
+            options={viewOptions}
+            routeScope={routeScope}
+            emptyDescription={t(
+              myTaskScope === 'created'
+                ? 'taskList.mine.emptyCreated'
+                : 'taskList.mine.emptyAssigned',
+            )}
+          />
+        </Flexbox>
+      ) : !isOrdinaryCollection ? (
+        <WideScreenContainer
+          fullWidth
+          gap={16}
+          paddingBlock={16}
+          paddingInline={16}
+          wrapperStyle={{ flex: 1, overflowY: 'auto' }}
+        >
+          <TaskList
+            data={isCollectionListInit || undefined}
+            error={collectionSWR.error}
+            isLoading={collectionSWR.isLoading || (!isCollectionListInit && !collectionSWR.error)}
+            items={collectionTasks}
+            options={isMineCollection ? myTaskViewOptions : scheduledViewOptions}
+            routeScope={routeScope}
+            emptyDescription={
+              isMineCollection
+                ? t(
+                    myTaskScope === 'created'
+                      ? 'taskList.mine.emptyCreated'
+                      : 'taskList.mine.emptyAssigned',
+                  )
+                : t('taskList.scheduled.empty')
+            }
+            onRetry={() => collectionSWR.mutate()}
+          />
+          {(collectionTasksTotal > COLLECTION_PAGE_SIZE || collectionPage > 1) && (
+            <Flexbox horizontal justify={'center'} paddingBlock={8}>
+              <Pagination
+                current={collectionPage}
+                pageSize={COLLECTION_PAGE_SIZE}
+                showSizeChanger={false}
+                total={collectionTasksTotal}
+                onChange={setCollectionPage}
+              />
+            </Flexbox>
+          )}
+        </WideScreenContainer>
+      ) : isEmptyHero ? (
+        <EmptyState agentId={agentId} projectId={projectId} />
+      ) : isBoardView ? (
+        <Flexbox flex={1} style={{ overflowX: 'auto', overflowY: 'hidden' }}>
+          <KanbanBoard
+            agentId={agentId}
+            options={viewOptions}
+            projectId={projectId}
+            routeScope={routeScope}
+          />
+        </Flexbox>
+      ) : (
+        <WideScreenContainer
+          fullWidth
+          gap={16}
+          paddingBlock={16}
+          paddingInline={16}
+          wrapperStyle={{ flex: 1, overflowY: 'auto' }}
+        >
+          {!inlineCollapsed && (
+            <CreateTaskInlineEntry
+              agentId={agentId}
+              lockAssignee={!!agentId}
+              projectId={projectId}
+            />
+          )}
+          <TaskList
+            data={isTaskListInit || undefined}
+            error={error}
+            isLoading={isLoading || (!isTaskListInit && !error)}
+            options={viewOptions}
+            queryKey={queryKey}
+            routeScope={routeScope}
+            onRetry={() => mutate()}
+            onShowHiddenCompleted={handleShowHiddenCompleted}
+          />
+        </WideScreenContainer>
+      )}
+    </Flexbox>
+  );
+});
+
+export default AgentTasksPage;

@@ -1,0 +1,826 @@
+"""Tests for MCP utils functionality - integration tests with real MCP servers."""
+
+import asyncio
+import logging
+import socket
+import sys
+import threading
+import time
+from collections.abc import Generator
+from pathlib import Path
+from typing import Literal
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
+import uvicorn
+from fastmcp import FastMCP
+from fastmcp.client.auth import OAuth
+from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
+from key_value.aio.stores.memory import MemoryStore
+from pydantic import SecretStr
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
+
+from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import (
+    MCPApiKeyAuthCredential,
+    MCPBasicAuthCredential,
+    MCPBearerAuthCredential,
+    MCPHeaderAuthCredential,
+    MCPNoneAuthCredential,
+    MCPOAuthAuthCredential,
+    coerce_mcp_config,
+    to_fastmcp_mcp_config,
+)
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.oauth import MCPOAuth
+from openhands.sdk.mcp.utils import _prepare_mcp_config
+
+
+logger = logging.getLogger(__name__)
+
+MCPTransport = Literal["http", "streamable-http", "sse"]
+
+
+def native_mcp_config(config: dict) -> dict:
+    return coerce_mcp_config(config["mcpServers"])
+
+
+def stdio_fetch_mcp_config() -> dict:
+    repo_root = Path(__file__).resolve().parents[3]
+    return {
+        "mcpServers": {
+            "fetch": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+            }
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("credential", "expected"),
+    [
+        (MCPNoneAuthCredential(strategy="none"), {}),
+        (
+            MCPApiKeyAuthCredential(strategy="api_key", value=SecretStr("token")),
+            {"Authorization": "Bearer token"},
+        ),
+        (
+            MCPApiKeyAuthCredential(
+                strategy="api_key",
+                value=SecretStr("token"),
+                header_name="X-API-Key",
+            ),
+            {"X-API-Key": "token"},
+        ),
+        (
+            MCPBearerAuthCredential(strategy="bearer", value=SecretStr("token")),
+            {"Authorization": "Bearer token"},
+        ),
+        (
+            MCPBasicAuthCredential(
+                strategy="basic",
+                username="user",
+                password=SecretStr("pass"),
+            ),
+            {"Authorization": "Basic dXNlcjpwYXNz"},
+        ),
+        (
+            MCPHeaderAuthCredential(
+                strategy="header",
+                headers={"X-Token": SecretStr("token")},
+            ),
+            {"X-Token": "token"},
+        ),
+        (MCPOAuthAuthCredential(strategy="oauth2"), None),
+    ],
+)
+def test_mcp_auth_credentials_to_http_headers(credential, expected):
+    assert credential.to_http_headers() == expected
+
+
+def _find_free_port() -> int:
+    """Find an available port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_port(port: int, timeout: float = 5.0, interval: float = 0.1) -> None:
+    """Wait for a port to become available by polling with HTTP requests."""
+    max_attempts = int(timeout / interval)
+    for _ in range(max_attempts):
+        try:
+            # Try HTTP request since MCP servers use HTTP
+            with httpx.Client(timeout=interval) as client:
+                client.get(f"http://127.0.0.1:{port}/")
+                return
+        except httpx.ConnectError:
+            pass
+        except (httpx.TimeoutException, httpx.HTTPStatusError):
+            # Any response (even errors) means server is up
+            return
+        except Exception:
+            # Any other response means server is up
+            return
+        time.sleep(interval)
+    raise RuntimeError(f"Server failed to start on port {port} within {timeout}s")
+
+
+class MCPTestServer:
+    """Helper class to manage MCP test servers for testing."""
+
+    def __init__(self, name: str = "test-server"):
+        self.mcp = FastMCP(name)
+        self.port: int | None = None
+        self._server_thread: threading.Thread | None = None
+
+    def add_tool(self, func):
+        """Add a tool to the server."""
+        return self.mcp.tool()(func)
+
+    def start(self, transport: MCPTransport = "http") -> int:
+        """Start the server and return the port."""
+        self.port = _find_free_port()
+        path = "/sse" if transport == "sse" else "/mcp"
+        startup_error: list[Exception] = []
+
+        async def run_server():
+            assert self.port is not None
+            await self.mcp.run_http_async(
+                host="127.0.0.1",
+                port=self.port,
+                transport=transport,
+                show_banner=False,
+                path=path,
+            )
+
+        def server_thread_target():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(run_server())
+            except Exception as e:
+                logger.error(f"MCP test server failed: {e}")
+                startup_error.append(e)
+            finally:
+                loop.close()
+
+        self._server_thread = threading.Thread(target=server_thread_target, daemon=True)
+        self._server_thread.start()
+
+        # Wait for server to be ready by polling the port
+        _wait_for_port(self.port)
+
+        # Check if server thread failed during startup
+        if startup_error:
+            raise startup_error[0]
+
+        return self.port
+
+    def stop(self):
+        """Stop the server and clean up resources."""
+        if self._server_thread is not None:
+            # Daemon thread will clean up automatically when process exits
+            self._server_thread = None
+        self.port = None
+
+
+@pytest.fixture
+def http_mcp_server() -> Generator[MCPTestServer]:
+    """Fixture providing a running HTTP MCP server with test tools."""
+    server = MCPTestServer("http-test-server")
+
+    @server.add_tool
+    def greet(name: str) -> str:
+        """Greet someone by name."""
+        return f"Hello, {name}!"
+
+    @server.add_tool
+    def add_numbers(a: int, b: int) -> int:
+        """Add two numbers together."""
+        return a + b
+
+    server.start(transport="http")
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def sse_mcp_server() -> Generator[MCPTestServer]:
+    """Fixture providing a running SSE MCP server with test tools."""
+    server = MCPTestServer("sse-test-server")
+
+    @server.add_tool
+    def echo(message: str) -> str:
+        """Echo a message back."""
+        return message
+
+    @server.add_tool
+    def multiply(x: int, y: int) -> int:
+        """Multiply two numbers."""
+        return x * y
+
+    server.start(transport="sse")
+    yield server
+    server.stop()
+
+
+def test_create_mcp_tools_empty_config():
+    """Test creating MCP tools with empty configuration raises error."""
+    config = {}
+    with pytest.raises(ValueError, match="No MCP servers defined"):
+        create_mcp_tools(config)
+
+
+def test_create_mcp_tools_rejects_external_config_shapes():
+    """Runtime tool creation only accepts native MCPServer maps."""
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+            }
+        }
+    }
+    with pytest.raises(TypeError, match="dict\\[str, MCPServer\\]"):
+        create_mcp_tools(config)  # type: ignore[arg-type]
+
+    fastmcp_config = FastMCPConfig.model_validate(config)
+    with pytest.raises(TypeError, match="dict\\[str, MCPServer\\]"):
+        create_mcp_tools(fastmcp_config)  # type: ignore[arg-type]
+
+
+def test_create_mcp_tools_skips_disabled_servers():
+    """A server the user switched off is never connected to."""
+    config = {
+        "mcpServers": {
+            "kept": {"url": "https://kept.example.com/mcp"},
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            },
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        create_mcp_tools(native_mcp_config(config))
+
+    prepared = mock_client_class.call_args.args[0]
+    assert list(prepared.mcpServers) == ["kept"]
+
+
+def test_create_mcp_tools_all_servers_disabled():
+    """Disabling every server is reported by name, not as "no servers defined"."""
+    config = {
+        "mcpServers": {
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="switched_off"):
+        create_mcp_tools(native_mcp_config(config))
+
+
+def test_to_fastmcp_mcp_config_strips_enabled():
+    """``enabled`` is OpenHands-side only, and FastMCP would absorb it silently."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "switched_off": {
+                    "url": "https://switched-off.example.com/mcp",
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    prepared = to_fastmcp_mcp_config(config)
+
+    assert "enabled" not in prepared["mcpServers"]["switched_off"]
+
+
+def test_prepare_mcp_config_converts_bare_oauth_credential():
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"strategy": "oauth2"},
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(native_mcp_config(config))
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    assert server.auth == "oauth"
+
+
+def test_prepare_mcp_config_applies_explicit_oauth_authentication():
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "private_key_jwt",
+                        "additional_client_metadata": {
+                            "application_type": "native",
+                        },
+                        "scopes": ["email", "offline_access"],
+                        "client_name": "OpenHands",
+                        "client_id": "openhands-client",
+                        "client_secret": "openhands-secret",
+                    },
+                },
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(native_mcp_config(config))
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+
+    assert isinstance(auth, OAuth)
+    assert auth._additional_client_metadata == {
+        "application_type": "native",
+        "token_endpoint_auth_method": "private_key_jwt",
+    }
+    assert auth._scopes == ["email", "offline_access"]
+    assert auth._client_name == "OpenHands"
+    assert auth._client_id == "openhands-client"
+    assert auth._client_secret == "openhands-secret"
+
+
+def test_prepare_mcp_config_applies_oauth_token_storage_to_explicit_auth():
+    token_storage = MemoryStore()
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config),
+        mcp_oauth_token_storage=token_storage,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._token_storage is token_storage
+
+
+def test_prepare_mcp_config_uses_custom_oauth_factory():
+    token_storage = MemoryStore()
+    calls = []
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            }
+        }
+    }
+
+    def factory(server_name, server, auth, storage):
+        calls.append((server_name, server, auth, storage))
+        return OAuth(client_name="Factory OAuth")
+
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config),
+        mcp_oauth_token_storage=token_storage,
+        mcp_oauth_factory=factory,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._client_name == "Factory OAuth"
+    assert len(calls) == 1
+    assert calls[0][0] == "remote"
+    assert calls[0][3] is token_storage
+
+
+def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth_credential():
+    token_storage = MemoryStore()
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"strategy": "oauth2"},
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config),
+        mcp_oauth_token_storage=token_storage,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._token_storage is token_storage
+
+
+def test_prepare_mcp_config_builds_endpoint_discovering_oauth_clients():
+    # Arrange: one server with explicit authentication, one bare credential.
+    config = {
+        "mcpServers": {
+            "explicit": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {"type": "oauth", "client_auth_method": "none"},
+                },
+            },
+            "bare": {
+                "url": "https://mcp.example.org/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
+        }
+    }
+
+    # Act
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config), mcp_oauth_token_storage=MemoryStore()
+    )
+
+    # Assert: both refresh against the discovered token endpoint.
+    for name in ("explicit", "bare"):
+        server = prepared.mcpServers[name]
+        assert isinstance(server, RemoteMCPServer)
+        assert isinstance(server.auth, MCPOAuth)
+
+
+def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
+    """Test creating MCP tools with a real HTTP server."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    assert len(tools) == 2
+    tool_names = {t.name for t in tools}
+    assert "greet" in tool_names
+    assert "add_numbers" in tool_names
+
+    # Verify tool schemas are properly loaded
+    greet_tool = next(t for t in tools if t.name == "greet")
+    openai_schema = greet_tool.to_openai_tool()
+    assert openai_schema["type"] == "function"
+    assert "parameters" in openai_schema["function"]
+    assert "name" in openai_schema["function"]["parameters"]["properties"]
+
+
+def test_create_mcp_tools_sse_server(sse_mcp_server: MCPTestServer):
+    """Test creating MCP tools with a real SSE server."""
+    config = {
+        "mcpServers": {
+            "sse_server": {
+                "transport": "sse",
+                "url": f"http://127.0.0.1:{sse_mcp_server.port}/sse",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    assert len(tools) == 2
+    tool_names = {t.name for t in tools}
+    assert "echo" in tool_names
+    assert "multiply" in tool_names
+
+
+def test_create_mcp_tools_mixed_servers(
+    http_mcp_server: MCPTestServer, sse_mcp_server: MCPTestServer
+):
+    """Test creating MCP tools with both HTTP and SSE servers."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            },
+            "sse_server": {
+                "transport": "sse",
+                "url": f"http://127.0.0.1:{sse_mcp_server.port}/sse",
+            },
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    # Should have tools from both servers (prefixed with server name)
+    assert len(tools) == 4
+    tool_names = {t.name for t in tools}
+    assert "http_server_greet" in tool_names
+    assert "http_server_add_numbers" in tool_names
+    assert "sse_server_echo" in tool_names
+    assert "sse_server_multiply" in tool_names
+
+
+def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer):
+    """Test that tool schemas are properly loaded from HTTP server."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+    add_tool = next(t for t in tools if t.name == "add_numbers")
+
+    openai_schema = add_tool.to_openai_tool()
+    params = openai_schema["function"].get("parameters", {})
+    assert params["properties"]["a"]["type"] == "integer"
+    assert params["properties"]["b"]["type"] == "integer"
+    assert "a" in params["required"]
+    assert "b" in params["required"]
+
+    responses_schema = add_tool.to_responses_tool()
+    responses_params = responses_schema["parameters"]
+    assert isinstance(responses_params, dict)
+    responses_properties = responses_params["properties"]
+    assert isinstance(responses_properties, dict)
+    responses_required = responses_params["required"]
+    assert isinstance(responses_required, list)
+    assert responses_properties["a"]["type"] == "integer"
+    assert responses_properties["b"]["type"] == "integer"
+    assert "a" in responses_required
+    assert "b" in responses_required
+    assert "data" not in responses_properties
+
+
+def test_create_mcp_tools_transport_inferred_from_url(http_mcp_server: MCPTestServer):
+    """Test that transport type is inferred when not explicitly specified."""
+    config = {
+        "mcpServers": {
+            "auto_http": {
+                # No explicit transport - should infer from URL
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+    assert len(tools) == 2
+
+
+def test_create_mcp_tools_sse_inferred_from_url(sse_mcp_server: MCPTestServer):
+    """Test that SSE transport is inferred from URL containing /sse."""
+    config = {
+        "mcpServers": {
+            "auto_sse": {
+                # No explicit transport - should infer SSE from /sse in URL
+                "url": f"http://127.0.0.1:{sse_mcp_server.port}/sse",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+    assert len(tools) == 2
+
+
+def test_execute_http_tool(http_mcp_server: MCPTestServer):
+    """Test executing a tool on an HTTP MCP server."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+    greet_tool = next(t for t in tools if t.name == "greet")
+
+    action = greet_tool.action_from_arguments({"name": "World"})
+    assert greet_tool.executor is not None
+    observation = greet_tool.executor(action)
+
+    assert observation is not None
+    assert "Hello, World!" in observation.text
+
+
+def test_execute_sse_tool(sse_mcp_server: MCPTestServer):
+    """Test executing a tool on an SSE MCP server."""
+    config = {
+        "mcpServers": {
+            "sse_server": {
+                "transport": "sse",
+                "url": f"http://127.0.0.1:{sse_mcp_server.port}/sse",
+            }
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+    multiply_tool = next(t for t in tools if t.name == "multiply")
+
+    action = multiply_tool.action_from_arguments({"x": 6, "y": 7})
+    assert multiply_tool.executor is not None
+    observation = multiply_tool.executor(action)
+
+    assert observation is not None
+    assert "42" in observation.text
+
+
+def test_create_mcp_tools_connection_to_nonexistent_server():
+    """Test that connection to non-existent server fails gracefully."""
+    config = {
+        "mcpServers": {
+            "nonexistent": {
+                "transport": "http",
+                "url": "http://127.0.0.1:59999/mcp",
+            }
+        }
+    }
+
+    # Should either return empty tools or raise connection-related errors
+    # Key is it shouldn't hang
+    try:
+        tools = create_mcp_tools(native_mcp_config(config), timeout=5.0)
+        assert len(tools) == 0  # No tools from failed connection
+    except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, MCPError):
+        pass  # Expected connection errors are acceptable
+
+
+def test_create_mcp_tools_stdio_server():
+    """Test creating MCP tools from a native server map."""
+    mcp_config = stdio_fetch_mcp_config()
+
+    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=10.0)
+    assert len(tools) == 1
+    assert tools[0].name == "fetch"
+
+    # Get the schema from the OpenAI tool since MCPToolAction now uses dynamic
+    # schema
+    openai_tool = tools[0].to_openai_tool()
+    assert openai_tool["type"] == "function"
+    assert "parameters" in openai_tool["function"]
+    input_schema = openai_tool["function"]["parameters"]
+
+    assert "type" in input_schema
+    assert input_schema["type"] == "object"
+    assert "properties" in input_schema
+    assert "url" in input_schema["properties"]
+    assert input_schema["properties"]["url"]["type"] == "string"
+    assert "required" in input_schema
+    assert "url" in input_schema["required"]
+
+    # security_risk should NOT be in the schema when no security analyzer is enabled
+    assert "security_risk" not in input_schema["required"]
+    assert "security_risk" not in input_schema["properties"]
+
+    mcp_tool = tools[0].to_mcp_tool()
+    mcp_schema = mcp_tool["inputSchema"]
+
+    # Check that both schemas have the same essential structure
+    assert mcp_schema["type"] == input_schema["type"]
+    assert set(mcp_schema["required"]) == set(input_schema["required"])
+
+    # Check that all properties from input_schema exist in mcp_schema
+    # (excluding meta fields like 'summary' which are for LLM, not tool interface)
+    for prop_name, prop_def in input_schema["properties"].items():
+        if prop_name == "summary":
+            continue  # summary is a meta field for LLM, not part of tool interface
+        assert prop_name in mcp_schema["properties"]
+        assert mcp_schema["properties"][prop_name]["type"] == prop_def["type"]
+        assert (
+            mcp_schema["properties"][prop_name]["description"]
+            == prop_def["description"]
+        )
+
+    assert openai_tool["function"]["name"] == "fetch"
+
+    # security_risk should NOT be in the OpenAI tool schema when no security analyzer is enabled  # noqa: E501
+    assert "security_risk" not in input_schema["required"]
+    assert "security_risk" not in input_schema["properties"]
+
+    assert tools[0].executor is not None
+
+
+def test_create_mcp_tools_timeout_error_message():
+    """Test that timeout errors are wrapped with informative error messages.
+
+    Note: This test uses mocking to simulate a timeout since waiting for real
+    timeouts would be slow and flaky.
+    """
+    config = {
+        "mcpServers": {
+            "slow_server": {
+                "transport": "stdio",
+                "command": "python",
+                "args": ["./slow_server.py"],
+            },
+            "another_server": {
+                "transport": "http",
+                "url": "https://api.example.com/mcp",
+            },
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.call_async_from_sync.side_effect = TimeoutError()
+
+        with pytest.raises(MCPTimeoutError) as exc_info:
+            create_mcp_tools(native_mcp_config(config), timeout=30.0)
+
+        error_message = str(exc_info.value)
+        assert "30" in error_message
+        assert "seconds" in error_message
+        assert "slow_server" in error_message
+        assert "another_server" in error_message
+        assert "Possible solutions" in error_message
+        assert "timeout" in error_message.lower()
+
+        assert exc_info.value.timeout == 30.0
+        assert exc_info.value.config is not None
+
+
+def test_mcp_tool_reconnects_after_http_error():
+    mcp = FastMCP("http-error-test-server")
+
+    @mcp.tool()
+    def ping() -> str:
+        return "pong"
+
+    class FailFirstToolCall(BaseHTTPMiddleware):
+        failed = False
+
+        async def dispatch(self, request, call_next):
+            body = (await request.body()).replace(b" ", b"")
+            if not self.failed and b'"method":"tools/call"' in body:
+                self.failed = True
+                return PlainTextResponse("gateway timeout", status_code=504)
+            return await call_next(request)
+
+    port = _find_free_port()
+    app = mcp.http_app(path="/mcp")
+    app.add_middleware(FailFirstToolCall)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+
+    try:
+        config = {
+            "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}
+        }
+        with create_mcp_tools(coerce_mcp_config(config), timeout=5) as client:
+            tool = next(tool for tool in client if tool.name == "ping")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+
+            first = tool.executor(action)
+            second = tool.executor(action)
+
+            assert first.is_error
+            assert "504 Gateway Timeout" in first.text
+            assert not second.is_error
+            assert "pong" in second.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)

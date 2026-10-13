@@ -1,0 +1,194 @@
+import { useState } from 'react';
+import { Button } from '@librechat/client';
+import { Check, Clock, Code2, Captions, Info, Zap } from 'lucide-react';
+import type { AgentToolType, AgentToolApprovalMode } from 'librechat-data-provider';
+import ApprovalOption from './ApprovalOption';
+import OptionToggle from './OptionToggle';
+import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
+
+interface MCPToolItemProps {
+  tool: AgentToolType;
+  isSelected: boolean;
+  isDeferred: boolean;
+  isProgrammatic: boolean;
+  isBackground: boolean;
+  isIntent: boolean;
+  /** Intent labels never reach a programmatic-only tool (no card renders for
+   *  calls made from code), so the toggle is shown inert with an explanation. */
+  intentDisabled: boolean;
+  deferredToolsEnabled: boolean;
+  programmaticToolsEnabled: boolean;
+  programmaticToolsAvailable: boolean;
+  backgroundToolsEnabled: boolean;
+  toolIntentsEnabled: boolean;
+  onToggleSelect: () => void;
+  onToggleDefer: () => void;
+  onToggleProgrammatic: () => void;
+  onToggleBackground: () => void;
+  onToggleIntent: () => void;
+  approvalConstraint?: 'ask' | 'deny';
+  approvalAgentId?: string;
+  approvalMode?: AgentToolApprovalMode;
+  approvalsEnabled?: boolean;
+  onApprovalModeChange?: (mode?: AgentToolApprovalMode) => void;
+}
+
+const iconButton = 'size-6 rounded-md';
+
+export default function MCPToolItem({
+  tool,
+  isSelected,
+  isDeferred,
+  onToggleDefer,
+  onToggleSelect,
+  isProgrammatic,
+  onToggleProgrammatic,
+  isBackground,
+  onToggleBackground,
+  isIntent,
+  intentDisabled,
+  onToggleIntent,
+  deferredToolsEnabled,
+  programmaticToolsEnabled,
+  programmaticToolsAvailable,
+  backgroundToolsEnabled,
+  toolIntentsEnabled,
+  approvalMode,
+  approvalConstraint,
+  approvalAgentId,
+  approvalsEnabled,
+  onApprovalModeChange,
+}: MCPToolItemProps) {
+  const localize = useLocalize();
+  const [expanded, setExpanded] = useState(false);
+
+  const description = tool.metadata.description?.trim();
+  const detailsId = `mcp-tool-details-${tool.tool_id}`;
+
+  return (
+    <div className="overflow-hidden rounded-lg">
+      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pr-1 transition-colors">
+        <button
+          type="button"
+          onClick={onToggleSelect}
+          aria-pressed={isSelected}
+          aria-label={tool.metadata.name}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-left',
+            'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
+          )}
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              'border-border-medium flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
+              isSelected && 'bg-surface-inverted text-text-inverted',
+            )}
+          >
+            {isSelected && <Check className="size-4" />}
+          </span>
+          <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
+            {tool.metadata.name}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {deferredToolsEnabled && (
+            <OptionToggle
+              icon={Clock}
+              pressed={isDeferred}
+              label={localize('com_ui_mcp_defer_loading')}
+              tooltip={localize('com_ui_mcp_click_to_defer')}
+              activeClass="border-series-4 text-series-4 hover:text-series-4"
+              onToggle={onToggleDefer}
+            />
+          )}
+          {programmaticToolsEnabled && (
+            <OptionToggle
+              icon={Code2}
+              pressed={isProgrammatic}
+              label={localize('com_ui_mcp_programmatic')}
+              tooltip={localize(
+                programmaticToolsAvailable
+                  ? 'com_ui_mcp_click_to_programmatic'
+                  : 'com_ui_mcp_programmatic_requires_code',
+              )}
+              activeClass="border-series-6 text-series-6 hover:text-series-6"
+              disabled={!programmaticToolsAvailable && !isProgrammatic}
+              onToggle={onToggleProgrammatic}
+            />
+          )}
+          {backgroundToolsEnabled && (
+            <OptionToggle
+              icon={Zap}
+              pressed={isBackground}
+              label={localize('com_ui_mcp_background')}
+              tooltip={localize('com_ui_mcp_click_to_background')}
+              activeClass="border-series-1 text-series-1 hover:text-series-1"
+              onToggle={onToggleBackground}
+            />
+          )}
+          {toolIntentsEnabled && (
+            <OptionToggle
+              icon={Captions}
+              pressed={isIntent}
+              disabled={intentDisabled}
+              label={localize('com_ui_mcp_intent')}
+              tooltip={localize(
+                intentDisabled ? 'com_ui_mcp_intent_programmatic' : 'com_ui_mcp_click_to_intent',
+              )}
+              activeClass="border-series-3 text-series-3 hover:text-series-3"
+              onToggle={onToggleIntent}
+            />
+          )}
+          {onApprovalModeChange && (
+            <ApprovalOption
+              constraint={approvalConstraint}
+              agentId={approvalAgentId}
+              toolName={tool.tool_id}
+              mode={approvalMode}
+              onChange={onApprovalModeChange}
+              disabled={!approvalsEnabled}
+            />
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            aria-label={localize('com_ui_tools_info')}
+            className={cn(
+              iconButton,
+              expanded ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary',
+            )}
+          >
+            <Info className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
+      </div>
+      {/* Auto-height reveal via grid-template-rows 0fr -> 1fr so the panel — and
+          the auto-sized dialog around it — grow/shrink smoothly instead of jumping. */}
+      <div
+        id={detailsId}
+        className={cn(
+          'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+        )}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div
+            className={cn(
+              'border-border-light border-t px-3 py-3 transition-opacity duration-200 ease-out motion-reduce:transition-none',
+              expanded ? 'opacity-100' : 'opacity-0',
+            )}
+          >
+            <p className="text-text-secondary max-h-44 overflow-y-auto text-xs leading-relaxed whitespace-pre-wrap">
+              {description || localize('com_ui_mcp_no_description')}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

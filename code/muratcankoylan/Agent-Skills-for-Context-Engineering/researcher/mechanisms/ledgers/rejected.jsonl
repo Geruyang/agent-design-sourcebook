@@ -1,0 +1,1 @@
+{"mechanism_id":"generic-context-advice","status":"rejected","rejected_at":"seed","reviewed_by":"initial-researcher-os","source":"researcher/fixtures/source-evaluations/rejected-generic-source.json","rationale":"Generic advice without implementable mechanism should not enter the mechanism registry."}

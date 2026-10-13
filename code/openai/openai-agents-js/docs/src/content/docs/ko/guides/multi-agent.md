@@ -1,0 +1,84 @@
+---
+title: 에이전트 오케스트레이션
+description: Coordinate the flow between several agents
+canonicalHeadingIds:
+  - depth: 2
+    id: 'orchestrating-via-llm'
+    aliases:
+      - 'llm을-통한-에이전트-오케스트레이션'
+  - depth: 3
+    id: 'core-sdk-patterns'
+    aliases:
+      - '핵심-sdk-패턴'
+  - depth: 2
+    id: 'orchestrating-via-code'
+    aliases:
+      - '코드를-통한-에이전트-오케스트레이션'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '관련-가이드'
+---
+
+에이전트 오케스트레이션은 앱에서 에이전트가 동작하는 흐름을 의미합니다. 어떤 에이전트가 어떤 순서로 실행되며, 다음에 일어날 일을 어떻게 결정할까요? 에이전트를 오케스트레이션하는 주요 방법은 두 가지입니다.
+
+> [빠른 시작](/openai-agents-js/ko/guides/quickstart) 또는 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns)를 읽은 후 이 페이지를 읽으세요. 이 페이지에서는 `Agent` 생성자 자체가 아니라 여러 에이전트에 걸친 워크플로 설계를 다룹니다.
+
+1. LLM이 결정을 내리도록 허용: LLM의 지능을 활용해 계획하고 추론하며, 이를 바탕으로 수행할 단계를 결정합니다.
+2. 코드를 통한 오케스트레이션: 코드로 에이전트의 흐름을 결정합니다.
+
+이러한 패턴을 조합해서 사용할 수 있습니다. 각 패턴에는 아래에 설명된 장단점이 있습니다.
+
+## LLM을 통한 에이전트 오케스트레이션
+
+에이전트는 instructions, 도구, 핸드오프를 갖춘 LLM입니다. 즉, 개방형 작업이 주어지면 LLM은 작업을 처리할 방법을 자율적으로 계획하고, 도구를 사용해 작업을 수행하고 데이터를 확보하며, 핸드오프를 사용해 하위 에이전트에 작업을 위임할 수 있습니다. 예를 들어 리서치 에이전트에는 다음과 같은 도구를 제공할 수 있습니다.
+
+- 온라인에서 정보를 찾기 위한 웹 검색
+- 독점 데이터와 연결을 검색하기 위한 파일 검색 및 검색 결과 가져오기
+- 컴퓨터에서 작업을 수행하기 위한 컴퓨터 사용
+- 데이터 분석을 위한 코드 실행
+- 계획 수립, 보고서 작성 등에 뛰어난 전문 에이전트로의 핸드오프
+
+### 핵심 SDK 패턴
+
+Agents SDK에서는 다음 두 가지 에이전트 오케스트레이션 패턴이 가장 자주 사용됩니다.
+
+| 패턴 | 작동 방식 | 적합한 경우 |
+| --- | --- | --- |
+| Agents as tools | 관리자 에이전트가 대화의 제어권을 유지하면서 `agent.asTool()`을 통해 전문 에이전트를 호출합니다. | 하나의 에이전트가 최종 답변을 담당하거나, 여러 전문가의 출력을 결합하거나, 한곳에서 공통 가드레일을 적용하도록 하려는 경우 |
+| 핸드오프 | 트리아지 에이전트가 대화를 전문 에이전트로 라우팅하며, 해당 전문 에이전트가 나머지 턴에서 활성 에이전트가 됩니다. | 전문 에이전트가 사용자에게 직접 응답하거나, 프롬프트의 초점을 유지하거나, 전문 에이전트별로 서로 다른 instructions 또는 모델을 사용하도록 하려는 경우 |
+
+전문 에이전트가 하위 작업을 지원하되 사용자 대상 대화를 넘겨받아서는 안 되는 경우 **agents as tools**를 사용하세요. 관리자 에이전트는 호출할 도구와 최종 응답을 제시할 방법을 결정할 책임을 계속 맡습니다. API 세부 정보는 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)를, 두 패턴을 나란히 비교하는 예제는 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns)를 참고하세요.
+
+라우팅 자체가 워크플로의 일부이고 선택된 전문 에이전트가 대화의 다음 부분을 담당하도록 하려면 **핸드오프**를 사용하세요. 핸드오프는 대화 컨텍스트를 유지하면서 활성 instructions를 전문 에이전트에 맞게 좁힙니다. API는 [핸드오프](/openai-agents-js/ko/guides/handoffs)를, 가장 간단한 엔드 투 엔드 예제는 [빠른 시작](/openai-agents-js/ko/guides/quickstart#define-your-handoffs)을 참고하세요.
+
+두 패턴을 조합할 수도 있습니다. 트리아지 에이전트가 전문 에이전트로 핸드오프하고, 해당 전문 에이전트가 범위가 제한된 하위 작업에 다른 에이전트를 도구로 사용할 수 있습니다.
+
+이 패턴은 작업이 개방형이고 LLM의 지능을 활용하려는 경우에 매우 적합합니다. 여기에서 가장 중요한 전략은 다음과 같습니다.
+
+1. 좋은 프롬프트에 투자하세요. 사용할 수 있는 도구, 도구 사용 방법, 준수해야 하는 매개변수를 명확히 설명하세요.
+2. 앱을 모니터링하고 반복해서 개선하세요. 문제가 발생하는 지점을 확인하고 프롬프트를 개선하세요.
+3. 에이전트가 스스로 성찰하고 개선할 수 있도록 하세요. 예를 들어 루프에서 실행해 스스로 비평하게 하거나, 오류 메시지를 제공해 개선하도록 할 수 있습니다.
+4. 모든 작업을 잘 수행할 것으로 기대되는 범용 에이전트 대신 하나의 작업에 뛰어난 전문 에이전트를 구성하세요.
+5. [평가](https://platform.openai.com/docs/guides/evals)에 투자하세요. 이를 통해 에이전트를 훈련하여 작업 수행 능력을 개선할 수 있습니다.
+
+이러한 에이전트 오케스트레이션 방식의 기반이 되는 SDK 기본 구성 요소를 알아보려면 [도구](/openai-agents-js/ko/guides/tools), [핸드오프](/openai-agents-js/ko/guides/handoffs), [에이전트 실행](/openai-agents-js/ko/guides/running-agents)부터 살펴보세요.
+
+## 코드를 통한 에이전트 오케스트레이션
+
+LLM을 통한 에이전트 오케스트레이션은 강력하지만, 코드를 통한 에이전트 오케스트레이션은 속도, 비용, 성능 측면에서 작업을 더 결정적이고 예측 가능하게 만듭니다. 일반적인 패턴은 다음과 같습니다.
+
+- [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)을 사용하여 코드로 검사할 수 있는 적절한 형식의 데이터를 생성합니다. 예를 들어 에이전트에게 작업을 몇 가지 카테고리로 분류하도록 요청한 다음, 카테고리에 따라 다음 에이전트를 선택할 수 있습니다.
+- 한 에이전트의 출력을 다음 에이전트의 입력으로 변환하여 여러 에이전트를 연결합니다. 블로그 게시물 작성과 같은 작업을 조사, 개요 작성, 블로그 게시물 작성, 비평, 개선의 일련의 단계로 분해할 수 있습니다.
+- 평가하고 피드백을 제공하는 에이전트와 함께 작업 수행 에이전트를 `while` 루프에서 실행하며, 평가자가 출력이 특정 기준을 충족한다고 판단할 때까지 반복합니다.
+- `Promise.all`과 같은 JavaScript 기본 구성 요소를 사용해 여러 에이전트를 병렬로 실행합니다. 서로 의존하지 않는 여러 작업이 있을 때 속도를 높이는 데 유용합니다.
+
+[`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns)에는 다양한 코드 예제가 있습니다.
+
+## 관련 가이드
+
+- 구성 패턴과 에이전트 설정은 [에이전트](/openai-agents-js/ko/guides/agents)
+- `agent.asTool()`과 관리자 방식의 에이전트 오케스트레이션은 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)
+- 전문 에이전트 간 위임은 [핸드오프](/openai-agents-js/ko/guides/handoffs)
+- `Runner`와 실행별 에이전트 오케스트레이션 제어는 [에이전트 실행](/openai-agents-js/ko/guides/running-agents)
+- 최소한의 엔드 투 엔드 핸드오프 예제는 [빠른 시작](/openai-agents-js/ko/guides/quickstart)

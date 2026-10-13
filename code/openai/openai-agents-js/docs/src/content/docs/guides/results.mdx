@@ -1,0 +1,189 @@
+---
+title: Results
+description: Learn how to access the results and output from your agent run
+---
+
+import { Code } from '@astrojs/starlight/components';
+import handoffFinalOutputTypes from '../../../../../examples/docs/results/handoffFinalOutputTypes.ts?raw';
+import historyLoop from '../../../../../examples/docs/results/historyLoop.ts?raw';
+import usageExample from '../../../../../examples/docs/results/usage.ts?raw';
+
+When you [run your agent](/openai-agents-js/guides/running-agents), you will either receive a:
+
+- [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) if you call `run` without `stream: true`
+- [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) if you call `run` with `stream: true`. For details on streaming, also check the [streaming guide](/openai-agents-js/guides/streaming).
+
+Both result types expose the same core result surfaces such as `finalOutput`, `newItems`, `interruptions`, and `state`. `StreamedRunResult` adds streaming controls like `completed`, `toStream()`, `toTextStream()`, and `currentAgent`.
+
+## Choose the right result surface
+
+Most applications only need a few properties:
+
+| If you need... | Use |
+| --- | --- |
+| The final answer to show the user | `finalOutput` |
+| A replay-ready next-turn input with the full local transcript | `history` |
+| Only the newly generated model-shaped items from this run | `output` |
+| Rich run items with agent/tool/handoff metadata | `newItems` |
+| The agent that should usually handle the next user turn | `lastAgent` or `activeAgent` |
+| OpenAI Responses API chaining with `previousResponseId` | `lastResponseId` |
+| Pending approvals and a resumable snapshot | `interruptions` and `state` |
+| App context, approvals, usage, and nested agent-tool input | `runContext` |
+| Metadata about the current nested `Agent.asTool()` invocation, for example inside `customOutputExtractor` | `agentToolInvocation` |
+| Raw model calls or guardrail diagnostics | `rawResponses` and the guardrail result arrays |
+
+## Final output
+
+The `finalOutput` property contains the final output of the last agent that ran. This result is either:
+
+- `string` — default for any agent that has no `outputType` defined
+- `unknown` — if the agent has a JSON schema defined as output type. In this case the JSON was parsed but you still have to verify its type manually.
+- `z.infer<outputType>` — if the agent has a Zod schema defined as output type. The output will automatically be parsed against this schema.
+- The inferred validation output type — if the agent has a supported Standard Schema value defined as its output type. The output is parsed and validated synchronously against this schema.
+- `undefined` — if the agent did not produce an output (for example stopped before it could produce an output)
+
+`finalOutput` is also `undefined` while a streamed run is still in progress or when the run paused on an approval interruption before reaching a final output.
+
+If you are using handoffs with different output types, you should use the `Agent.create()` method instead of the `new Agent()` constructor to create your agents.
+
+This will enable the SDK to infer the output types across all possible handoffs and provide a union type for the `finalOutput` property.
+
+For example:
+
+<Code
+  lang="typescript"
+  code={handoffFinalOutputTypes}
+  title="Handoff final output types"
+/>
+
+## Input and output surfaces
+
+These properties answer different questions:
+
+| Property | What it contains | Best for |
+| --- | --- | --- |
+| `input` | The base input for this run. If a handoff input filter rewrote the history, this reflects the filtered input the run continued with. | Auditing what this run actually used as input |
+| `output` | Only the model-shaped items generated in this run, without agent metadata. | Storing or replaying just the new model delta |
+| `newItems` | Rich [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) wrappers with agent/tool/handoff metadata. | Logs, UIs, audits, and debugging |
+| `history` | A replay-ready next-turn input built from `input + newItems`. | Manual chat loops and client-managed conversation state |
+
+In practice:
+
+- Use `history` when you are manually carrying the whole conversation in your application.
+- Use `output` when you already store prior history elsewhere and only want the new generated items from this run.
+- Use `newItems` when you need agent associations, tool outputs, handoff boundaries, or approval items.
+- If you are using `conversationId` or `previousResponseId`, you usually do not pass `history` back into `run()`. Instead, pass only the new user input and reuse the server-managed ID. See [Running agents](/openai-agents-js/guides/running-agents#state-and-conversation-management) for the full comparison.
+
+`history` is a convenient way to maintain a full history in a chat-like use case:
+
+<Code lang="typescript" code={historyLoop} title="History loop" />
+
+## New items
+
+`newItems` gives you the richest view of what happened during the run. Common item types are:
+
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
+- [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
+- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
+- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) for tool calls that paused for approval.
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) and [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) for handoff requests and completed transfers.
+
+Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
+
+If a local tool or MCP server defines `customDataExtractor`, the corresponding `RunToolCallOutputItem.customData` contains the returned SDK-only metadata. This data is useful for application UI state such as renderer hints or internal IDs. It survives `RunState` serialization, but it is excluded from `history` and is not sent back to the model.
+
+`RunToolCallOutputItem.output` is the SDK-side tool return value. JSON-compatible primitives, arrays, and plain objects preserve their structure across `RunState` serialization. Other live values keep the existing string fallback. This wrapper value remains separate from `rawItem.output`, which is the model-visible tool output used by `history` and replay.
+
+## Continue or resume the conversation
+
+### Active agent
+
+The `lastAgent` property contains the last agent that ran. This is often the best agent to reuse for the next user turn after handoffs. `activeAgent` is an alias for the same value.
+
+In streaming mode, `currentAgent` tells you which agent is currently active while the run is still in progress.
+
+### Interruptions and resumable state
+
+If a tool needs approval, the run pauses and `interruptions` contains the pending [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)s. This can include approvals raised by direct tools, by tools reached after a handoff, or by nested `agent.asTool()` runs.
+
+Resolve approvals through `result.state.approve(...)` / `result.state.reject(...)`, then pass the same `state` back into `run()` to resume. You do not need to resolve every interruption at once. If you rerun after handling only some items, resolved calls can continue while unresolved ones stay pending and pause the run again.
+
+The `state` property is the serializable snapshot behind the result. Use it for [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop), retry flows, or any case where you need to resume a paused run later.
+
+### Server-managed continuation
+
+`lastResponseId` is the value to pass as `previousResponseId` on the next turn when you are using OpenAI Responses API chaining.
+
+If you are already continuing the conversation with `history`, `session`, or `conversationId`, you usually do not need `lastResponseId`. If you need every raw model response from a multi-step run, inspect `rawResponses` instead.
+
+## Nested agent-tool metadata
+
+`agentToolInvocation` is for nested `Agent.asTool()` results, especially when you are inside `customOutputExtractor` and want metadata about the current tool invocation. It is not a general "the whole run has finished" summary field.
+
+In that nested context, `agentToolInvocation` exposes:
+
+- `toolName`
+- `toolCallId`
+- `toolArguments`
+
+Pair it with `result.runContext.toolInput` when you also need the structured input passed into that nested agent-tool run.
+
+On normal top-level `run()` results this is usually `undefined`. The metadata is runtime-only and is not serialized into `RunState`. See [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools) for the surrounding pattern.
+
+## Streamed results
+
+`StreamedRunResult` inherits the same result surfaces above, but adds streaming-specific controls:
+
+- `toTextStream()` for assistant text only.
+- `toStream()` or `for await ... of stream` for the full event stream.
+- `completed` to wait until the run and all post-processing callbacks finish.
+- `error` and `cancelled` to inspect the terminal streaming state.
+- `currentAgent` to track the active agent mid-run.
+- `currentTurn` to inspect how many model turns have actually reached the request boundary.
+- `maxTurns` to inspect the limit applied to this streamed run (`null` means no limit).
+
+`currentTurn` increments only when a model request is admitted. A max-turn check or blocking input guardrail that prevents the request does not increment it, and a resumed run starts from the count preserved in its `RunState`.
+
+If you need the settled final state of a streamed run, wait for `completed` before reading `finalOutput`, `history`, `interruptions`, or other summary properties. For event-by-event handling, see the [streaming guide](/openai-agents-js/guides/streaming).
+
+If a streamed run is cancelled, `completed` still resolves after cleanup and `cancelled` becomes `true`, but turn-end fields such as `finalOutput` can remain unset because the current turn never finished. Resume that unfinished turn with `result.state` (and the same `session`, if you use one) instead of appending a fresh user message.
+
+## Diagnostics and advanced fields
+
+### Run context
+
+The `runContext` property is the supported public view of the run context on the result. `result.runContext.context` is your app context, and the same object also carries SDK-managed runtime metadata such as approvals, usage, and nested `toolInput`. See [Context](/openai-agents-js/guides/context) for the full shape.
+
+### Raw responses
+
+`rawResponses` contains the raw model responses collected during the run. Multi-step runs can produce more than one response, for example across handoffs or repeated tool/model cycles.
+
+If an output guardrail rejects a terminal function-tool result, the SDK sanitizes the current response in `rawResponses` together with the other SDK-owned replay surfaces. Do not rely on rejected terminal tool output remaining inspectable through this property. See [Rejected terminal tool outputs](/openai-agents-js/guides/guardrails#rejected-terminal-tool-outputs) for the redaction boundary and limitations.
+
+Each response can also include `requestId`, the provider's request identifier when one is available. The OpenAI Responses and Chat Completions models populate it for streamed and non-streamed HTTP requests; treat it as optional because some providers and transports do not expose one.
+
+For Chat Completions text output, inspect the normalized `output_text` part's `providerData.annotations` to read URL citations. Non-streamed responses preserve the provider's message annotations. Streamed responses retain valid `url_citation` annotations received with text, deduplicate repeated citations, and ignore malformed or unsupported annotation shapes.
+
+For Chat Completions audio, the normalized model response represents an audio-only assistant message with an `audio` content part. When that message becomes a run item, inspect the `RunMessageOutputItem.rawItem` for the same part. If a non-streamed response contains text or a refusal together with audio, the normalized assistant message keeps the text or refusal, while the complete provider response remains available in `rawResponses[].providerData`. For streamed mixed output, inspect raw model stream events when you need provider audio chunks as they arrive; the completed `rawResponses` entry contains the normalized text or refusal but not the reconstructed audio. The streaming `toTextStream()` helper emits only text.
+
+When `modelSettings.preserveRawUsage` is `true`, each completed response can also expose `rawUsage`, a detached, JSON-compatible snapshot captured before SDK normalization. The normalized `Usage` remains available as `response.usage`; `rawUsage` preserves provider-specific field names and omitted-versus-explicit values where supplied. It can be `undefined` if the provider omits usage or the payload cannot be safely copied. `rawUsage` is runtime-only and is intentionally omitted from serialized `RunState`, so copy any fields you need before persisting and resuming a run.
+
+### Guardrail results
+
+The `inputGuardrailResults` and `outputGuardrailResults` properties contain agent-level guardrail results. Tool guardrail results are exposed separately via `toolInputGuardrailResults` and `toolOutputGuardrailResults`.
+
+Use these arrays when you want to log guardrail decisions, inspect extra metadata returned by guardrail functions, or debug why a run was blocked.
+
+For a rejected terminal function-tool result, the SDK intentionally sanitizes current-response guardrail metadata. In `outputGuardrailResults`, `agentOutput` becomes `Output withheld by an output guardrail.` and `outputInfo` is removed. Current `toolOutputGuardrailResults` retain their verdict but omit `outputInfo`, and a `rejectContent` result uses the same placeholder as its message. Earlier accepted historical results remain unchanged.
+
+If one guardrail fails to execute, results from sibling guardrails that completed successfully remain in the run state. For streamed runs, inspect the result arrays after `completed` rejects; for non-streamed runs, the `GuardrailExecutionError` carries the same settled `state`.
+
+### Usage
+
+Token usage is aggregated in `result.state.usage`, which tracks request counts and token totals for the run. The same usage object is also available through `result.runContext.usage`. For streaming runs this data updates as responses arrive.
+
+A completed streamed or non-streamed Chat Completions call counts as one request even when the provider omits its usage object. In that case, token totals remain zero because the provider did not report them.
+
+<Code lang="typescript" code={usageExample} title="Read usage from RunState" />

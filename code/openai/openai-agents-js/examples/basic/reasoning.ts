@@ -1,0 +1,43 @@
+import { styleText } from 'node:util';
+import { Agent, run } from '@openai/agents';
+
+const ASSISTANT_PREFIX = styleText(['bgGreen', 'black'], 'Assistant');
+const THINKING_PREFIX = styleText(['bgGray', 'black'], 'Thought');
+
+async function main() {
+  const agent = new Agent({
+    name: 'Agent',
+    model: process.env.REASONING_MODEL_NAME || 'gpt-5.4',
+    modelSettings: {
+      reasoning: { effort: 'high', summary: 'auto' },
+      text: { verbosity: 'high' },
+    },
+  });
+
+  const result = await run(
+    agent,
+    'Let T(0) = 1 and T(n) = T(n - 1) + n for n > 0. Compute T(25), explain the recurrence pattern, and verify the result with a closed-form expression.',
+  );
+
+  let summaryCount = 0;
+  for (const item of result.newItems) {
+    if (item.type === 'reasoning_item') {
+      for (const entry of item.rawItem.content) {
+        if (entry.type === 'input_text') {
+          summaryCount += 1;
+          console.log(`${THINKING_PREFIX}: ${entry.text}`);
+        }
+      }
+    }
+  }
+  if (summaryCount === 0) {
+    throw new Error('Expected the model to return a reasoning summary.');
+  }
+
+  console.log(`${ASSISTANT_PREFIX}: ${result.finalOutput}`);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

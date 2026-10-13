@@ -1,0 +1,14 @@
+﻿{
+  "messages": [
+    {
+      "role": "user",
+      "contents": [
+        {
+          "$type": "text",
+          "text": "Suggest me an Italian pasta recipe"
+        }
+      ],
+      "messageId": ""
+    }
+  ]
+}

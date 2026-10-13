@@ -1,0 +1,74 @@
+# Autonomous Research Loop
+
+This runbook defines how an agent should operate when asked to find research and turn it into repo changes.
+
+## Setup
+
+1. Create a run ID with `python researcher/scripts/research_loop.py init --title "..." --url "..."`.
+2. Read `../source-registry.md` and select source classes for the mission.
+3. Read `../mechanisms/registry.jsonl` to understand accepted mechanisms before claiming novelty.
+4. Read the relevant rubrics before evaluating anything.
+5. Declare locked surfaces: rubrics, manifests, mechanism registry, and merge policy are not editable during scoring.
+6. Declare editable surfaces: evaluations, proposals, drafts, run-local mechanism proposals, and append-only logs.
+
+## Loop
+
+Repeat until source queue is empty or the human stops the run:
+
+1. Discover candidates from the source registry.
+2. Fetch primary sources whenever available and record them with `research_loop.py retrieve`.
+3. Record retrieval status before evaluating.
+4. Apply `../rubrics/content-curation.md`.
+5. Reject failed gates immediately and log why.
+6. For approved or reviewed sources, extract mechanisms and artifacts into the proposal.
+7. Apply `../rubrics/skill-change.md` or `../rubrics/harness-change.md`.
+8. Draft a proposal with `../templates/skill-proposal.md` and any mechanism proposals with `../templates/mechanism-proposal.jsonl`.
+9. Run `python researcher/scripts/research_loop.py novelty --run-dir <run>` before changing published skills; registry overlap is the primary duplicate signal.
+10. If multiple drafts compete, apply `../rubrics/pairwise-skill-revision.md` and run `compare_skill_revisions.py`.
+11. If the proposal passes, prepare repo changes in normal repo structure.
+12. Run deterministic repo and run-readiness validation and record results.
+13. Prepare PR summary and test plan, but do not merge.
+14. Close the run with `accepted`, `rejected`, `reference-only`, or `abandoned` rationale.
+
+## Novelty And Refresh Rules
+
+- Before drafting a new skill, compare against accepted mechanisms and existing skill boundaries.
+- Use `novelty_check.py` as a fast mechanism-overlap gate, then apply human or LLM judgment for semantic novelty.
+- For long-running runs, refresh upstream sources before finalizing a proposal.
+- Preserve rejected ideas so future agents do not rediscover the same failed path.
+- Require a pruning pass when a proposal adds multiple rules or concepts. Remove any piece that does not change behavior.
+- Store raw source exports under the run's `sources/evidence/raw/` directory, never at the repository root.
+- Promote accepted or candidate mechanisms only through `research_loop.py promote-mechanisms` after run readiness and recorded human review.
+
+## Failure Handling
+
+| Failure | Action |
+| --- | --- |
+| Source fetch fails | Retry once with an alternate URL, then record `partial` or `failed` |
+| JSON evaluation invalid | Save raw output and route to human review |
+| Evidence weak but relevant | Route to human review, do not publish automatically |
+| Skill draft exceeds 500 lines | Move detail to references or reject the draft |
+| Manifest sync uncertain | Stop and request human review before PR |
+| Conflicting sources | Record both claims and prefer no published change until resolved |
+
+## PR Preparation Policy
+
+Agents may prepare PRs only after:
+
+1. Content and skill or harness rubrics pass.
+2. Deterministic checks pass.
+3. Every source cited in the change was retrieved.
+4. The PR body includes unresolved risks.
+5. The PR states that merge requires human approval.
+
+The user rule remains binding: do not push anything to GitHub without explicit approval.
+
+## Handover
+
+Before context compaction, interruption, or model handoff, update the run thread with:
+
+- Current best candidate.
+- Evaluations completed and their file paths.
+- Rejected candidates and reasons.
+- Open risks.
+- Next action.

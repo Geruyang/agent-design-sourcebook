@@ -1,0 +1,863 @@
+import {
+  Middleware,
+  RunAgentInput,
+  AbstractAgent,
+  BaseEvent,
+  Tool,
+  EventType,
+  Message,
+  ToolCall,
+  ToolCallResultEvent,
+  ActivitySnapshotEvent,
+  RunStartedEvent,
+  RunFinishedEvent,
+  PROTOCOL_VERSION,
+} from "@ag-ui/client";
+import { Observable, Subscription, from, switchMap } from "rxjs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { randomUUID, createHash } from "crypto";
+import { createTrustedFetch } from "./trusted-fetch";
+
+/**
+ * Activity type for MCP Apps events
+ */
+export const MCPAppsActivityType = "mcp-apps";
+
+/**
+ * Proxied MCP request structure from the frontend iframe
+ */
+export interface ProxiedMCPRequest {
+  /** Server hash (MD5 hash of config) */
+  serverHash: string;
+  /** Server name (optional, for lookup by name) */
+  serverId?: string;
+  /** The JSON-RPC method to call */
+  method: string;
+  /** The JSON-RPC params */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * Extract EventWithState type from Middleware.runNextWithState return type
+ */
+type ExtractObservableType<T> = T extends Observable<infer U> ? U : never;
+type RunNextWithStateReturn = ReturnType<Middleware["runNextWithState"]>;
+export type EventWithState = ExtractObservableType<RunNextWithStateReturn>;
+
+/**
+ * Model-visible MCP tool with its source server and optional UI resource
+ */
+interface MCPToolInfo {
+  tool: Tool;
+  serverConfig: MCPClientConfig;
+  resourceUri?: string;
+}
+
+/**
+ * MCP Client configuration for HTTP transport
+ */
+export interface MCPClientConfigHTTP {
+  type: "http";
+  url: string;
+  /**
+   * Optional HTTP headers sent with every request to the MCP server, e.g. an
+   * `Authorization` bearer token for OAuth/header-protected servers.
+   */
+  headers?: Record<string, string>;
+  serverId?: string;
+}
+
+/**
+ * MCP Client configuration for SSE transport
+ */
+export interface MCPClientConfigSSE {
+  type: "sse";
+  url: string;
+  headers?: Record<string, string>;
+  serverId?: string;
+}
+
+/**
+ * MCP Client configuration
+ */
+export type MCPClientConfig = MCPClientConfigHTTP | MCPClientConfigSSE;
+
+/**
+ * Generate a stable reference from the public endpoint, excluding credentials.
+ * This allows the frontend to reference servers without knowing their URLs.
+ */
+export function getServerHash(config: MCPClientConfig): string {
+  const serialized = JSON.stringify({
+    type: config.type,
+    url: config.url,
+  });
+  return createHash("md5").update(serialized).digest("hex");
+}
+
+/**
+ * Build the MCP client transport for a server config, forwarding any configured
+ * headers (e.g. auth) to the underlying HTTP/SSE request. Both transports accept
+ * headers via `requestInit`; previously HTTP carried no headers field at all and
+ * SSE's headers were never wired through. See #1862.
+ *
+ * The SSE transport is imported lazily so that `eventsource` — which it pulls
+ * in transitively, and which only some consumers ever need — stays out of the
+ * module graph unless an SSE server is actually configured. Under Bun a static
+ * import of it breaks at load time: `eventsource`'s `bun` export condition
+ * resolves to its ESM build, so the SDK's CJS `require` gets an async module
+ * back and throws.
+ */
+async function buildMCPTransport(config: MCPClientConfig) {
+  const endpoint = new URL(config.url);
+  if (
+    !["http:", "https:"].includes(endpoint.protocol) ||
+    endpoint.username ||
+    endpoint.password
+  ) {
+    throw new Error("MCP URL must use HTTP(S) without embedded credentials");
+  }
+  const trustedFetch = createTrustedFetch(endpoint.origin);
+  const options = {
+    requestInit: { headers: config.headers, redirect: "error" as const },
+    fetch: trustedFetch,
+  };
+  if (config.type === "sse") {
+    const { SSEClientTransport } = await import(
+      "@modelcontextprotocol/sdk/client/sse.js"
+    );
+    return new SSEClientTransport(new URL(config.url), options);
+  }
+  return new StreamableHTTPClientTransport(new URL(config.url), options);
+}
+
+/** Release a short-lived HTTP session before closing its transport. */
+async function closeMCPConnection(
+  client: Client,
+  transport: Awaited<ReturnType<typeof buildMCPTransport>>,
+): Promise<void> {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (transport instanceof StreamableHTTPClientTransport) {
+      // Do not hold a completed operation behind an unresponsive DELETE.
+      await Promise.race([
+        transport.terminateSession(),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, 3_000);
+        }),
+      ]);
+    }
+  } catch {
+    // Session cleanup must not replace a successful operation or its error.
+  } finally {
+    clearTimeout(deadline);
+    // Close the SDK transport; DELETE has its own bounded signal.
+    await client.close();
+  }
+}
+
+/**
+ * Configuration for MCPAppsMiddleware
+ */
+export interface MCPAppsMiddlewareConfig {
+  /**
+   * List of MCP server configurations
+   */
+  mcpServers?: MCPClientConfig[];
+  /** Continue without unavailable servers by default, or stop before invoking the agent. */
+  discoveryFailureMode?: "continue" | "throw";
+}
+
+/**
+ * Check model visibility independently of whether the tool renders a UI
+ */
+function isModelVisibleTool(tool: {
+  _meta?: Record<string, unknown>;
+}): boolean {
+  const ui = tool._meta?.ui;
+  const visibility =
+    ui && typeof ui === "object" && "visibility" in ui
+      ? ui.visibility
+      : undefined;
+  return (
+    visibility === undefined ||
+    (Array.isArray(visibility) && visibility.includes("model"))
+  );
+}
+
+/** Read current MCP Apps metadata first, with the legacy flat key as fallback. */
+function getUIResourceUri(tool: {
+  _meta?: Record<string, unknown>;
+}): string | undefined {
+  const ui = tool._meta?.ui;
+  if (
+    ui &&
+    typeof ui === "object" &&
+    "resourceUri" in ui &&
+    typeof ui.resourceUri === "string"
+  ) {
+    return ui.resourceUri;
+  }
+  const legacy = tool._meta?.["ui/resourceUri"];
+  return typeof legacy === "string" ? legacy : undefined;
+}
+
+/**
+ * Extended tool type that includes MCP Apps metadata
+ */
+export interface MCPAppTool extends Tool {
+  /** UI resource URI from SEP-1865 */
+  uiResourceUri?: string;
+}
+
+/**
+ * Convert MCP tool to AG-UI tool format, preserving UI resource info
+ */
+function convertMCPToolToAGUITool(mcpTool: {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}): Tool {
+  const tool: Tool = {
+    name: mcpTool.name,
+    description: mcpTool.description || "",
+    parameters: mcpTool.inputSchema || { type: "object", properties: {} },
+  };
+
+  // Store UI resource URI in the description for now
+  // TODO: Once AG-UI Tool type supports _meta, use that instead
+  const uiResourceUri = getUIResourceUri(mcpTool);
+  if (typeof uiResourceUri === "string") {
+    tool.description = `${tool.description}\n[UI Resource: ${uiResourceUri}]`;
+  }
+
+  return tool;
+}
+
+/**
+ * MCP Apps middleware - executes model-visible tools and renders UI resources.
+ */
+export class MCPAppsMiddleware extends Middleware {
+  private config: MCPAppsMiddlewareConfig;
+  /** Map of serverHash -> server config for proxied requests */
+  private serverConfigMapByHash: Map<string, MCPClientConfig> = new Map();
+  /** Map of serverId -> server config for proxied requests */
+  private serverConfigMapById: Map<string, MCPClientConfig> = new Map();
+  private ambiguousServerHashes = new Set<string>();
+
+  constructor(config: MCPAppsMiddlewareConfig = {}) {
+    super();
+    this.config = config;
+    // Build server config maps for proxied requests
+    for (const serverConfig of config.mcpServers || []) {
+      const serverHash = getServerHash(serverConfig);
+      const previous = this.serverConfigMapByHash.get(serverHash);
+      if (previous || this.ambiguousServerHashes.has(serverHash)) {
+        if (!serverConfig.serverId || (previous && !previous.serverId)) {
+          throw new Error(
+            "MCP servers sharing an endpoint require distinct serverId values",
+          );
+        }
+        this.serverConfigMapByHash.delete(serverHash);
+        this.ambiguousServerHashes.add(serverHash);
+      } else {
+        this.serverConfigMapByHash.set(serverHash, serverConfig);
+      }
+      if (serverConfig.serverId) {
+        if (this.serverConfigMapById.has(serverConfig.serverId)) {
+          throw new Error("MCP servers require distinct serverId values");
+        }
+        this.serverConfigMapById.set(serverConfig.serverId, serverConfig);
+      }
+    }
+  }
+
+  run(input: RunAgentInput, next: AbstractAgent): Observable<BaseEvent> {
+    // Check for proxied MCP request mode
+    const proxiedRequest = input.forwardedProps?.__proxiedMCPRequest as
+      | ProxiedMCPRequest
+      | undefined;
+    if (proxiedRequest) {
+      return this.handleProxiedMCPRequest(
+        input.threadId,
+        input.runId,
+        proxiedRequest,
+      );
+    }
+
+    // If no MCP servers configured, pass through using runNextWithState
+    if (!this.config.mcpServers?.length) {
+      return this.processStream(this.runNextWithState(input, next), new Map());
+    }
+
+    // Fetch model-visible tools from MCP servers and inject them
+    return from(this.fetchModelTools()).pipe(
+      switchMap((toolInfos) => {
+        // Build map of tool name -> MCPToolInfo
+        const toolsMap = new Map<string, MCPToolInfo>();
+        for (const info of toolInfos) {
+          toolsMap.set(info.tool.name, info);
+        }
+
+        // Merge MCP tools with existing input tools
+        const enhancedInput: RunAgentInput = {
+          ...input,
+          tools: [...input.tools, ...toolInfos.map((info) => info.tool)],
+        };
+
+        // Use runNextWithState to get state with each event
+        return this.processStream(
+          this.runNextWithState(enhancedInput, next),
+          toolsMap,
+          { input: enhancedInput, next, rounds: 0 },
+        );
+      }),
+    );
+  }
+
+  /**
+   * Handle a proxied MCP request from the frontend iframe.
+   * This bypasses the normal agent flow and directly executes the MCP request.
+   *
+   * The middleware answers this run itself, so it is the run's producer: the
+   * synthesized RUN_STARTED declares the protocol version this middleware was
+   * built against (PROTOCOL_VERSION), never an echo of the input's version.
+   */
+  private handleProxiedMCPRequest(
+    threadId: string,
+    runId: string,
+    request: ProxiedMCPRequest,
+  ): Observable<BaseEvent> {
+    return new Observable<BaseEvent>((subscriber) => {
+      // Look up server config - prefer serverId, fallback to serverHash
+      let serverConfig: MCPClientConfig | undefined;
+      if (request.serverId) {
+        serverConfig = this.serverConfigMapById.get(request.serverId);
+      }
+      if (!serverConfig) {
+        serverConfig = this.serverConfigMapByHash.get(request.serverHash);
+      }
+
+      // Emit RunStarted
+      const runStartedEvent: RunStartedEvent = {
+        type: EventType.RUN_STARTED,
+        threadId,
+        runId,
+        protocolVersion: PROTOCOL_VERSION,
+      };
+      subscriber.next(runStartedEvent);
+
+      // Handle unknown server
+      if (!serverConfig) {
+        const runFinishedEvent: RunFinishedEvent = {
+          type: EventType.RUN_FINISHED,
+          runId,
+          threadId,
+          result: {
+            error: `Unknown server: ${request.serverId || request.serverHash}`,
+          },
+        };
+        subscriber.next(runFinishedEvent);
+        subscriber.complete();
+        return;
+      }
+
+      // Execute the MCP request
+      this.executeMCPRequest(serverConfig, request.method, request.params)
+        .then((result) => {
+          // Emit RunFinished with the MCP result
+          const runFinishedEvent: RunFinishedEvent = {
+            type: EventType.RUN_FINISHED,
+            runId,
+            threadId,
+            result,
+          };
+          subscriber.next(runFinishedEvent);
+          subscriber.complete();
+        })
+        .catch((error) => {
+          // Emit RunFinished with error
+          const runFinishedEvent: RunFinishedEvent = {
+            type: EventType.RUN_FINISHED,
+            runId,
+            threadId,
+            result: { error: String(error) },
+          };
+          subscriber.next(runFinishedEvent);
+          subscriber.complete();
+        });
+    });
+  }
+
+  /**
+   * Execute a generic MCP request (tools/call, resources/read, etc.)
+   */
+  private async executeMCPRequest(
+    serverConfig: MCPClientConfig,
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    // Reject iframe methods before creating a credentialed MCP connection.
+    if (
+      ![
+        "tools/call",
+        "resources/read",
+        "notifications/message",
+        "ping",
+      ].includes(method)
+    ) {
+      throw new Error(`MCP method not allowed for UI proxy: ${method}`);
+    }
+    const transport = await buildMCPTransport(serverConfig);
+
+    const client = new Client(
+      { name: "mcp-apps-middleware", version: "1.0.0" },
+      {
+        capabilities: {
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        },
+      },
+    );
+
+    try {
+      await client.connect(transport);
+
+      // Dispatch only methods admitted by the UI proxy allowlist.
+      switch (method) {
+        case "tools/call":
+          return await client.callTool(
+            params as { name: string; arguments?: Record<string, unknown> },
+          );
+        case "resources/read":
+          return await client.readResource(params as { uri: string });
+        case "notifications/message":
+          // notifications/message is a one-way notification (no response expected)
+          await client.notification({
+            method: "notifications/message",
+            params,
+          });
+          return { success: true };
+        case "ping":
+          return await client.ping();
+        default:
+          // Defensive assertion: the pre-connection allowlist covers every case above.
+          throw new Error(`MCP method not allowed for UI proxy: ${method}`);
+      }
+    } catch (error) {
+      console.error(
+        "MCP proxy request failed",
+        {
+          serverId: serverConfig.serverId,
+          serverHash: getServerHash(serverConfig),
+        },
+        error,
+      );
+      // Keep operator diagnostics on the server, never in the iframe response.
+      throw new Error("MCP request failed");
+    } finally {
+      try {
+        await closeMCPConnection(client, transport);
+      } catch (error) {
+        console.error(
+          "MCP session cleanup failed",
+          {
+            serverId: serverConfig.serverId,
+            serverHash: getServerHash(serverConfig),
+          },
+          error,
+        );
+      }
+    }
+  }
+
+  /**
+   * Process the event stream, holding back RunFinished events until either:
+   * a) Another event comes -> flush the held RunFinished immediately
+   * b) Stream ends -> do special processing, then flush RunFinished and complete
+   */
+  private processStream(
+    source: Observable<EventWithState>,
+    toolsMap: Map<string, MCPToolInfo>,
+    continuation?: {
+      input: RunAgentInput;
+      next: AbstractAgent;
+      rounds: number;
+    },
+  ): Observable<BaseEvent> {
+    return new Observable<BaseEvent>((subscriber) => {
+      let heldRunFinished: EventWithState | null = null;
+      let isProcessing = false;
+      let errored = false;
+      const subscriptions = new Subscription();
+
+      const subscription = source.subscribe({
+        next: (eventWithState) => {
+          const event = eventWithState.event;
+          if (event.type === EventType.RUN_ERROR) errored = true;
+
+          // If we have a held RunFinished and a new event comes, flush it first
+          if (heldRunFinished) {
+            subscriber.next(heldRunFinished.event);
+            heldRunFinished = null;
+          }
+
+          // If this is a RunFinished event, hold it back
+          if (event.type === EventType.RUN_FINISHED) {
+            heldRunFinished = eventWithState;
+          } else {
+            subscriber.next(event);
+          }
+        },
+        error: (err) => {
+          // On error, flush any held event and propagate error
+          if (heldRunFinished) {
+            subscriber.next(heldRunFinished.event);
+            heldRunFinished = null;
+          }
+          subscriber.error(err);
+        },
+        complete: async () => {
+          // Stream ended - do special processing if we have a held RunFinished
+          if (heldRunFinished && !isProcessing) {
+            isProcessing = true;
+
+            try {
+              const outcome = (heldRunFinished.event as RunFinishedEvent)
+                .outcome;
+              if (errored || (outcome && outcome.type !== "success")) {
+                subscriber.next(heldRunFinished.event);
+                subscriber.complete();
+                return;
+              }
+              const resultMessages: Message[] = [];
+              // Find tool calls that don't have a corresponding result message
+              const pendingToolCalls = this.findPendingToolCalls(
+                heldRunFinished.messages,
+              );
+
+              // Filter for MCP tool calls (tools we injected from MCP servers)
+              const pendingMCPToolCalls = pendingToolCalls.filter((tc) =>
+                toolsMap.has(tc.function.name),
+              );
+
+              // Bound prerequisite chains without changing the existing UI-tool path.
+              if (
+                continuation &&
+                continuation.rounds >= 10 &&
+                pendingMCPToolCalls.length > 0
+              ) {
+                throw new Error(
+                  "MCP supporting-tool continuation limit reached (10)",
+                );
+              }
+
+              // Execute pending MCP tool calls and emit results
+              for (const toolCall of pendingMCPToolCalls) {
+                if (subscriber.closed) return;
+                const toolInfo = toolsMap.get(toolCall.function.name)!;
+                try {
+                  const args = JSON.parse(toolCall.function.arguments || "{}");
+                  const mcpResult = await this.executeToolCall(
+                    toolInfo.serverConfig,
+                    toolCall.function.name,
+                    args,
+                  );
+
+                  if (subscriber.closed) return;
+                  // Emit tool result event
+                  const resultEvent: ToolCallResultEvent = {
+                    type: EventType.TOOL_CALL_RESULT,
+                    messageId: randomUUID(),
+                    toolCallId: toolCall.id,
+                    content: this.extractTextContent(mcpResult),
+                  };
+                  subscriber.next(resultEvent);
+                  resultMessages.push({
+                    id: resultEvent.messageId,
+                    role: "tool",
+                    toolCallId: toolCall.id,
+                    content: resultEvent.content,
+                  });
+
+                  // Supporting tools return results without creating a UI artifact.
+                  if (toolInfo.resourceUri !== undefined) {
+                    // Emit activity snapshot with MCP result and resourceUri (frontend fetches resource)
+                    const activityEvent: ActivitySnapshotEvent = {
+                      type: EventType.ACTIVITY_SNAPSHOT,
+                      messageId: randomUUID(),
+                      activityType: MCPAppsActivityType,
+                      content: {
+                        result: mcpResult,
+                        resourceUri: toolInfo.resourceUri,
+                        serverHash: getServerHash(toolInfo.serverConfig),
+                        serverId: toolInfo.serverConfig.serverId,
+                        toolInput: args,
+                      },
+                      replace: true,
+                    };
+                    subscriber.next(activityEvent);
+                  }
+                } catch (error) {
+                  console.error(
+                    `Failed to execute MCP tool call ${toolCall.function.name}:`,
+                    error,
+                  );
+                  // Emit error result
+                  const errorResult: ToolCallResultEvent = {
+                    type: EventType.TOOL_CALL_RESULT,
+                    messageId: randomUUID(),
+                    toolCallId: toolCall.id,
+                    content: JSON.stringify({ error: String(error) }),
+                  };
+                  subscriber.next(errorResult);
+                  resultMessages.push({
+                    id: errorResult.messageId,
+                    role: "tool",
+                    toolCallId: toolCall.id,
+                    content: errorResult.content,
+                  });
+                }
+              }
+
+              const messages = [...heldRunFinished.messages, ...resultMessages];
+              const ranSupportingTool = pendingMCPToolCalls.some(
+                (call) =>
+                  toolsMap.get(call.function.name)?.resourceUri === undefined,
+              );
+              if (
+                continuation &&
+                ranSupportingTool &&
+                !subscriber.closed &&
+                this.findPendingToolCalls(messages).length === 0
+              ) {
+                // The outer event subscriber may still be applying earlier events.
+                // Seed the next reducer with the complete resolved history, not just
+                // results, so no assistant tool call is lost between continuations.
+                // Mutate in place: chained agents expose messages through a getter.
+                continuation.next.messages.splice(
+                  0,
+                  continuation.next.messages.length,
+                  ...messages,
+                );
+                const nextInput = {
+                  ...continuation.input,
+                  runId: randomUUID(),
+                  messages,
+                  state: heldRunFinished.state,
+                };
+                subscriptions.add(
+                  this.processStream(
+                    this.runNextWithState(nextInput, continuation.next),
+                    toolsMap,
+                    {
+                      ...continuation,
+                      input: nextInput,
+                      rounds: continuation.rounds + 1,
+                    },
+                  ).subscribe({
+                    next: (event) => {
+                      if (event.type !== EventType.RUN_STARTED) {
+                        subscriber.next(
+                          event.type === EventType.RUN_FINISHED
+                            ? { ...event, runId: continuation.input.runId }
+                            : event,
+                        );
+                      }
+                    },
+                    error: (error) => subscriber.error(error),
+                    complete: () => subscriber.complete(),
+                  }),
+                );
+                return;
+              }
+              subscriber.next(heldRunFinished.event);
+            } catch (error) {
+              subscriber.error(error);
+            } finally {
+              heldRunFinished = null;
+              isProcessing = false;
+            }
+          }
+          subscriber.complete();
+        },
+      });
+
+      subscriptions.add(subscription);
+      return () => subscriptions.unsubscribe();
+    });
+  }
+
+  /**
+   * Execute a tool call on the MCP server and return the raw result
+   */
+  private async executeToolCall(
+    serverConfig: MCPClientConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const transport = await buildMCPTransport(serverConfig);
+
+    const client = new Client(
+      { name: "mcp-apps-middleware", version: "1.0.0" },
+      {
+        capabilities: {
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        },
+      },
+    );
+
+    try {
+      await client.connect(transport);
+
+      const result = await client.callTool({
+        name: toolName,
+        arguments: args,
+      });
+
+      return result;
+    } finally {
+      await closeMCPConnection(client, transport);
+    }
+  }
+
+  /**
+   * Preserve structured MCP output alongside content; otherwise return text or JSON content
+   */
+  private extractTextContent(mcpResult: unknown): string {
+    const result = mcpResult as {
+      content?: unknown;
+      structuredContent?: unknown;
+    };
+    if (result.structuredContent !== undefined) {
+      // Supporting tools have no activity snapshot to carry structured output.
+      // Include both forms so text and structured prerequisites reach the model.
+      return JSON.stringify({
+        content: result.content,
+        structuredContent: result.structuredContent,
+      });
+    }
+    if (Array.isArray(result.content)) {
+      const textContent = result.content
+        .filter(
+          (c): c is { type: "text"; text: string } =>
+            c &&
+            typeof c === "object" &&
+            c.type === "text" &&
+            typeof c.text === "string",
+        )
+        .map((c) => c.text)
+        .join("\n");
+      return textContent || JSON.stringify(result.content);
+    }
+    return JSON.stringify(result.content);
+  }
+
+  /**
+   * Find tool calls that don't have a corresponding result (role: "tool") message
+   */
+  private findPendingToolCalls(messages: Message[]): ToolCall[] {
+    // Collect all tool calls from assistant messages
+    const allToolCalls: ToolCall[] = [];
+    for (const message of messages) {
+      if (
+        message.role === "assistant" &&
+        "toolCalls" in message &&
+        message.toolCalls
+      ) {
+        allToolCalls.push(...message.toolCalls);
+      }
+    }
+
+    // Collect all tool call IDs that have results
+    const resolvedToolCallIds = new Set<string>();
+    for (const message of messages) {
+      if (message.role === "tool" && "toolCallId" in message) {
+        resolvedToolCallIds.add(message.toolCallId);
+      }
+    }
+
+    // Return tool calls that don't have results
+    return allToolCalls.filter((tc) => !resolvedToolCallIds.has(tc.id));
+  }
+
+  /**
+   * Connect to all configured MCP servers and fetch model-visible tools
+   */
+  private async fetchModelTools(): Promise<MCPToolInfo[]> {
+    const allModelTools: MCPToolInfo[] = [];
+
+    for (const serverConfig of this.config.mcpServers || []) {
+      try {
+        const tools = await this.fetchToolsFromServer(serverConfig);
+        allModelTools.push(...tools);
+      } catch (error) {
+        console.error(
+          "MCP tool discovery failed",
+          {
+            serverId: serverConfig.serverId,
+            serverHash: getServerHash(serverConfig),
+          },
+          error,
+        );
+        if (this.config.discoveryFailureMode === "throw") {
+          throw new Error("MCP tool discovery failed");
+        }
+      }
+    }
+
+    return allModelTools;
+  }
+
+  /**
+   * Connect to a single MCP server and fetch its model-visible tools
+   */
+  private async fetchToolsFromServer(
+    serverConfig: MCPClientConfig,
+  ): Promise<MCPToolInfo[]> {
+    const transport = await buildMCPTransport(serverConfig);
+
+    const client = new Client(
+      { name: "mcp-apps-middleware", version: "1.0.0" },
+      {
+        capabilities: {
+          // Advertise MCP Apps UI support per SEP-1865
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        },
+      },
+    );
+
+    try {
+      await client.connect(transport);
+
+      // Fetch tools from the server
+      const response = await client.listTools();
+
+      // Respect model/app visibility for both UI and supporting tools
+      const tools = response.tools
+        .filter(isModelVisibleTool)
+        .map((mcpTool) => ({
+          tool: convertMCPToolToAGUITool(mcpTool),
+          serverConfig,
+          resourceUri: getUIResourceUri(mcpTool),
+        }));
+
+      return tools;
+    } finally {
+      // Always close the connection
+      await closeMCPConnection(client, transport);
+    }
+  }
+}

@@ -1,0 +1,332 @@
+/* Models list ------------------------------------------------------------ */
+.listTable {
+  table-layout: fixed;
+  min-width: 840px;
+}
+.listTable th:nth-child(1) {
+  width: 28%;
+}
+.listTable th:nth-child(2) {
+  width: 25%;
+}
+.listTable th:nth-child(3) {
+  width: 21%;
+}
+.listTable th:nth-child(4) {
+  width: 16%;
+}
+.listTable th:nth-child(5) {
+  width: 10%;
+}
+.listTable td {
+  height: 62px;
+}
+.listTable tbody tr:hover,
+.listTable tbody tr:focus-within {
+  background: var(--a13n-hover);
+}
+.modelMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.modelMeta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.providerCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.providerCell > :first-child {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.providerCell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.chip {
+  padding: 2px 8px;
+  border-radius: var(--a13n-radius-chip);
+  background: var(--a13n-surface);
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 16px;
+  white-space: nowrap;
+}
+/* A workspace media understanding default is a role this model plays, not a declaration. */
+.chip[data-role] {
+  background: var(--a13n-selected);
+  color: var(--a13n-text);
+  font-weight: 500;
+}
+.statusCell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* Below the wide breakpoint the declared capabilities give way to identity. */
+@media (max-width: 1180px) {
+  .listTable {
+    min-width: 620px;
+  }
+  .listTable th:nth-child(3),
+  .listTable td:nth-child(3) {
+    display: none;
+  }
+  .listTable th:nth-child(1) {
+    width: 36%;
+  }
+  .listTable th:nth-child(2) {
+    width: 30%;
+  }
+  .listTable th:nth-child(4) {
+    width: 20%;
+  }
+  .listTable th:nth-child(5) {
+    width: 14%;
+  }
+}
+
+/* Media understanding defaults ------------------------------------------- */
+.mediaDefaults {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+/* Reads as the section description the grouped card cannot carry itself. */
+.mediaRule {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 20px;
+}
+/* The control cell holds the picker and, while a row saves, its status beside it. */
+.mediaControl {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+.mediaPicker {
+  width: 260px;
+  max-width: 100%;
+  min-width: 0;
+}
+.mediaStatus {
+  flex: none;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 17px;
+}
+/* The hint or warning is the row's second explanation line, not a caption under the picker. */
+.mediaNote {
+  display: block;
+  margin-top: 3px;
+  text-wrap: pretty;
+}
+.mediaNote[data-tone="warning"] {
+  color: var(--warning-foreground);
+}
+.mediaLink {
+  color: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.mediaLink:hover {
+  text-decoration: underline;
+}
+/* An inherited row is identified by its kind, not by a model. */
+.mediaGlyph {
+  color: var(--a13n-muted);
+}
+@container (max-width: 420px) {
+  .mediaControl {
+    justify-content: flex-start;
+  }
+  .mediaPicker {
+    width: 100%;
+  }
+}
+
+/* Dialog steps ----------------------------------------------------------- */
+.setupSteps {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 0 16px;
+  margin: 0;
+  list-style: none;
+  color: var(--a13n-tertiary);
+  font-size: var(--a13n-text-xs);
+}
+.setupSteps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.setupSteps [aria-current] {
+  color: var(--a13n-text);
+  font-weight: 500;
+}
+
+.step {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.stepNote {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.6;
+}
+.variantChoice {
+  padding: 12px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+}
+.catalogFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Model form ------------------------------------------------------------- */
+.modelForm {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+.identityFields {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.chosenRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+}
+.chosenCopy {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.chosenCopy strong {
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chosenCopy small {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Detailed controls use whitespace inside the disclosure, not nested panels. */
+.modelDetails {
+  display: grid;
+  min-width: 0;
+  gap: 28px;
+}
+.requestDefaults {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+.capabilityGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+}
+.capabilitySummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.capabilitySummary:empty {
+  display: none;
+}
+.capabilitySummary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 480px) {
+  .capabilityGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Pricing tiers ---------------------------------------------------------- */
+.pricingEditor {
+  display: grid;
+  gap: 12px;
+}
+.pricingEditor p {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.pricingScroll {
+  overflow-x: auto;
+}
+.pricingTable {
+  width: 100%;
+  min-width: 500px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--a13n-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.pricingTable th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--a13n-secondary);
+  padding: 0 4px 8px;
+}
+.pricingTable td {
+  padding: 4px;
+}
+.pricingTable th:first-child {
+  width: 24%;
+}
+.pricingTable th:last-child {
+  width: 44px;
+}
+.pricingActions {
+  display: flex;
+  justify-content: space-between;
+}

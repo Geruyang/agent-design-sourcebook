@@ -1,0 +1,159 @@
+name: Container CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/ci-containers.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "deploy/docker/images/a13n-service/Dockerfile"
+      - "deploy/docker/images/a13n-service/entrypoint.sh"
+      - "deploy/docker/images/a13n-service/service.toml"
+      - "deploy/docker/compose/**"
+      - "scripts/deploy_smoke.py"
+      - "scripts/sandbox_smoke.py"
+      - "scripts/k8s_local.py"
+      - "deploy/docker/images/sandbox/**"
+      - "LICENSE"
+      - "Makefile"
+      - "crates/a13n-envd/**"
+      - "packages/a13n-envd-client/pyproject.toml"
+      - "packages/a13n-harness/pyproject.toml"
+      - "packages/a13n-stream-protocol/pyproject.toml"
+      - "packages/a13n-harness-ui/pyproject.toml"
+      - "packages/a13n-service/*"
+      - "docs/a13n-service/**"
+      - "packages/a13n-service/a13n_service/**"
+      - "packages/a13n-logging/*"
+      - "packages/a13n-logging/a13n_logging/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "frontend/package.json"
+      - "frontend/pnpm-lock.yaml"
+      - "frontend/pnpm-workspace.yaml"
+      - "frontend/tsconfig.base.json"
+      - "frontend/apps/a13n-console/package.json"
+      - "frontend/packages/a13n-ui/package.json"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect container changes
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify image inputs
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            service:
+              - '.dockerignore'
+              - 'Makefile'
+              - '.github/workflows/ci-containers.yml'
+              - 'deploy/docker/images/a13n-service/Dockerfile'
+              - 'deploy/docker/images/a13n-service/entrypoint.sh'
+              - 'deploy/docker/images/a13n-service/service.toml'
+              - 'deploy/docker/compose/**'
+              - 'scripts/deploy_smoke.py'
+              - 'scripts/k8s_local.py'
+              - 'packages/a13n-envd-client/pyproject.toml'
+              - 'packages/a13n-harness/pyproject.toml'
+              - 'packages/a13n-stream-protocol/pyproject.toml'
+              - 'packages/a13n-harness-ui/pyproject.toml'
+              - 'packages/a13n-service/*'
+              - 'docs/a13n-service/**'
+              - 'packages/a13n-service/a13n_service/**'
+              - 'packages/a13n-logging/*'
+              - 'packages/a13n-logging/a13n_logging/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'frontend/package.json'
+              - 'frontend/pnpm-lock.yaml'
+              - 'frontend/pnpm-workspace.yaml'
+              - 'frontend/tsconfig.base.json'
+              - 'frontend/apps/a13n-console/package.json'
+              - 'frontend/packages/a13n-ui/package.json'
+            sandbox:
+              - '.dockerignore'
+              - 'Makefile'
+              - '.github/workflows/ci-containers.yml'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/a13n-envd/**'
+              - 'scripts/sandbox_smoke.py'
+              - 'deploy/docker/images/sandbox/**'
+              - 'LICENSE'
+
+      - name: Build image matrix
+        id: matrix
+        env:
+          A13N_SERVICE_CHANGED: ${{ steps.filter.outputs.service }}
+          SANDBOX_CHANGED: ${{ steps.filter.outputs.sandbox }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          images = []
+          if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" or os.environ["A13N_SERVICE_CHANGED"] == "true":
+              images.append({
+                  "name": "a13n-service",
+                  "runner": "ubuntu-latest",
+                  "build_target": "image-a13n-service",
+                  "check_target": "image-check-a13n-service",
+                  # The single-host stack's first run: Console, first administrator, sign-in and its generated key.
+                  "smoke_target": "compose-smoke",
+              })
+          if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" or os.environ["SANDBOX_CHANGED"] == "true":
+              for arch, runner in (("amd64", "ubuntu-24.04"), ("arm64", "ubuntu-24.04-arm")):
+                  images.append({
+                      "name": f"a13n-sandbox-{arch}",
+                      "runner": runner,
+                      "build_target": "image-sandbox image-sandbox-slim",
+                      "check_target": "image-check-sandbox image-check-sandbox-slim",
+                  })
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"images={json.dumps(images, separators=(',', ':'))}\n")
+          PY
+
+  containers:
+    name: Container image (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.images != '[]'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.images) }}
+    env:
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build and smoke-check image
+        run: make ${{ matrix.build_target }} ${{ matrix.check_target }} ${{ matrix.smoke_target }}

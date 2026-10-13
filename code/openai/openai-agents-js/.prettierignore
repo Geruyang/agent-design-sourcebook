@@ -1,0 +1,3 @@
+packages/*/src/metadata.ts
+*.yaml
+*.yml

@@ -1,0 +1,178 @@
+name: Automation CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/**"
+      - "Makefile"
+      - ".pre-commit-config.yaml"
+      - ".mdformat.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/check-release-version.py"
+      - "scripts/create-github-release.py"
+      - "scripts/prepare-release-version.py"
+      - "scripts/release_notes.py"
+      - "scripts/release_version.py"
+      - "scripts/k8s_local.py"
+      - "scripts/tests/test_k8s_local.py"
+      - "scripts/deploy_smoke.py"
+      - "scripts/tests/test_deploy_smoke.py"
+      - "scripts/tests/test_image_workflows.py"
+      - "scripts/tests/test_harness_ui_release_workflow.py"
+      - "scripts/tests/test_envd_ci_workflow.py"
+      - "scripts/tests/test_service_contract_notification.py"
+      - "deploy/docker/images/**/Dockerfile"
+      - "deploy/kubernetes/**"
+      - "scripts/run_python_tests.py"
+      - "conftest.py"
+      - "scripts/tests/test_local_validation.py"
+      - "dev/observability/**"
+      - "scripts/tests/test_observability_tooling.py"
+      - "scripts/verify*.py"
+      - "scripts/impact.py"
+      - "scripts/tests/test_verify*.py"
+      - "scripts/tests/test_impact.py"
+      - "scripts/tests/test_check_release_version.py"
+      - "scripts/tests/test_prepare_release_version.py"
+      - "scripts/tests/test_release_notes.py"
+      - "scripts/tests/test_pr_labels.py"
+      - "scripts/tests/test_pr_change_breakdown.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/**"
+      - "Makefile"
+      - ".pre-commit-config.yaml"
+      - ".mdformat.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/check-release-version.py"
+      - "scripts/create-github-release.py"
+      - "scripts/prepare-release-version.py"
+      - "scripts/release_notes.py"
+      - "scripts/release_version.py"
+      - "scripts/k8s_local.py"
+      - "scripts/tests/test_k8s_local.py"
+      - "scripts/deploy_smoke.py"
+      - "scripts/tests/test_deploy_smoke.py"
+      - "scripts/tests/test_image_workflows.py"
+      - "scripts/tests/test_harness_ui_release_workflow.py"
+      - "scripts/tests/test_envd_ci_workflow.py"
+      - "scripts/tests/test_service_contract_notification.py"
+      - "deploy/docker/images/**/Dockerfile"
+      - "deploy/kubernetes/**"
+      - "scripts/run_python_tests.py"
+      - "conftest.py"
+      - "scripts/tests/test_local_validation.py"
+      - "dev/observability/**"
+      - "scripts/tests/test_observability_tooling.py"
+      - "scripts/verify*.py"
+      - "scripts/impact.py"
+      - "scripts/tests/test_verify*.py"
+      - "scripts/tests/test_impact.py"
+      - "scripts/tests/test_check_release_version.py"
+      - "scripts/tests/test_prepare_release_version.py"
+      - "scripts/tests/test_release_notes.py"
+      - "scripts/tests/test_pr_labels.py"
+      - "scripts/tests/test_pr_change_breakdown.py"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows:
+    name: GitHub Actions
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate workflows
+        # 1.7.12 predates concurrency.queue and the App action's client-id input.
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12
+          -ignore 'unexpected key "queue" for "concurrency" section'
+          -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
+          -ignore 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
+
+  release-tooling:
+    name: Release tooling
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Synchronize tooling dependencies
+        run: uv sync --locked
+
+      - name: Type-check release tooling
+        run: >-
+          uv run --locked pyright
+          scripts/check-release-version.py
+          scripts/create-github-release.py
+          scripts/prepare-release-version.py
+          scripts/release_notes.py
+          scripts/release_version.py
+          scripts/run_python_tests.py
+          scripts/verify.py
+          scripts/verify_inputs.py
+          scripts/verify_cache.py
+          scripts/verify_dependencies.py
+          scripts/impact.py
+          scripts/k8s_local.py
+          scripts/deploy_smoke.py
+          scripts/sandbox_smoke.py
+
+      - name: Set up Node.js for workflow tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Test release tooling
+        run: >-
+          uv run --locked python -m pytest
+          scripts/tests/test_check_release_version.py
+          scripts/tests/test_prepare_release_version.py
+          scripts/tests/test_release_notes.py
+          scripts/tests/test_pr_labels.py
+          scripts/tests/test_pr_change_breakdown.py
+          scripts/tests/test_local_validation.py
+          scripts/tests/test_observability_tooling.py
+          scripts/tests/test_verify.py
+          scripts/tests/test_verify_inputs.py
+          scripts/tests/test_verify_cache.py
+          scripts/tests/test_impact.py
+          scripts/tests/test_image_workflows.py
+          scripts/tests/test_sandbox_init.py
+          scripts/tests/test_envd_release_workflow.py
+          scripts/tests/test_k8s_local.py
+          scripts/tests/test_deploy_smoke.py
+          scripts/tests/test_harness_ui_release_workflow.py
+          scripts/tests/test_envd_ci_workflow.py
+          scripts/tests/test_service_contract_notification.py

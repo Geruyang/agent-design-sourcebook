@@ -1,0 +1,13 @@
+[advisories]
+
+# Deny yanked crates to catch supply chain issues early.
+yanked = "deny"
+# Emulate cargo-audit which only checks vulnerabilities and yanked crates, not unmaintained/unsound.
+unmaintained = "none"
+unsound = "none"
+
+ignore = [
+    # rsa: Marvin Attack timing sidechannel. No safe upgrade is available, and
+    # the reachable path is through jsonwebtoken.
+    "RUSTSEC-2023-0071",
+]

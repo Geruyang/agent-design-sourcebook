@@ -1,0 +1,69 @@
+{
+  "evaluation_id": "dd3f18ab-943b-47d9-bba7-2decedf61da9",
+  "timestamp": "2026-05-15T03:52:28+00:00",
+  "source": {
+    "url": "https://platform.parallel.ai/play/deep-research/trun_64f5be03055a4b52adf17481e4b865bc",
+    "title": "Executable autonomous research frameworks",
+    "author_or_org": "Parallel Deep Research",
+    "published_at": "",
+    "source_type": "other",
+    "retrieval_status": "partial",
+    "primary_or_secondary": "primary"
+  },
+  "gatekeeper": {
+    "G1_mechanism_specificity": {
+      "pass": false,
+      "evidence": ""
+    },
+    "G2_implementable_artifacts": {
+      "pass": false,
+      "evidence": ""
+    },
+    "G3_beyond_basics": {
+      "pass": false,
+      "evidence": ""
+    },
+    "G4_source_verifiability": {
+      "pass": false,
+      "evidence": ""
+    },
+    "verdict": "PASS | REJECT",
+    "rejection_reason": null
+  },
+  "scoring": {
+    "D1_technical_depth_actionability": {
+      "reasoning": "",
+      "score": 0
+    },
+    "D2_repo_relevance": {
+      "reasoning": "",
+      "score": 0
+    },
+    "D3_evidence_rigor": {
+      "reasoning": "",
+      "score": 0
+    },
+    "D4_novelty_insight": {
+      "reasoning": "",
+      "score": 0
+    },
+    "weighted_total": 0,
+    "calculation_shown": ""
+  },
+  "decision": {
+    "verdict": "HUMAN_REVIEW",
+    "override_triggered": "null",
+    "confidence": "low",
+    "justification": "Draft scaffold. Complete gates and scoring after retrieval."
+  },
+  "extraction": {
+    "mechanism": "",
+    "implementable_artifacts": [],
+    "failure_modes": [],
+    "candidate_skill_target": "new skill | existing skill | reference only | reject",
+    "candidate_skill_name": "",
+    "taxonomy_category": "context_retrieval | context_processing | context_management | rag | memory | tool_integration | multi_agent | evaluation | harness_engineering | project_development",
+    "estimated_complexity": "low | medium | high"
+  },
+  "human_review_notes": null
+}

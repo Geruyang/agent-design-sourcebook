@@ -1,0 +1,604 @@
+name: e2e
+
+on:
+  workflow_dispatch:
+  # Called by dojo-e2e-published.yml with `published: true` to run the same lane
+  # matrix against the latest published releases instead of repo source.
+  workflow_call:
+    inputs:
+      published:
+        description: "Run lanes against the latest published npm/PyPI/NuGet releases (apps/dojo/scripts/published-mode.js)"
+        type: boolean
+        default: false
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+  push:
+    branches: [main]
+    paths:
+      - "integrations/**"
+      - "apps/dojo/**"
+      - "middlewares/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/dojo-e2e.yml"
+      - "sdks/python/**"
+      - "sdks/typescript/**"
+      - "sdks/dotnet/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/dojo/**"
+      - "integrations/**"
+      - "middlewares/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/dojo-e2e.yml"
+      - "sdks/python/**"
+      - "sdks/typescript/**"
+      - "sdks/dotnet/**"
+
+permissions:
+  contents: read
+
+# Pinned Python build toolchain — see .github/python-toolchain.env, which is the
+# single place these two values are recorded, along with the green run they came
+# from. Change one, change them all: the python-toolchain-pins job in
+# lint-release-workflows.yml fails if any workflow's literal disagrees with that file.
+env:
+  UV_VERSION: "0.12.1"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  check-generated-files:
+    name: dojo / check-generated-files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.33.4
+
+      # Mirrors the `test:crewai-config` package script; run via npx (no install)
+      # to match the generate step below. Guards the CrewAI Flows + Conversational
+      # Flows dojo config that ships with this column.
+      - name: Validate CrewAI dojo config (Flows + Conversational Flows)
+        working-directory: apps/dojo
+        run: npx tsx --test src/crewai.test.ts
+
+      # Mirrors `test:published-mode`. Guards the published-mode manifest rewrites
+      # and that its lane table stays in sync with the matrix below.
+      - name: Validate published-mode script
+        working-directory: apps/dojo
+        run: node --test scripts/published-mode.test.js
+
+      - name: Validate agentFilesMapper and regenerate files.json
+        working-directory: apps/dojo
+        run: pnpm generate-content-json
+
+      - name: Check files.json is up to date
+        working-directory: apps/dojo
+        run: |
+          if git diff --exit-code src/files.json > /dev/null; then
+            echo "✅ No changes detected in dojo/src/files.json. Everything is up to date."
+          else
+            echo "❌ Detected changes in dojo/src/files.json."
+            echo ""
+            echo "The committed files.json doesn't match what would be generated."
+            echo "Please run \`(p)npm run generate-content-json\` in the apps/dojo folder and commit the updated file."
+            echo ""
+            echo "The detected diff was as follows:"
+            echo "::group::Diff for dojo/src/files.json"
+            git diff src/files.json
+            echo "::endgroup::"
+            exit 1
+          fi
+
+  a2ui-config-unit:
+    name: dojo / a2ui-config-unit
+    # Source-only unit checks; published mode is about the e2e lanes.
+    if: ${{ !inputs.published }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.33.4
+
+      # This test cannot use the install-free npx form the CrewAI config test
+      # uses next to `check-generated-files`: it loads @ag-ui/a2ui-middleware
+      # and @ag-ui/core from node_modules, so the workspace has to be installed
+      # and those dists built before it can run. Hence its own job rather than
+      # a step on the gate that fans out to the matrix below.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build A2UI middleware
+        run: pnpm exec nx run-many -t build -p @ag-ui/a2ui-middleware
+
+      # Mirrors the `test:a2ui-config` package script. Guards that every dojo
+      # A2UIMiddleware wiring forwards the rendered dynamic catalog, not just
+      # the tool and the catalog id: without the schema the model is asked to
+      # generate A2UI and never told which components exist.
+      - name: Validate A2UI dojo config (dynamic catalog forwarding)
+        working-directory: apps/dojo
+        run: pnpm test:a2ui-config
+
+  event-trace-unit:
+    name: dojo / event-trace-unit
+    if: ${{ !inputs.published }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.33.4
+
+      # The harness imports the dojo's pinned, patched @copilotkit/aimock.
+      # Install the workspace before the standalone e2e package so it can resolve it.
+      - name: Install event trace workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install event trace test dependencies
+        working-directory: apps/dojo/e2e
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run event trace unit tests
+        working-directory: apps/dojo/e2e
+        run: pnpm test:event-trace-unit
+
+      - name: Type-check event trace harness
+        working-directory: apps/dojo/e2e
+        run: pnpm check:event-trace-types
+
+      # aimock is owned by the dojo package, so install that package before
+      # type-checking fixtures imported by the ADK-JS suite.
+      - name: Install dojo dependencies for ADK-JS E2E type-check
+        run: pnpm install --frozen-lockfile --filter demo-viewer
+
+      - name: Type-check ADK-JS Playwright specs and fixtures
+        working-directory: apps/dojo/e2e
+        run: pnpm check:adk-js-e2e-types
+
+  dojo:
+    name: dojo / ${{ matrix.suite }}
+    needs: check-generated-files
+    runs-on: depot-ubuntu-24.04
+    # Published mode re-resolves every Python lock from scratch, so allow longer.
+    timeout-minutes: ${{ inputs.published && 30 || 20 }}
+    # In published mode one broken release must not hide the others: every lane
+    # reports its own result and the caller aggregates them.
+    continue-on-error: ${{ inputs.published == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: a2a-middleware
+            test_path: tests/a2aMiddlewareTests
+            services: ["dojo", "a2a-middleware"]
+            wait_on: http://localhost:9999,http-get://localhost:8011/.well-known/agent.json,http-get://localhost:8012/.well-known/agent.json,http-get://localhost:8013/.well-known/agent.json,http-get://localhost:8014/openapi.json
+          - suite: adk-middleware
+            test_path: tests/adkMiddlewareTests
+            services: ["dojo", "adk-middleware"]
+            wait_on: http://localhost:9999,tcp:localhost:8010
+          - suite: antigravity
+            test_path: tests/antigravityTests
+            services: ["dojo", "antigravity"]
+            wait_on: http://localhost:9999,tcp:localhost:8029
+          - suite: adk-js
+            test_path: tests/adkJsTests
+            services: ["dojo"]
+            wait_on: http://localhost:9999
+          # Both Agent Spec lanes share one example server, which mounts the
+          # LangGraph runtime under /langgraph/* and WayFlow under /wayflow/*.
+          - suite: agent-spec-langgraph
+            test_path: tests/agentSpecLanggraphTests
+            services: ["dojo", "agent-spec"]
+            wait_on: http://localhost:9999,tcp:localhost:8027
+          - suite: agent-spec-wayflow
+            test_path: tests/agentSpecWayflowTests
+            services: ["dojo", "agent-spec"]
+            wait_on: http://localhost:9999,tcp:localhost:8027
+          - suite: agno
+            test_path: tests/agnoTests
+            services: ["dojo", "agno"]
+            wait_on: http://localhost:9999,tcp:localhost:8002
+          - suite: cloudflare-agents
+            test_path: tests/cloudflareAgentsTests
+            services: ["dojo", "cloudflare-agents"]
+            wait_on: http://localhost:9999,http-get://localhost:8030/health
+          - suite: crew-ai
+            test_path: tests/crewAITests
+            services: ["dojo", "crew-ai"]
+            wait_on: http://localhost:9999,tcp:localhost:8003
+          - suite: crewai-conversational-flows
+            test_path: tests/crewAIConversationalFlowsTests
+            services: ["dojo", "crew-ai"]
+            wait_on: http://localhost:9999,tcp:localhost:8003
+          # In-process LangChainAgent (apps/dojo/src/agents.ts) whose ChatOpenAI
+          # reads OPENAI_BASE_URL, so it runs against aimock with no extra service.
+          - suite: langchain
+            test_path: tests/langchainTests
+            services: ["dojo"]
+            wait_on: http://localhost:9999
+          - suite: langroid
+            test_path: tests/langroidTests
+            services: ["dojo", "langroid"]
+            wait_on: http://localhost:9999,tcp:localhost:8021
+          - suite: langgraph-python
+            test_path: tests/langgraphPythonTests
+            services: ["dojo", "langgraph-platform-python"]
+            wait_on: http://localhost:9999,tcp:localhost:8005
+          - suite: langgraph-typescript
+            test_path: tests/langgraphTypescriptTests
+            services: ["dojo", "langgraph-platform-typescript"]
+            wait_on: http://localhost:9999,tcp:localhost:8006
+          - suite: langgraph-fastapi
+            test_path: tests/langgraphFastAPITests
+            services: ["dojo", "langgraph-fastapi"]
+            wait_on: http://localhost:9999,tcp:localhost:8004
+          - suite: llama-index
+            test_path: tests/llamaIndexTests
+            services: ["dojo", "llama-index"]
+            wait_on: http://localhost:9999,tcp:localhost:8007
+          - suite: mastra
+            test_path: tests/mastraTests
+            services: ["dojo", "mastra"]
+            wait_on: http://localhost:9999,tcp:localhost:8008
+          - suite: mastra-agent-local
+            test_path: tests/mastraAgentLocalTests
+            services: ["dojo"]
+            wait_on: http://localhost:9999
+          - suite: middleware-starter
+            test_path: tests/middlewareStarterTests
+            services: ["dojo"]
+            wait_on: http://localhost:9999
+          - suite: pydantic-ai
+            test_path: tests/pydanticAITests
+            services: ["dojo", "pydantic-ai"]
+            wait_on: http://localhost:9999,tcp:localhost:8009
+          - suite: server-starter
+            test_path: tests/serverStarterTests
+            services: ["dojo", "server-starter"]
+            wait_on: http://localhost:9999,tcp:localhost:8000
+          - suite: server-starter-all
+            test_path: tests/serverStarterAllFeaturesTests
+            services: ["dojo", "server-starter-all"]
+            wait_on: http://localhost:9999,tcp:localhost:8001
+          - suite: aws-strands
+            test_path: tests/awsStrandsTests
+            services: ["dojo", "aws-strands"]
+            wait_on: http://localhost:9999,tcp:localhost:8017
+          - suite: aws-strands-typescript
+            test_path: tests/awsStrandsTypescriptTests
+            services: ["dojo", "aws-strands-typescript"]
+            wait_on: http://localhost:9999,tcp:localhost:8022
+          - suite: claude-agent-sdk-python
+            test_path: tests/claudeAgentSdkPythonTests
+            services: ["dojo", "claude-agent-sdk-python"]
+            wait_on: http://localhost:9999,tcp:localhost:8019
+          - suite: claude-agent-sdk-typescript
+            test_path: tests/claudeAgentSdkTypescriptTests
+            services: ["dojo", "claude-agent-sdk-typescript"]
+            wait_on: http://localhost:9999,tcp:localhost:8020
+          # Claude Managed Agents is a hosted session API rather than a model
+          # API, so these lanes run against the scripted fake mounted on aimock
+          # (apps/dojo/e2e/managed-agents-fake.ts), not against fixtures.
+          - suite: claude-managed-agents-python
+            test_path: tests/claudeManagedAgentsPythonTests
+            services: ["dojo", "claude-managed-agents-python"]
+            wait_on: http://localhost:9999,http-get://localhost:8025/health
+          - suite: claude-managed-agents-typescript
+            test_path: tests/claudeManagedAgentsTypescriptTests
+            services: ["dojo", "claude-managed-agents-typescript"]
+            wait_on: http://localhost:9999,http-get://localhost:8024/health
+          - suite: claude-managed-agents-dotnet
+            test_path: tests/claudeManagedAgentsDotnetTests
+            services: ["dojo", "claude-managed-agents-dotnet"]
+            wait_on: http://localhost:9999,http-get://localhost:8026/health
+          - suite: ag2
+            test_path: tests/ag2Tests
+            services: ["dojo", "ag2"]
+            wait_on: http://localhost:9999,tcp:localhost:8018
+          - suite: microsoft-agent-framework-python
+            test_path: tests/microsoftAgentFrameworkPythonTests
+            services: ["dojo", "microsoft-agent-framework-python"]
+            wait_on: http://localhost:9999,tcp:localhost:8015
+          - suite: microsoft-agent-framework-dotnet
+            test_path: tests/microsoftAgentFrameworkDotnetTests
+            services: ["dojo", "microsoft-agent-framework-dotnet"]
+            wait_on: http://localhost:9999,tcp:localhost:8016
+          - suite: ag-ui-dotnet
+            test_path: tests/agUiDotnetTests
+            services: ["dojo", "ag-ui-dotnet"]
+            wait_on: http://localhost:9999,tcp:localhost:8023
+          # In-process with the Dojo; keyless runs point the agent at aimock
+          # (WATSONX_BASE_URL in scripts/run-dojo-everything.js).
+          - suite: watsonx
+            test_path: tests/watsonxTests
+            services: ["dojo"]
+            wait_on: http://localhost:9999
+          # - suite: vercel-ai-sdk
+          #   test_path: tests/vercelAISdkTests
+          #   services: ["dojo"]
+          #   wait_on: http://localhost:9999
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Detect fork PR
+        id: fork-check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && \
+                "${GITHUB_EVENT_PULL_REQUEST_HEAD_REPO_FULL_NAME}" != "${{ github.repository }}" ]]; then
+            prefix="fork-"
+          else
+            prefix=""
+          fi
+          # Published-mode installs differ from the lockfiles the cache keys hash,
+          # so keep their caches apart from the source-mode ones.
+          if [[ "${PUBLISHED}" == "true" ]]; then
+            prefix="${prefix}published-"
+          fi
+          echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_EVENT_PULL_REQUEST_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          PUBLISHED: ${{ inputs.published == true }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.33.4
+
+      # Now that pnpm is available, cache its store to speed installs
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      - name: Cache pnpm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-pnpm-store-
+
+      - name: Cache Python dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/pypoetry
+            ~/.cache/uv
+            **/.venv
+          # The toolchain segments keep a venv built by one uv/Python from being
+          # restored into a job expecting another — including via restore-keys,
+          # which would otherwise reach past them on a key miss. Note the limit:
+          # this path also captures Poetry-built venvs, and Poetry is installed at
+          # `version: latest` below, so a Poetry upgrade is NOT reflected in the key.
+          key: ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-pydeps-py${{ env.PYTHON_VERSION }}-uv${{ env.UV_VERSION }}-${{ matrix.suite }}-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-pydeps-py${{ env.PYTHON_VERSION }}-uv${{ env.UV_VERSION }}-${{ matrix.suite }}-
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-pydeps-py${{ env.PYTHON_VERSION }}-uv${{ env.UV_VERSION }}-
+
+      - name: Cache Next.js build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}/apps/dojo/.next/cache
+          key: ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('apps/dojo/src/**/*.ts', 'apps/dojo/src/**/*.tsx', 'apps/dojo/src/**/*.js', 'apps/dojo/src/**/*.jsx') }}
+          restore-keys: |
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+
+      - name: Install Poetry
+        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263  # v1.4.2
+        with:
+          version: latest
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      # uv itself is only invoked indirectly here — the example apps under
+      # integrations/*/python/examples are synced by
+      # apps/dojo/scripts/prep-dojo-everything.js. Those syncs are deliberately
+      # not frozen (the script is shared with local dev, where relocking is
+      # wanted), so this pin is what keeps the interpreter and resolver stable
+      # across e2e runs.
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up .NET SDK
+        if: ${{ contains(join(matrix.services, ','), 'microsoft-agent-framework-dotnet') || contains(join(matrix.services, ','), 'ag-ui-dotnet') || contains(join(matrix.services, ','), 'claude-managed-agents-dotnet') }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      # Published mode: rewrite this lane's manifests to the latest npm / PyPI /
+      # NuGet releases before anything is installed. See
+      # apps/dojo/scripts/published-mode.js and the "Published mode" section of
+      # apps/dojo/README.md.
+      - name: Switch lane to published releases
+        if: ${{ inputs.published }}
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: node apps/dojo/scripts/published-mode.js apply --lanes "$SUITE"
+
+      # The published-mode rewrite changes manifests, so the lockfile can't be frozen.
+      - name: Install dependencies
+        env:
+          PUBLISHED: ${{ inputs.published == true }}
+        run: |
+          if [[ "${PUBLISHED}" == "true" ]]; then
+            pnpm install --no-frozen-lockfile
+          else
+            pnpm install --frozen-lockfile
+          fi
+
+      - name: Prepare dojo for e2e
+        working-directory: apps/dojo
+        if: ${{ join(matrix.services, ',') != '' }}
+        env:
+          PUBLISHED: ${{ inputs.published == true }}
+          SERVICES: ${{ join(matrix.services, ',') }}
+        run: |
+          if [[ "${PUBLISHED}" == "true" ]]; then
+            # Example projects with their own lockfile (e.g. langgraph/typescript/examples)
+            # run a plain `pnpm install`, which CI would otherwise freeze.
+            export npm_config_frozen_lockfile=false
+          fi
+          node ./scripts/prep-dojo-everything.js --only "$SERVICES"
+
+      # A source override in the server (e.g. a sys.path insert) would keep a
+      # Python lane on repo code while the report credits the PyPI release.
+      - name: Verify the lane runs the installed releases
+        if: ${{ inputs.published }}
+        env:
+          SUITE: ${{ matrix.suite }}
+          OPENAI_API_KEY: sk-verify-sources
+        run: node apps/dojo/scripts/published-mode.js verify-sources --lane "$SUITE"
+
+      - name: Cache Playwright browsers
+        id: cache-playwright
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-playwright-${{ hashFiles('apps/dojo/e2e/package.json') }}
+          restore-keys: |
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-playwright-
+
+      - name: Install e2e dependencies
+        working-directory: apps/dojo/e2e
+        run: pnpm install --ignore-scripts
+
+      # Neither --with-deps nor install-deps: both shell out to apt, and apt on the
+      # runners cannot always reach azure.archive.ubuntu.com — it can retry for long
+      # enough to burn this job's whole timeout before a test runs. Chromium's system
+      # libraries are already present on the Ubuntu runner image, so downloading the
+      # browser is all this job needs.
+      #
+      # No cache-hit guard either. actions/cache only reports cache-hit: true on an
+      # exact key match, so any change to apps/dojo/e2e/package.json restores the
+      # browsers via restore-keys and still reports a miss. On such a restore the
+      # browsers are already in ~/.cache/ms-playwright and this returns in seconds.
+      - name: Install Playwright browsers
+        working-directory: apps/dojo/e2e
+        run: pnpm exec playwright install chromium
+
+      - name: Create langgraph stub .env files
+        if: ${{ contains(join(matrix.services, ','), 'langgraph-platform-python') || contains(join(matrix.services, ','), 'langgraph-platform-typescript') }}
+        run: |
+          # langgraph.json declares "env": ".env" — the CLI requires this file
+          # to exist on disk. Values don't matter since run-dojo-everything.js
+          # injects LLMock env vars into the process environment.
+          touch integrations/langgraph/python/examples/.env
+          touch integrations/langgraph/typescript/examples/.env
+
+      - name: write langroid env files
+        working-directory: integrations/langroid/python/examples
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        # Only inject OPENAI_API_KEY for same-repo PRs / push events.
+        # Fork PRs skip this step (and the langroid suite that depends on it)
+        # to prevent secret exfiltration via a malicious PR modifying the
+        # langroid test runner. Tracked for follow-up: move langroid e2e to a
+        # workflow_run pattern so fork PRs can run with secrets injected in
+        # the trusted base context.
+        if: >-
+          contains(join(matrix.services, ','), 'langroid')
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository)
+        run: |
+          echo "OPENAI_API_KEY=${OPENAI_API_KEY}" > .env
+
+      - name: Run dojo+agents
+        uses: JarvusInnovations/background-action@1f5e5fa2462e48a95f97b54b4842d076d1008e3b  # v2.0.0
+        if: ${{ join(matrix.services, ',') != '' && contains(join(matrix.services, ','), 'dojo') }}
+        env:
+          # Backend tool-rendering demos call the live open-meteo API, which
+          # rate-limits CI's shared egress IPs and hangs the e2e tests. Return
+          # canned weather data instead so these suites are deterministic.
+          AG_UI_MOCK_WEATHER: "1"
+        with:
+          run: |
+            node ../scripts/run-dojo-everything.js --only ${{ join(matrix.services, ',') }}
+          working-directory: apps/dojo/e2e
+          wait-on: ${{ matrix.wait_on }}
+          wait-for: 300000
+
+      - name: Run tests – ${{ matrix.suite }}
+        working-directory: apps/dojo/e2e
+        env:
+          BASE_URL: http://localhost:9999
+          PLAYWRIGHT_SUITE: ${{ matrix.suite }}
+        run: |
+          pnpm test -- ${{ matrix.test_path }}
+
+      - name: Upload traces – ${{ matrix.suite }}
+        if: always() # Uploads artifacts even if tests fail
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ${{ matrix.suite }}-playwright-traces
+          path: |
+            apps/dojo/e2e/test-results/${{ matrix.suite }}/**/*
+            apps/dojo/e2e/playwright-report/**/*
+          retention-days: 7
+
+      - name: Report published versions – ${{ matrix.suite }}
+        if: ${{ always() && inputs.published }}
+        env:
+          SUITE: ${{ matrix.suite }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          node apps/dojo/scripts/published-mode.js report \
+            --lane "$SUITE" --outcome "$JOB_STATUS" --out "published-report/${SUITE}.json"
+
+      - name: Upload published-mode report – ${{ matrix.suite }}
+        if: ${{ always() && inputs.published }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: published-report-${{ matrix.suite }}
+          path: published-report/${{ matrix.suite }}.json
+          retention-days: 30

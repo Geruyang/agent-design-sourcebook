@@ -1,0 +1,405 @@
+import { useState, useId, useRef, memo, useCallback, useMemo } from 'react';
+import * as Ariakit from '@ariakit/react';
+import { QueryKeys } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import { useParams, useNavigate } from 'react-router-dom';
+import { DropdownPopup, Spinner, useToastContext } from '@librechat/client';
+import { Ellipsis, Archive, ArchiveRestore, Mail, Pen, Pin, Trash } from 'lucide-react';
+import type { TMessage } from 'librechat-data-provider';
+import type { MouseEvent } from 'react';
+import {
+  useDeleteConversationMutation,
+  useArchiveConvoMutation,
+  usePinConversationMutation,
+  useMarkConversationUnreadMutation,
+} from '~/data-provider';
+import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
+import { useLocalize, useNewConvo } from '~/hooks';
+import { NotificationSeverity } from '~/common';
+import { cn, rowActionClasses } from '~/utils';
+import DeleteButton from './DeleteButton';
+/** The overflow menu and the shift-held quick action show the same archive control in two
+ *  sizes, and must never disagree about which direction it moves the conversation. */
+function renderArchiveIcon(isLoading: boolean, isArchived: boolean, className: string) {
+  if (isLoading) {
+    return <Spinner className="size-4" />;
+  }
+  if (isArchived) {
+    return <ArchiveRestore className={className} aria-hidden="true" />;
+  }
+  return <Archive className={className} aria-hidden="true" />;
+}
+
+function ConvoOptions({
+  conversationId,
+  title,
+  isPinned = false,
+  isArchived = false,
+  isUnseen = false,
+  retainView,
+  renameHandler,
+  canRename = true,
+  isPopoverActive,
+  setIsPopoverActive,
+  isActiveConvo,
+  isShiftHeld = false,
+  isGenerating = false,
+  contextMenuPosition,
+}: {
+  conversationId: string | null;
+  title: string | null;
+  isPinned?: boolean;
+  /** This row's own archive state, which the sidebar filter does not stand in for. */
+  isArchived?: boolean;
+  isUnseen?: boolean;
+  retainView: () => void;
+  renameHandler: (e: MouseEvent) => void;
+  canRename?: boolean;
+  isPopoverActive: boolean;
+  setIsPopoverActive: (open: boolean) => void;
+  isActiveConvo: boolean;
+  isShiftHeld?: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
+}) {
+  const localize = useLocalize();
+  const queryClient = useQueryClient();
+  const isSmallScreen = useDrawerViewport();
+  const { setConversation } = useChatContext();
+  const { showToast } = useToastContext();
+  /* Archiving or restoring removes the row from the list that held it, unmounting this
+     menu: the announcement has to come from a live region that outlives the row. */
+  const { announcePolite } = useLiveAnnouncer();
+
+  const navigate = useNavigate();
+  const { conversationId: currentConvoId } = useParams();
+  /* A mutation callback outlives the click that made it: the route it should compare
+     against is whichever chat is open when the request resolves, not the one that was
+     open when the menu item was pressed. */
+  const openConvoIdRef = useRef(currentConvoId);
+  openConvoIdRef.current = currentConvoId;
+  const { newConversation } = useNewConvo();
+
+  const menuId = useId();
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+
+  const archiveConvoMutation = useArchiveConvoMutation();
+  const pinConvoMutation = usePinConversationMutation();
+  const markUnreadMutation = useMarkConversationUnreadMutation();
+
+  const deleteMutation = useDeleteConversationMutation({
+    onSuccess: () => {
+      if (currentConvoId === conversationId || currentConvoId === 'new') {
+        newConversation();
+        navigate('/c/new', { replace: true });
+      }
+      retainView();
+      showToast({
+        message: localize('com_ui_convo_delete_success'),
+        severity: NotificationSeverity.SUCCESS,
+        showIcon: true,
+      });
+    },
+    onError: () => {
+      showToast({
+        message: localize('com_ui_convo_delete_error'),
+        severity: NotificationSeverity.ERROR,
+        showIcon: true,
+      });
+    },
+  });
+
+  const isArchiveLoading = archiveConvoMutation.isLoading;
+  const isPinLoading = pinConvoMutation.isLoading;
+  const isDeleteLoading = deleteMutation.isLoading;
+
+  const deleteHandler = useCallback(() => {
+    setShowDeleteDialog(true);
+  }, []);
+
+  const handleInstantDelete = useCallback(
+    (e: MouseEvent) => {
+      e.stopPropagation();
+      const convoId = conversationId ?? '';
+      if (!convoId) {
+        return;
+      }
+      const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, convoId]);
+      const thread_id = messages?.[messages.length - 1]?.thread_id;
+      const endpoint = messages?.[messages.length - 1]?.endpoint;
+      deleteMutation.mutate({ conversationId: convoId, thread_id, endpoint, source: 'button' });
+    },
+    [conversationId, deleteMutation, queryClient],
+  );
+
+  const handleArchiveClick = useCallback(
+    async (e?: MouseEvent) => {
+      e?.stopPropagation();
+      const convoId = conversationId ?? '';
+      if (!convoId) {
+        return;
+      }
+
+      archiveConvoMutation.mutate(
+        { conversationId: convoId, isArchived: !isArchived },
+        {
+          onSuccess: () => {
+            /* The request outlives the row: by the time it resolves the user may have opened
+               another chat, so the open conversation is identified at commit time rather than
+               from the one this callback closed over. */
+            setConversation((prev) =>
+              prev?.conversationId === convoId ? { ...prev, isArchived: !isArchived } : prev,
+            );
+            announcePolite({
+              message: localize(isArchived ? 'com_ui_convo_unarchived' : 'com_ui_convo_archived'),
+              isStatus: true,
+            });
+            const openConvoId = openConvoIdRef.current;
+            if (!isArchived && (openConvoId === convoId || openConvoId === 'new')) {
+              newConversation();
+              navigate('/c/new', { replace: true });
+            }
+            retainView();
+            setIsPopoverActive(false);
+          },
+          onError: () => {
+            showToast({
+              message: localize(isArchived ? 'com_ui_unarchive_error' : 'com_ui_archive_error'),
+              severity: NotificationSeverity.ERROR,
+              showIcon: true,
+            });
+          },
+        },
+      );
+    },
+    [
+      conversationId,
+      isArchived,
+      setConversation,
+      archiveConvoMutation,
+      navigate,
+      newConversation,
+      retainView,
+      setIsPopoverActive,
+      announcePolite,
+      showToast,
+      localize,
+    ],
+  );
+
+  const handlePinClick = useCallback(() => {
+    const convoId = conversationId ?? '';
+    if (!convoId) {
+      return;
+    }
+    pinConvoMutation.mutate(
+      { conversationId: convoId, pinned: !isPinned },
+      {
+        onSuccess: () => setIsPopoverActive(false),
+        onError: () => {
+          showToast({
+            message: localize(isPinned ? 'com_ui_unpin_error' : 'com_ui_pin_error'),
+            severity: NotificationSeverity.ERROR,
+            showIcon: true,
+          });
+        },
+      },
+    );
+  }, [conversationId, isPinned, pinConvoMutation, setIsPopoverActive, showToast, localize]);
+
+  const handleMarkUnreadClick = useCallback(() => {
+    const convoId = conversationId ?? '';
+    if (!convoId) {
+      return;
+    }
+    markUnreadMutation.mutate(
+      { conversationId: convoId },
+      {
+        onSuccess: () => setIsPopoverActive(false),
+        onError: () => {
+          showToast({
+            message: localize('com_ui_mark_unread_error'),
+            severity: NotificationSeverity.ERROR,
+            showIcon: true,
+          });
+        },
+      },
+    );
+  }, [conversationId, markUnreadMutation, setIsPopoverActive, showToast, localize]);
+
+  const dropdownItems = useMemo(
+    () => [
+      {
+        label: localize(isPinned ? 'com_ui_unpin' : 'com_ui_pin'),
+        onClick: handlePinClick,
+        hideOnClick: false,
+        icon: isPinLoading ? (
+          <Spinner className="size-4" />
+        ) : (
+          <Pin className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+        ),
+      },
+      {
+        label: localize('com_ui_mark_unread'),
+        onClick: handleMarkUnreadClick,
+        /* The conversation on screen is definitionally read: its own seen triggers would
+           clear the flag the moment it is set. */
+        show: !isActiveConvo && !isUnseen,
+        icon: <Mail className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+      },
+      {
+        label: localize('com_ui_rename'),
+        onClick: renameHandler,
+        disabled: !canRename,
+        icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+      },
+      {
+        label: localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive'),
+        onClick: handleArchiveClick,
+        hideOnClick: false,
+        icon: renderArchiveIcon(isArchiveLoading, isArchived, 'icon-sm mr-2 text-text-primary'),
+      },
+      {
+        label: localize('com_ui_delete'),
+        onClick: deleteHandler,
+        icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        ariaHasPopup: 'dialog' as const,
+        ariaControls: 'delete-conversation-dialog',
+        /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
+        hideOnClick: false,
+        ref: deleteButtonRef,
+        render: (props) => <button {...props} />,
+      },
+    ],
+    [
+      localize,
+      isPinned,
+      isUnseen,
+      isActiveConvo,
+      isPinLoading,
+      renameHandler,
+      canRename,
+      deleteHandler,
+      isArchiveLoading,
+      isArchived,
+      handlePinClick,
+      handleMarkUnreadClick,
+      handleArchiveClick,
+    ],
+  );
+
+  const buttonClassName = rowActionClasses({
+    visible: isActiveConvo === true || isPopoverActive || isSmallScreen || isGenerating,
+  });
+
+  if (isShiftHeld && isActiveConvo && !isPopoverActive && !showDeleteDialog) {
+    return (
+      <div className="flex items-center gap-0.5">
+        <button
+          aria-label={localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive')}
+          className={buttonClassName}
+          onClick={handleArchiveClick}
+          disabled={isArchiveLoading}
+        >
+          {renderArchiveIcon(isArchiveLoading, isArchived, 'icon-md text-text-secondary')}
+        </button>
+        <button
+          aria-label={localize('com_ui_delete')}
+          className={buttonClassName}
+          onClick={handleInstantDelete}
+          disabled={isDeleteLoading}
+        >
+          {isDeleteLoading ? (
+            <Spinner className="size-4" />
+          ) : (
+            <Trash className="icon-md text-text-secondary" aria-hidden={true} />
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <DropdownPopup
+        /**
+         * Must portal: the row sits inside the nav's `overflow-hidden` and a
+         * virtualized list, and on mobile inside a transformed drawer that
+         * would become the containing block. Portaling escapes all three.
+         * The drawer cannot occlude it — the drawer's z-index only ranks it
+         * within `Root`'s `relative z-0` stacking context, while this lands on
+         * `document.body` outside it.
+         */
+        portal={true}
+        getAnchorRect={
+          contextMenuPosition ? () => ({ ...contextMenuPosition, width: 0, height: 0 }) : undefined
+        }
+        menuId={menuId}
+        focusLoop={true}
+        finalFocus={menuButtonRef}
+        autoFocusOnShow={true}
+        className="z-[125]"
+        unmountOnHide={true}
+        isOpen={isPopoverActive}
+        setIsOpen={setIsPopoverActive}
+        trigger={
+          <Ariakit.MenuButton
+            ref={menuButtonRef}
+            id={`conversation-menu-${conversationId}`}
+            aria-label={localize('com_nav_convo_menu_options')}
+            aria-expanded={isPopoverActive}
+            /** Shared with the shift-held variant so both obey the same reveal rules. */
+            className={cn(
+              buttonClassName,
+              'gap-2',
+              /** The hover fill persists while the menu is open, even once the
+               *  pointer moves into the dropdown. */
+              isPopoverActive && 'bg-surface-active text-text-primary',
+            )}
+            onClick={(e: MouseEvent<HTMLButtonElement>) => {
+              e.stopPropagation();
+            }}
+            onKeyDown={(e: React.KeyboardEvent<HTMLButtonElement>) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+              }
+            }}
+          >
+            <Ellipsis className="icon-md" aria-hidden={true} />
+          </Ariakit.MenuButton>
+        }
+        items={dropdownItems}
+      />
+      {showDeleteDialog && (
+        <DeleteButton
+          title={title ?? ''}
+          retainView={retainView}
+          triggerRef={deleteButtonRef}
+          setMenuOpen={setIsPopoverActive}
+          showDeleteDialog={showDeleteDialog}
+          conversationId={conversationId ?? ''}
+          setShowDeleteDialog={setShowDeleteDialog}
+        />
+      )}
+    </>
+  );
+}
+
+export default memo(ConvoOptions, (prevProps, nextProps) => {
+  return (
+    prevProps.conversationId === nextProps.conversationId &&
+    prevProps.title === nextProps.title &&
+    prevProps.canRename === nextProps.canRename &&
+    prevProps.isPinned === nextProps.isPinned &&
+    prevProps.isArchived === nextProps.isArchived &&
+    prevProps.isUnseen === nextProps.isUnseen &&
+    prevProps.isPopoverActive === nextProps.isPopoverActive &&
+    prevProps.isActiveConvo === nextProps.isActiveConvo &&
+    prevProps.isShiftHeld === nextProps.isShiftHeld &&
+    prevProps.isGenerating === nextProps.isGenerating &&
+    prevProps.contextMenuPosition === nextProps.contextMenuPosition
+  );
+});

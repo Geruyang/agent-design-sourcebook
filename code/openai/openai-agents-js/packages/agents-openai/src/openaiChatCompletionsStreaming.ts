@@ -1,0 +1,511 @@
+import type { Stream } from 'openai/streaming';
+import type { CompletionUsage } from 'openai/resources/completions';
+import { ModelBehaviorError, protocol, UserError } from '@openai/agents-core';
+import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
+import {
+  ChatCompletion,
+  type ChatCompletionAudio,
+  ChatCompletionChunk,
+} from 'openai/resources/chat';
+import { FAKE_ID } from './openaiItemIds';
+import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
+import logger from './logger';
+import {
+  CONTENT_FILTER_REFUSAL_MESSAGE,
+  shouldSynthesizeContentFilterRefusal,
+} from './openaiChatCompletionsContentFilter';
+import {
+  createTruncatedEmptyChatCompletionError,
+  isTruncatedEmptyChatCompletion,
+} from './openaiChatCompletionsTruncation';
+
+type StreamingState = {
+  started: boolean;
+  text_content: protocol.OutputText | null;
+  audio: ChatCompletionAudioSnapshot | null;
+  annotations: ChatCompletionAnnotation[];
+  messageItemId: string | undefined;
+  refusal_content: protocol.Refusal | null;
+  function_calls: Record<number, protocol.FunctionCallItem>;
+  ignored_tool_call_indexes: Set<number>;
+  reasoning: string;
+  finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
+  hasWarnedUnsupportedChoice: boolean;
+};
+
+type ChatCompletionAudioSnapshot = Partial<ChatCompletionAudio> &
+  Record<string, unknown>;
+
+type ChatCompletionAnnotation = NonNullable<
+  ChatCompletion['choices'][number]['message']['annotations']
+>[number];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function appendAudioDelta(
+  snapshot: ChatCompletionAudioSnapshot | null,
+  rawAudio: unknown,
+): ChatCompletionAudioSnapshot {
+  if (!isRecord(rawAudio)) {
+    throw new ModelBehaviorError(
+      'Chat Completions stream returned malformed audio output: expected delta.audio to be an object.',
+    );
+  }
+
+  const audio = snapshot ?? {};
+  for (const [key, value] of Object.entries(rawAudio)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (key === 'data') {
+      if (typeof value !== 'string') {
+        throw new ModelBehaviorError(
+          'Chat Completions stream returned malformed audio output: expected delta.audio.data to be a string.',
+        );
+      }
+      audio.data = `${audio.data ?? ''}${value}`;
+    } else if (key === 'transcript') {
+      if (typeof value !== 'string') {
+        throw new ModelBehaviorError(
+          'Chat Completions stream returned malformed audio output: expected delta.audio.transcript to be a string.',
+        );
+      }
+      audio.transcript = `${audio.transcript ?? ''}${value}`;
+    } else {
+      Object.defineProperty(audio, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return audio;
+}
+
+function normalizeUrlCitations(
+  rawAnnotations: unknown,
+): ChatCompletionAnnotation[] {
+  if (!Array.isArray(rawAnnotations)) {
+    return [];
+  }
+
+  const annotations: ChatCompletionAnnotation[] = [];
+  for (const annotation of rawAnnotations) {
+    if (
+      !isRecord(annotation) ||
+      annotation.type !== 'url_citation' ||
+      !isRecord(annotation.url_citation)
+    ) {
+      continue;
+    }
+
+    const { start_index, end_index, url, title } = annotation.url_citation;
+    if (
+      typeof start_index !== 'number' ||
+      !Number.isFinite(start_index) ||
+      typeof end_index !== 'number' ||
+      !Number.isFinite(end_index) ||
+      typeof url !== 'string' ||
+      typeof title !== 'string'
+    ) {
+      continue;
+    }
+
+    annotations.push({
+      type: 'url_citation',
+      url_citation: { start_index, end_index, url, title },
+    });
+  }
+  return annotations;
+}
+
+function isSameUrlCitation(
+  left: ChatCompletionAnnotation,
+  right: ChatCompletionAnnotation,
+): boolean {
+  return (
+    left.url_citation.start_index === right.url_citation.start_index &&
+    left.url_citation.end_index === right.url_citation.end_index &&
+    left.url_citation.url === right.url_citation.url &&
+    left.url_citation.title === right.url_citation.title
+  );
+}
+
+export async function* convertChatCompletionsStreamToResponses(
+  response: ChatCompletion,
+  stream: Stream<ChatCompletionChunk>,
+  options: {
+    strictFeatureValidation?: boolean;
+    preserveRawUsage?: boolean;
+  } = {},
+): AsyncIterable<protocol.StreamEvent> {
+  let usage: CompletionUsage | undefined = undefined;
+  let rawUsage: Record<string, unknown> | undefined;
+  const state: StreamingState = {
+    started: false,
+    text_content: null,
+    audio: null,
+    annotations: [],
+    messageItemId: undefined,
+    refusal_content: null,
+    function_calls: {},
+    ignored_tool_call_indexes: new Set(),
+    reasoning: '',
+    finishReason: null,
+    hasWarnedUnsupportedChoice: false,
+  };
+  const strictFeatureValidation = options.strictFeatureValidation ?? false;
+
+  for await (const chunk of stream) {
+    // Usage is not always reported on the final chunk: some OpenAI-compatible
+    // providers or gateways may emit a later chunk without usage after
+    // reporting usage, so only overwrite it when the current chunk actually
+    // carries usage data. Capture raw usage before exposing the chunk to the
+    // consumer so later mutations cannot change the snapshot.
+    if ((chunk as any).usage) {
+      const usagePayload = (chunk as any).usage as CompletionUsage;
+      if (options.preserveRawUsage === true) {
+        rawUsage = snapshotRawUsage(usagePayload);
+      }
+      usage = (rawUsage as CompletionUsage | undefined) ?? usagePayload;
+    }
+
+    if (chunk.id && (response.id === FAKE_ID || !response.id)) {
+      response.id = chunk.id;
+    }
+
+    const audioDelta = chunk.choices?.find(
+      (choice) => choice.index === 0,
+    )?.delta;
+    if (
+      audioDelta &&
+      Object.prototype.hasOwnProperty.call(audioDelta, 'audio')
+    ) {
+      const rawAudio = (audioDelta as { audio?: unknown }).audio;
+      if (rawAudio !== undefined && rawAudio !== null) {
+        let audioSnapshot: unknown;
+        try {
+          audioSnapshot = structuredClone(rawAudio);
+        } catch {
+          throw new ModelBehaviorError(
+            'Chat Completions stream returned malformed audio output: expected delta.audio to be cloneable.',
+          );
+        }
+        state.audio = appendAudioDelta(state.audio, audioSnapshot);
+      }
+    }
+
+    if (!state.started) {
+      state.started = true;
+      yield {
+        type: 'response_started',
+        providerData: {
+          ...chunk,
+        },
+      };
+    }
+
+    // always yield the raw event
+    yield {
+      type: 'model',
+      event: chunk,
+      providerData: {
+        rawModelEventSource: OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE,
+      },
+    };
+
+    if (!chunk.choices || chunk.choices.length === 0) continue;
+
+    const unsupportedChoiceIndexes = chunk.choices
+      .map((choice) => choice.index)
+      .filter((index) => index !== 0);
+    if (chunk.choices.length > 1 || unsupportedChoiceIndexes.length > 0) {
+      const message =
+        'Chat Completions streaming with multiple choices or nonzero choice indexes ' +
+        'is not fully supported; only choice index 0 can be processed.';
+      if (strictFeatureValidation) {
+        throw new UserError(message);
+      }
+      if (!state.hasWarnedUnsupportedChoice) {
+        logger.warn(
+          `${message} Ignoring the other choices; enable strict feature validation to raise an error instead.`,
+        );
+        state.hasWarnedUnsupportedChoice = true;
+      }
+    }
+
+    const primaryChoice = chunk.choices.find((choice) => choice.index === 0);
+    if (!primaryChoice) continue;
+    if (primaryChoice.finish_reason) {
+      state.finishReason = primaryChoice.finish_reason;
+    }
+    if (!primaryChoice.delta) continue;
+    const delta = primaryChoice.delta;
+
+    // Handle text
+    if (delta.content) {
+      if (!state.text_content) {
+        state.text_content = {
+          text: '',
+          type: 'output_text',
+          providerData: { annotations: state.annotations },
+        };
+        state.messageItemId =
+          response.id && response.id !== FAKE_ID ? response.id : undefined;
+      }
+      yield {
+        type: 'output_text_delta',
+        delta: delta.content,
+        ...(state.messageItemId ? { itemId: state.messageItemId } : {}),
+        providerData: {
+          ...chunk,
+        },
+      };
+      state.text_content.text += delta.content;
+    }
+
+    // Some providers emit URL citations with text or on a later annotation-only chunk.
+    if (state.text_content) {
+      const deltaAnnotations = (delta as { annotations?: unknown }).annotations;
+      for (const annotation of normalizeUrlCitations(deltaAnnotations)) {
+        if (
+          !state.annotations.some((existing) =>
+            isSameUrlCitation(existing, annotation),
+          )
+        ) {
+          state.annotations.push(annotation);
+        }
+      }
+    }
+
+    if (
+      'reasoning' in delta &&
+      delta.reasoning &&
+      typeof delta.reasoning === 'string'
+    ) {
+      state.reasoning += delta.reasoning;
+    }
+
+    // Handle refusals
+    if ('refusal' in delta && delta.refusal) {
+      if (!state.refusal_content) {
+        state.refusal_content = { refusal: '', type: 'refusal' };
+      }
+      state.refusal_content.refusal += delta.refusal;
+    }
+
+    // Handle tool calls
+    if (delta.tool_calls) {
+      for (const tc_delta of delta.tool_calls) {
+        if (state.ignored_tool_call_indexes.has(tc_delta.index)) {
+          continue;
+        }
+
+        if ((tc_delta as { type?: string }).type === 'custom') {
+          if (strictFeatureValidation) {
+            throw new UserError(
+              'Custom tool calls are not supported by the Chat Completions converter.',
+            );
+          }
+          state.ignored_tool_call_indexes.add(tc_delta.index);
+          continue;
+        }
+
+        if (!(tc_delta.index in state.function_calls)) {
+          state.function_calls[tc_delta.index] = {
+            id: response.id || FAKE_ID,
+            arguments: '',
+            name: '',
+            type: 'function_call',
+            callId: '',
+          };
+        }
+        const tc_function = tc_delta.function;
+        state.function_calls[tc_delta.index].arguments +=
+          tc_function?.arguments || '';
+        state.function_calls[tc_delta.index].name += tc_function?.name || '';
+        if (tc_delta.id && !state.function_calls[tc_delta.index].callId) {
+          state.function_calls[tc_delta.index].callId = tc_delta.id;
+        }
+      }
+    }
+  }
+
+  // Final output message
+  const outputs: protocol.OutputModelItem[] = [];
+  const outputItemId = response.id || FAKE_ID;
+
+  if (
+    shouldSynthesizeContentFilterRefusal({
+      finishReason: state.finishReason,
+      hasOutput: Boolean(
+        state.text_content?.text ||
+        state.audio !== null ||
+        state.refusal_content?.refusal ||
+        Object.keys(state.function_calls).length > 0 ||
+        state.ignored_tool_call_indexes.size > 0,
+      ),
+    })
+  ) {
+    state.refusal_content = {
+      type: 'refusal',
+      refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+    };
+  }
+
+  if (state.reasoning) {
+    outputs.push({
+      type: 'reasoning',
+      content: [],
+      rawContent: [{ type: 'reasoning_text', text: state.reasoning }],
+    });
+  }
+
+  let audioContent: protocol.AudioContent | null = null;
+  if (state.audio) {
+    const { data, ...providerData } = state.audio;
+    if (typeof data !== 'string') {
+      throw new ModelBehaviorError(
+        'Chat Completions stream ended with audio output but no audio data.',
+      );
+    }
+    audioContent = {
+      type: 'audio',
+      audio: data,
+      providerData,
+    };
+  }
+
+  if (state.text_content || state.refusal_content) {
+    const content: protocol.AssistantContent[] = [];
+    if (state.text_content) {
+      content.push(state.text_content);
+    }
+    if (state.refusal_content) {
+      content.push(state.refusal_content);
+    }
+    outputs.push({
+      id: state.messageItemId ?? outputItemId,
+      content,
+      role: 'assistant',
+      type: 'message',
+      status: 'completed',
+    });
+  } else if (audioContent) {
+    outputs.push({
+      id: outputItemId,
+      content: [audioContent],
+      role: 'assistant',
+      type: 'message',
+      status: 'completed',
+    });
+  }
+
+  for (const function_call of Object.values(state.function_calls)) {
+    function_call.id = outputItemId;
+    // Some providers, such as Bedrock, may send two items:
+    // 1) an empty argument, and 2) the actual argument data.
+    // This is a workaround for that specific behavior.
+    if (function_call.arguments.startsWith('{}{')) {
+      function_call.arguments = function_call.arguments.slice(2);
+    }
+    outputs.push(function_call);
+  }
+
+  const traceChoice = buildTraceChoice(state);
+  response.choices = traceChoice ? [traceChoice] : [];
+  response.usage = {
+    prompt_tokens: usage?.prompt_tokens ?? 0,
+    completion_tokens: usage?.completion_tokens ?? 0,
+    total_tokens: usage?.total_tokens ?? 0,
+    prompt_tokens_details: usage?.prompt_tokens_details,
+    completion_tokens_details: usage?.completion_tokens_details,
+  };
+
+  if (
+    isTruncatedEmptyChatCompletion({
+      finishReason: state.finishReason,
+      hasText: Boolean(state.text_content?.text),
+      hasRefusal: Boolean(state.refusal_content?.refusal),
+      hasAudio: state.audio !== null,
+      hasReasoning: state.reasoning.length > 0,
+      hasFunctionCall: Object.keys(state.function_calls).length > 0,
+    })
+  ) {
+    throw createTruncatedEmptyChatCompletionError();
+  }
+
+  // Compose final response
+  const finalEvent: protocol.StreamEventResponseCompleted = {
+    type: 'response_done',
+    response: {
+      id: response.id,
+      usage: {
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+        totalTokens: usage?.total_tokens ?? 0,
+        inputTokensDetails: {
+          cached_tokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        },
+        outputTokensDetails: {
+          reasoning_tokens:
+            (usage as any)?.completion_tokens_details?.reasoning_tokens ?? 0,
+        },
+      },
+      ...(options.preserveRawUsage === true ? { rawUsage } : {}),
+      output: outputs,
+    },
+  };
+
+  yield finalEvent;
+}
+
+function buildTraceChoice(
+  state: StreamingState,
+): ChatCompletion['choices'][number] | undefined {
+  const toolCalls = Object.entries(state.function_calls)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, functionCall]) => ({
+      id: functionCall.callId,
+      type: 'function' as const,
+      function: {
+        name: functionCall.name,
+        arguments: functionCall.arguments,
+      },
+    }));
+
+  const content = state.text_content?.text ?? null;
+  const refusal = state.refusal_content?.refusal ?? null;
+  const audio = state.audio;
+
+  if (
+    content === null &&
+    refusal === null &&
+    audio === null &&
+    toolCalls.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    index: 0,
+    logprobs: null,
+    finish_reason:
+      state.finishReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
+    message: {
+      role: 'assistant',
+      content,
+      refusal,
+      ...(audio
+        ? { audio: structuredClone(audio) as ChatCompletionAudio }
+        : {}),
+      ...(state.annotations.length > 0
+        ? { annotations: [...state.annotations] }
+        : {}),
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    },
+  };
+}

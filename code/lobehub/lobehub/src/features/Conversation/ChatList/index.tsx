@@ -1,0 +1,370 @@
+'use client';
+
+import type { UIChatMessage } from '@lobechat/types';
+import { Flexbox } from '@lobehub/ui';
+import type { ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo } from 'react';
+
+import AsyncError from '@/components/AsyncError';
+import { useFetchTopicMemories } from '@/hooks/useFetchMemoryForTopic';
+import { useFetchNotebookDocuments } from '@/hooks/useFetchNotebookDocuments';
+import { getMessageListCacheIdentity, isMessageListServerVerified } from '@/services/message/cache';
+import { useAgentStore } from '@/store/agent';
+import { useChatStore } from '@/store/chat';
+import { operationSelectors } from '@/store/chat/selectors';
+import {
+  hasPendingInterventions,
+  INTERVENTION_REFRESH_INTERVAL,
+} from '@/store/chat/utils/interventionSync';
+import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
+import { useUserStore } from '@/store/user';
+import { authSelectors, settingsSelectors } from '@/store/user/selectors';
+
+import WideScreenContainer from '../../WideScreenContainer';
+import SkeletonList from '../components/SkeletonList';
+import MessageItem from '../Messages';
+import type { WorkflowExpandLevelDefault } from '../Messages/AssistantGroup/components/WorkflowCollapse';
+import { BackgroundRunHintContext } from '../Messages/Contexts/BackgroundRunHintContext';
+import { MessageActionProvider } from '../Messages/Contexts/MessageActionProvider';
+import {
+  dataSelectors,
+  inputSelectors,
+  useConversationStore,
+  useConversationStoreApi,
+} from '../store';
+import AgentSignalReceiptList from './components/AgentSignalReceiptList';
+import { RefreshError } from './components/RefreshError';
+import VirtualizedList from './components/VirtualizedList';
+import { useAgentSignalReceipts } from './hooks/useAgentSignalReceipts';
+import { useInitialRevalidation } from './hooks/useInitialRevalidation';
+import { useMessageRefreshError } from './hooks/useMessageRefreshError';
+import { resolveMessageListFeedback } from './resolveMessageListFeedback';
+import { buildChatRows } from './utils/chatRows';
+import type { MessageDeepLink } from './utils/messageDeepLink';
+import { resolveMessageDeepLink } from './utils/messageDeepLink';
+import { resolveRefreshingRowId } from './utils/refreshingRow';
+
+const MessageAuthorConfigLoader = memo<{ agentId: string; isLogin: boolean | undefined }>(
+  ({ agentId, isLogin }) => {
+    const useFetchAgentConfig = useAgentStore((s) => s.useFetchAgentConfig);
+    useFetchAgentConfig(isLogin, agentId);
+    return null;
+  },
+);
+
+MessageAuthorConfigLoader.displayName = 'MessageAuthorConfigLoader';
+
+export interface ChatListProps {
+  /**
+   * Default expand level for assistant workflow (tool-call) groups. When set,
+   * pins the initial/reset state and overrides the built-in defaults
+   * (streaming `semi`, completion `collapsed`). Users can still toggle locally.
+   * - 'collapsed': show summary only
+   * - 'semi': constrained scrollable tool list
+   * - 'full': all tool details expanded
+   * Pass an object (e.g. `{ completion: 'full' }`) to override only one phase.
+   * Only applies to the default item renderer; ignored when `itemContent` is supplied.
+   */
+  defaultWorkflowExpandLevel?: WorkflowExpandLevelDefault;
+  /**
+   * Disable the actions bar for all messages (e.g., in share page)
+   */
+  disableActionsBar?: boolean;
+  /**
+   * Optional visibility filter applied to the rendered list only. Data flows
+   * (fetch cache, AI context assembly, message counts) are untouched — used
+   * e.g. by the thread portal to collapse inherited main-chat history down to
+   * the fork message.
+   */
+  filterItem?: (message: UIChatMessage) => boolean;
+  /**
+   * Optional content rendered as the last item inside the virtualized list —
+   * scrolls with the messages instead of being pinned to the viewport bottom.
+   * Used e.g. for the SubAgent read-only hint after the last message.
+   */
+  footerSlot?: ReactNode;
+  /**
+   * Optional content rendered as the first item inside the virtualized list.
+   * It scrolls with messages and does not participate in conversation state.
+   */
+  headerSlot?: ReactNode;
+  /**
+   * Hide the "task keeps running on the server, you can leave" loading copy and
+   * show the plain dot loader instead (e.g. on external visitor surfaces).
+   */
+  hideBackgroundRunHint?: boolean;
+  /**
+   * Custom item renderer. If not provided, uses default ChatItem.
+   */
+  itemContent?: (index: number, id: string) => ReactNode;
+  /** Message hash target to locate after the virtual list has rendered. */
+  messageDeepLink?: MessageDeepLink;
+  /**
+   * Force showing welcome component even when messages exist
+   */
+  showWelcome?: boolean;
+  /**
+   * Welcome component to display when there are no messages
+   */
+  welcome?: ReactNode;
+}
+/**
+ * ChatList component for Conversation
+ *
+ * Uses ConversationStore for message data and fetching.
+ */
+const ChatList = memo<ChatListProps>(
+  ({
+    defaultWorkflowExpandLevel,
+    disableActionsBar,
+    filterItem,
+    footerSlot,
+    headerSlot,
+    hideBackgroundRunHint,
+    welcome,
+    itemContent,
+    messageDeepLink,
+    showWelcome,
+  }) => {
+    // Fetch messages (SWR key is null when skipFetch is true)
+    const context = useConversationStore((s) => s.context);
+    const enableUserMemories = useUserStore(settingsSelectors.memoryEnabled);
+    const [skipFetch, useFetchMessages] = useConversationStore((s) => [
+      dataSelectors.skipFetch(s),
+      s.useFetchMessages,
+    ]);
+    const activeAgentId = useChatStore((s) => s.activeAgentId);
+    // Pending cards still refresh during streaming; the data slice merges only
+    // intervention changes so lagging DB snapshots cannot replace live text.
+    const isStreaming = useChatStore(operationSelectors.isAgentRuntimeRunningByContext(context));
+    const hasPendingApproval = useConversationStore((s) => hasPendingInterventions(s.dbMessages));
+    // A client-minted topic whose server row does not exist yet (first-send
+    // window) must not be fetched: the query would legitimately return an empty
+    // list and `onData` would wipe the optimistic messages already on screen.
+    // Cleared when the server confirms the topic (`replaceTopicId`), at which
+    // point fetching resumes as normal.
+    const isCreatingTopic = useChatStore(
+      (s) => !!context.topicId && s.creatingTopicIds.includes(context.topicId),
+    );
+    const { enableAgentSelfIteration } = useServerConfigStore(featureFlagsSelectors);
+    const messagesSWR = useFetchMessages(context, {
+      refreshInterval: hasPendingApproval ? INTERVENTION_REFRESH_INTERVAL : 0,
+      revalidateOnFocus: hasPendingApproval || !isStreaming,
+      skipFetch: skipFetch || isCreatingTopic,
+      syncInterventions: true,
+    });
+    const messageListIdentity = getMessageListCacheIdentity(context);
+    const refreshError = useMessageRefreshError({
+      error: messagesSWR.error,
+      identity: messageListIdentity,
+      isValidating: messagesSWR.isValidating,
+      mutate: messagesSWR.mutate,
+    });
+    const isServerVerified = useCallback(() => isMessageListServerVerified(context), [context]);
+    const isInitialRevalidation = useInitialRevalidation({
+      identity: messageListIdentity,
+      isServerVerified,
+      isValidating: messagesSWR.isValidating,
+    });
+    const allDisplayMessages = useConversationStore(dataSelectors.displayMessages);
+    const displayMessages = useMemo(
+      () => (filterItem ? allDisplayMessages.filter(filterItem) : allDisplayMessages),
+      [allDisplayMessages, filterItem],
+    );
+    const displayMessageIds = useMemo(() => displayMessages.map((m) => m.id), [displayMessages]);
+    // Steered follow-up turns fold into the turn they interrupted. Custom item
+    // renderers address messages by id, so they keep the flat list.
+    const rows = useMemo(
+      () => (itemContent ? undefined : buildChatRows(displayMessages)),
+      [displayMessages, itemContent],
+    );
+    const rowIds = useMemo(
+      () => rows?.map((row) => row.id) ?? displayMessageIds,
+      [displayMessageIds, rows],
+    );
+    const rowById = useMemo(() => new Map(rows?.map((row) => [row.id, row])), [rows]);
+    const resolvedMessageDeepLink = useMemo(
+      () => resolveMessageDeepLink(displayMessages, rowIds, messageDeepLink),
+      [displayMessages, messageDeepLink, rowIds],
+    );
+    const overlayHeight = useConversationStore(inputSelectors.chatInputOverlayHeight);
+    const latestMessageId = displayMessageIds.at(-1);
+
+    // Skip fetching notebook and memories for share pages — topic shares may be
+    // anonymous, and agent-share visitors are not the owner these APIs scope to.
+    const isSharePage = !!context.topicShareId || !!context.agentShareId;
+    // TODO: Migrate Agent Signal receipts behind a dedicated user-visible receipt capability.
+    const canShowAgentSignalReceipts = enableAgentSelfIteration === true && !isSharePage;
+    const { receiptsByAnchor } = useAgentSignalReceipts({
+      agentId: canShowAgentSignalReceipts ? activeAgentId : undefined,
+      displayMessages,
+      enabled: canShowAgentSignalReceipts,
+      pollingSignal: latestMessageId,
+      topicId: canShowAgentSignalReceipts ? context.topicId : undefined,
+    });
+
+    // Ensure this conversation's agent config (meta) is loaded into the agent
+    // store, so message author titles resolve via useAgentMeta instead of
+    // falling back to "Untitled Agent". Route-level layouts already init the
+    // active agent, but secondary mounts never do — e.g. the share page mounts
+    // an arbitrary author's agent; without this they render "未命名助理".
+    // Idempotent: SWR dedupes against any route-level init by the same key,
+    // and is gated on isLogin (no fetch for anonymous share viewers).
+    // Agent-share visitors are signed in but NOT the owner: the owner-scoped
+    // config API resolves to null and `markAgentNotFound` would wipe the
+    // share-seeded agentMap entry, so skip the fetch entirely — the visitor
+    // page already seeds the meta from `getSharedAgent`.
+    const isLogin = useUserStore(authSelectors.isLogin);
+    const isAgentShareVisitor = !!context.agentShareId;
+    const useFetchAgentConfig = useAgentStore((s) => s.useFetchAgentConfig);
+    useFetchAgentConfig(isLogin && !isAgentShareVisitor, context.agentId);
+    const messageAuthorAgentIds = useMemo(
+      () =>
+        [...new Set(displayMessages.map((message) => message.agentId).filter(Boolean))].filter(
+          (agentId) => agentId !== context.agentId,
+        ) as string[],
+      [context.agentId, displayMessages],
+    );
+
+    // Fetch conversation context data when a conversation is visible (skip for share pages).
+    // NOTE: the agent-document list is intentionally NOT pre-warmed here — this
+    // mount discarded its result (nothing in the message list renders documents),
+    // yet it pulled the full unbounded list into the homepage batch. The surfaces
+    // that actually render documents (working sidebar / doc page) fetch on their
+    // own mount; the slash menu fetches the slim `non-web` variant.
+    useFetchNotebookDocuments(isSharePage ? undefined : context.topicId!);
+    useFetchTopicMemories(enableUserMemories && !isSharePage ? context.topicId : undefined);
+
+    // Use selectors for data
+
+    const defaultItemContent = useCallback(
+      (index: number, id: string) => {
+        const isLatestItem = rowIds.length === index + 1;
+        const row = rowById.get(id);
+        const anchoredReceipts = receiptsByAnchor.get(id) ?? [];
+        const receiptRender =
+          anchoredReceipts.length > 0 ? (
+            <AgentSignalReceiptList receipts={anchoredReceipts} />
+          ) : undefined;
+
+        return (
+          <MessageItem
+            continuations={row?.continuations}
+            defaultWorkflowExpandLevel={defaultWorkflowExpandLevel}
+            footerRender={receiptRender}
+            id={id}
+            index={index}
+            isLatestItem={isLatestItem}
+          />
+        );
+      },
+      [rowIds.length, rowById, defaultWorkflowExpandLevel, receiptsByAnchor],
+    );
+    const messagesInit = useConversationStore(dataSelectors.messagesInit);
+
+    // When topicId is null (new conversation), show welcome directly without waiting for fetch
+    // because there's no server data to fetch - only local optimistic updates exist
+    const isNewConversation = !context.topicId;
+    const feedback = resolveMessageListFeedback({
+      error: refreshError.error,
+      isInitialRevalidation,
+      isNewConversation,
+      isStreaming,
+      messagesInit,
+    });
+
+    // The hint renders inside the latest assistant row, which subscribes to the
+    // store itself (virtua would not repaint a cached row from a prop change).
+    // Resolved against the rows actually rendered: folded steer chains in the
+    // default list, flat (and possibly filtered) messages for custom renderers.
+    const refreshingRowId = useMemo(
+      () =>
+        feedback.showRefreshing ? resolveRefreshingRowId(displayMessages, !itemContent) : undefined,
+      [displayMessages, feedback.showRefreshing, itemContent],
+    );
+    const storeApi = useConversationStoreApi();
+    useEffect(() => {
+      storeApi.setState({ refreshingRowId });
+    }, [refreshingRowId, storeApi]);
+
+    // `messagesInit` is the settled-data signal: [] is a valid loaded result.
+    // A first-load failure owns the whole surface, while a background failure
+    // must preserve either the messages or the welcome state below.
+    if (feedback.showFirstLoadError) {
+      return (
+        <AsyncError
+          error={refreshError.error}
+          retrying={refreshError.isRetrying}
+          variant={'page'}
+          onRetry={refreshError.retry}
+        />
+      );
+    }
+
+    if (feedback.showSkeleton) {
+      // The header is chrome, not async content: dropping it here blanks a
+      // server-rendered title the moment the list mounts to fetch.
+      return (
+        <Flexbox height={'100%'} style={{ minHeight: 0, overflow: 'hidden' }}>
+          {headerSlot && <WideScreenContainer>{headerSlot}</WideScreenContainer>}
+          <SkeletonList />
+        </Flexbox>
+      );
+    }
+
+    const content =
+      (showWelcome || displayMessageIds.length === 0) && welcome ? (
+        <WideScreenContainer
+          style={{
+            boxSizing: 'border-box',
+            height: '100%',
+            paddingBottom: overlayHeight > 0 ? overlayHeight + 12 : undefined,
+          }}
+          wrapperStyle={{
+            minHeight: '100%',
+            overflowY: 'auto',
+          }}
+        >
+          {welcome}
+        </WideScreenContainer>
+      ) : (
+        <MessageActionProvider withSingletonActionsBar={!disableActionsBar}>
+          <BackgroundRunHintContext value={!hideBackgroundRunHint}>
+            <VirtualizedList
+              dataSource={rowIds}
+              footerSlot={footerSlot}
+              headerSlot={headerSlot}
+              itemContent={itemContent ?? defaultItemContent}
+              messageDeepLink={resolvedMessageDeepLink}
+            />
+          </BackgroundRunHintContext>
+        </MessageActionProvider>
+      );
+
+    return (
+      <Flexbox style={{ height: '100%', minHeight: 0 }}>
+        {messageAuthorAgentIds.map((agentId) => (
+          <MessageAuthorConfigLoader
+            agentId={agentId}
+            isLogin={isLogin && !isAgentShareVisitor}
+            key={agentId}
+          />
+        ))}
+        <Flexbox flex={1} style={{ minHeight: 0 }}>
+          {content}
+        </Flexbox>
+        {feedback.showBackgroundError && (
+          <RefreshError
+            error={refreshError.error}
+            retrying={refreshError.isRetrying}
+            onRetry={refreshError.retry}
+          />
+        )}
+      </Flexbox>
+    );
+  },
+);
+
+ChatList.displayName = 'ConversationChatList';
+
+export default ChatList;

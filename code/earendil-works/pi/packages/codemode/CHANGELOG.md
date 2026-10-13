@@ -1,0 +1,71 @@
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- Added `RemoteCodemodeSandbox`, which runs each script's VM in another isolate while tools run in the caller. `CodemodeSandboxDurableObject` from the new `@earendil-works/pi-codemode/cloudflare` entry is its remote end, deployed as its own Cloudflare Worker. `examples/cloudflare` shows the setup
+- Added `InlineCodemodeSandbox`, which runs the VM on the calling thread for runtimes without worker threads. Its `interruptBudget` limits scripts that compute without awaiting a tool
+- Added the `@earendil-works/pi-codemode/portable` entry, which has no Node imports, and `CodemodeSandboxBase`, the API all three sandboxes share
+
+### Changed
+
+- The VM now polls for interrupts while it drains promise jobs, so a script such as `while (true) await null` is stopped at the same points as a synchronous loop
+
+### Fixed
+
+- Fixed `CodemodeSandbox` failing with a broken bridge error when the host runs under `node --watch` on Node 24 or 26, which posts `watch:import`/`watch:require` messages on the worker channel ([#10725](https://github.com/earendil-works/pi/issues/10725))
+
+## [1.1.0] - 2026-10-07
+
+### Added
+
+- Added `console: true` to text output items produced by `console.*`, so hosts can tell them apart from `text()` output
+
+## [1.0.4] - 2026-10-05
+
+### Changed
+
+- Built-ins are frozen and built-in globals are read-only before the script runs, so patches such as `Array.prototype.toJSON = ...` have no effect. Instances can still override `constructor`, `name`, `message`, `toString`, `toLocaleString`, `valueOf`, `toJSON`, and `Object.prototype` members ([#10444](https://github.com/earendil-works/pi/issues/10444))
+
+### Fixed
+
+- Fixed a script that patched built-ins crashing the host process and leaving `execute()` unsettled. Malformed payloads from the worker now fail the execution with a `sandbox` error ([#10444](https://github.com/earendil-works/pi/issues/10444))
+
+## [1.0.3] - 2026-10-05
+
+## [1.0.2] - 2026-10-04
+
+## [1.0.1] - 2026-10-03
+
+### Fixed
+
+- Fixed scripts that print in a loop growing the host's memory until it crashes: output is limited to `MAX_OUTPUT_CHARS` (16 Mi) characters and `MAX_OUTPUT_ITEMS` (100000) items, and a script past either limit fails with a `RangeError` ([#10283](https://github.com/earendil-works/pi/issues/10283))
+
+## [1.0.0] - 2026-10-01
+
+### Added
+
+- Added `renderToolOutputType()`, the type a tool call resolves to.
+
+### Changed
+
+- Reading a member of `tools` or of a global namespace that does not exist now throws an error naming the close matches, instead of returning `undefined`. Use `"name" in tools` to check for a tool. `store()` size errors explain what the store is for.
+
+## [0.99.2] - 2026-09-30
+
+### Changed
+
+- Allowed `CodemodeSandbox.workerUrl` to be a string, as required for embedded worker entrypoints in Bun compiled executables ([#10204](https://github.com/earendil-works/pi/issues/10204)).
+
+### Fixed
+
+- Fixed `image()` accepting malformed base64 data and unsupported image types. It now throws a `TypeError` unless the data is valid base64 of a PNG, JPEG, GIF, or WebP image, derives the MIME type from the image signature instead of the declared type, and strips line breaks from wrapped base64 ([#10215](https://github.com/earendil-works/pi/issues/10215)).
+
+## [0.99.1] - 2026-09-29
+
+## [0.99.0] - 2026-09-29
+
+### Added
+
+- Initial spike: `CodemodeSandbox` runs model-written JavaScript in a worker thread and exposes injected tools as `tools.<name>(args)` async functions.

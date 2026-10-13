@@ -1,0 +1,631 @@
+"""Tests for LLM metrics classes."""
+
+import pytest
+from pydantic import ValidationError
+
+from openhands.sdk.llm.utils.metrics import (
+    Cost,
+    Metrics,
+    MetricsSnapshot,
+    ResponseLatency,
+    TokenUsage,
+)
+
+
+def test_cost_creation_valid():
+    """Test creating a valid Cost instance."""
+    cost = Cost(cost=5.0, model="gpt-4o-mini")
+    assert cost.cost == 5.0
+    assert cost.model == "gpt-4o-mini"
+    assert hasattr(cost, "timestamp")
+
+
+def test_cost_creation_zero():
+    """Test creating a Cost instance with zero cost."""
+    cost = Cost(cost=0.0, model="gpt-4o-mini")
+    assert cost.cost == 0.0
+
+
+def test_cost_creation_negative_fails():
+    """Test that negative cost raises ValidationError."""
+    with pytest.raises(ValidationError) as exc_info:
+        Cost(cost=-1.0, model="gpt-4o-mini")
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "greater_than_equal"
+    assert "cost" in errors[0]["loc"]
+
+
+def test_response_latency_creation_valid():
+    """Test creating a valid ResponseLatency instance."""
+    latency = ResponseLatency(model="gpt-4o-mini", latency=1.5, response_id="test-123")
+    assert latency.latency == 1.5
+    assert latency.response_id == "test-123"
+    assert latency.model == "gpt-4o-mini"
+
+
+def test_response_latency_creation_zero():
+    """Test creating a ResponseLatency instance with zero latency."""
+    latency = ResponseLatency(model="gpt-4o-mini", latency=0.0, response_id="test-123")
+    assert latency.latency == 0.0
+
+
+def test_response_latency_creation_negative_fails():
+    """Test that negative latency raises ValidationError."""
+    with pytest.raises(ValidationError) as exc_info:
+        ResponseLatency(model="gpt-4o-mini", latency=-0.5, response_id="test-123")
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "greater_than_equal"
+    assert "latency" in errors[0]["loc"]
+
+
+def test_token_usage_creation_valid():
+    """Test creating a valid TokenUsage instance."""
+    usage = TokenUsage(
+        model="gpt-4o-mini",
+        prompt_tokens=100,
+        completion_tokens=50,
+        cache_read_tokens=10,
+        cache_write_tokens=5,
+        context_window=4096,
+        per_turn_token=155,
+        response_id="test-123",
+    )
+    assert usage.model == "gpt-4o-mini"
+    assert usage.prompt_tokens == 100
+    assert usage.completion_tokens == 50
+    assert usage.cache_read_tokens == 10
+    assert usage.cache_write_tokens == 5
+    assert usage.context_window == 4096
+    assert usage.per_turn_token == 155
+    assert usage.response_id == "test-123"
+
+
+def test_token_usage_creation_zeros():
+    """Test creating a TokenUsage instance with zero values."""
+    usage = TokenUsage(
+        model="gpt-4o-mini",
+        prompt_tokens=0,
+        completion_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=0,
+        per_turn_token=0,
+        response_id="test-123",
+    )
+    assert usage.prompt_tokens == 0
+    assert usage.completion_tokens == 0
+    assert usage.cache_read_tokens == 0
+    assert usage.cache_write_tokens == 0
+
+
+def test_token_usage_negative_prompt_tokens_fails():
+    """Test that negative prompt_tokens raises ValidationError."""
+    with pytest.raises(ValidationError) as exc_info:
+        TokenUsage(
+            model="gpt-4o-mini",
+            prompt_tokens=-1,
+            completion_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=4096,
+            per_turn_token=49,
+            response_id="test-123",
+        )
+
+    errors = exc_info.value.errors()
+    assert any(
+        error["type"] == "greater_than_equal" and "prompt_tokens" in error["loc"]
+        for error in errors
+    )
+
+
+def test_token_usage_negative_completion_tokens_fails():
+    """Test that negative completion_tokens raises ValidationError."""
+    with pytest.raises(ValidationError) as exc_info:
+        TokenUsage(
+            model="gpt-4o-mini",
+            prompt_tokens=100,
+            completion_tokens=-1,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=4096,
+            per_turn_token=99,
+            response_id="test-123",
+        )
+
+    errors = exc_info.value.errors()
+    assert any(
+        error["type"] == "greater_than_equal" and "completion_tokens" in error["loc"]
+        for error in errors
+    )
+
+
+def test_token_usage_negative_cache_tokens_fails():
+    """Test that negative cache tokens raise ValidationError."""
+    with pytest.raises(ValidationError):
+        TokenUsage(
+            model="gpt-4o-mini",
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=-1,
+            cache_write_tokens=0,
+            context_window=4096,
+            per_turn_token=149,
+            response_id="test-123",
+        )
+
+    with pytest.raises(ValidationError):
+        TokenUsage(
+            model="gpt-4o-mini",
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=-1,
+            context_window=4096,
+            per_turn_token=149,
+            response_id="test-123",
+        )
+
+
+def test_token_usage_addition():
+    """Test that TokenUsage instances can be added together."""
+    usage1 = TokenUsage(
+        model="gpt-4o-mini",
+        prompt_tokens=100,
+        completion_tokens=50,
+        cache_read_tokens=10,
+        cache_write_tokens=5,
+        context_window=4096,
+        per_turn_token=155,
+        response_id="test-1",
+    )
+
+    usage2 = TokenUsage(
+        model="gpt-4o-mini",
+        prompt_tokens=200,
+        completion_tokens=75,
+        cache_read_tokens=20,
+        cache_write_tokens=10,
+        context_window=4096,
+        per_turn_token=285,
+        response_id="test-2",
+    )
+
+    combined = usage1 + usage2
+
+    assert combined.model == "gpt-4o-mini"
+    assert combined.prompt_tokens == 300
+    assert combined.completion_tokens == 125
+    assert combined.cache_read_tokens == 30
+    assert combined.cache_write_tokens == 15
+    assert combined.context_window == 4096
+    assert combined.per_turn_token == 285  # Uses other.per_turn_token
+    assert combined.response_id == "test-1"  # Should keep first response_id
+
+
+def test_metrics_creation_empty():
+    """Test creating an empty Metrics instance."""
+    metrics = Metrics()
+    assert metrics.model_name == "default"
+    assert metrics.accumulated_cost == 0.0
+    assert metrics.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage.prompt_tokens == 0
+    assert metrics.costs == []
+    assert metrics.response_latencies == []
+
+
+def test_metrics_creation_with_model_name():
+    """Test creating a Metrics instance with model name."""
+    metrics = Metrics(model_name="gpt-4o-mini")
+    assert metrics.model_name == "gpt-4o-mini"
+    assert metrics.accumulated_cost == 0.0
+    assert metrics.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage.prompt_tokens == 0
+
+
+def test_metrics_add_cost():
+    """Test adding cost to metrics."""
+    metrics = Metrics()
+    metrics.add_cost(5.0)
+
+    assert metrics.accumulated_cost == 5.0
+    assert len(metrics.costs) == 1
+    assert metrics.costs[0].cost == 5.0
+    assert metrics.costs[0].model == "default"
+
+
+def test_metrics_add_cost_with_model_name():
+    """Test adding cost with custom model name."""
+    metrics = Metrics(model_name="gpt-4o-mini")
+    metrics.add_cost(3.5)
+
+    assert metrics.accumulated_cost == 3.5
+    assert len(metrics.costs) == 1
+    assert metrics.costs[0].cost == 3.5
+    assert metrics.costs[0].model == "gpt-4o-mini"
+
+
+def test_metrics_add_multiple_costs():
+    """Test adding multiple costs."""
+    metrics = Metrics()
+    metrics.add_cost(2.0)
+    metrics.add_cost(3.0)
+    metrics.add_cost(1.5)
+
+    assert metrics.accumulated_cost == 6.5
+    assert len(metrics.costs) == 3
+
+
+def test_metrics_add_response_latency():
+    """Test adding response latency to metrics."""
+    metrics = Metrics()
+    metrics.add_response_latency(1.5, "test-123")
+
+    assert len(metrics.response_latencies) == 1
+    assert metrics.response_latencies[0].latency == 1.5
+    assert metrics.response_latencies[0].response_id == "test-123"
+
+
+def test_metrics_add_multiple_response_latencies():
+    """Test adding multiple response latencies."""
+    metrics = Metrics()
+    metrics.add_response_latency(1.0, "test-1")
+    metrics.add_response_latency(2.5, "test-2")
+    metrics.add_response_latency(0.8, "test-3")
+
+    assert len(metrics.response_latencies) == 3
+    assert metrics.response_latencies[1].latency == 2.5
+
+
+def test_metrics_add_token_usage_first_time():
+    """Test adding token usage for the first time."""
+    metrics = Metrics()
+    metrics.add_token_usage(100, 50, 10, 5, 4096, "test-123")
+
+    assert metrics.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage.prompt_tokens == 100
+    assert metrics.accumulated_token_usage.completion_tokens == 50
+    assert metrics.accumulated_token_usage.cache_read_tokens == 10
+    assert metrics.accumulated_token_usage.cache_write_tokens == 5
+    assert metrics.accumulated_token_usage.context_window == 4096
+    assert metrics.accumulated_token_usage.per_turn_token == 150
+    assert metrics.accumulated_token_usage.response_id == ""
+
+
+def test_metrics_add_token_usage_accumulate():
+    """Test adding token usage multiple times accumulates correctly."""
+    metrics = Metrics()
+    metrics.add_token_usage(100, 50, 10, 5, 4096, "test-1")
+    metrics.add_token_usage(200, 75, 20, 10, 4096, "test-2")
+
+    assert metrics.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage.prompt_tokens == 300
+    assert metrics.accumulated_token_usage.completion_tokens == 125
+    assert metrics.accumulated_token_usage.cache_read_tokens == 30
+    assert metrics.accumulated_token_usage.cache_write_tokens == 15
+    assert metrics.accumulated_token_usage.per_turn_token == 275
+
+
+def test_metrics_merge_empty_metrics():
+    """Test merging with empty metrics."""
+    metrics1 = Metrics()
+    metrics1.add_cost(5.0)
+
+    metrics2 = Metrics()
+
+    metrics1.merge(metrics2)
+    assert metrics1.accumulated_cost == 5.0
+
+
+def test_metrics_merge_with_costs():
+    """Test merging metrics with costs."""
+    metrics1 = Metrics()
+    metrics1.add_cost(5.0)
+
+    metrics2 = Metrics()
+    metrics2.add_cost(3.0)
+
+    metrics1.merge(metrics2)
+    assert metrics1.accumulated_cost == 8.0
+    assert len(metrics1.costs) == 2
+
+
+def test_metrics_merge_with_token_usage():
+    """Test merging metrics with token usage."""
+    metrics1 = Metrics()
+    metrics1.add_token_usage(100, 50, 10, 5, 4096, "test-1")
+
+    metrics2 = Metrics()
+    metrics2.add_token_usage(200, 75, 20, 10, 4096, "test-2")
+
+    metrics1.merge(metrics2)
+    assert metrics1.accumulated_token_usage is not None
+    assert metrics1.accumulated_token_usage.prompt_tokens == 300
+    assert metrics1.accumulated_token_usage.completion_tokens == 125
+
+
+def test_metrics_merge_with_response_latencies():
+    """Test merging metrics with response latencies."""
+    metrics1 = Metrics()
+    metrics1.add_response_latency(1.0, "test-1")
+
+    metrics2 = Metrics()
+    metrics2.add_response_latency(2.0, "test-2")
+
+    metrics1.merge(metrics2)
+    assert len(metrics1.response_latencies) == 2
+    assert metrics1.response_latencies[0].latency == 1.0
+    assert metrics1.response_latencies[1].latency == 2.0
+
+
+def test_metrics_get_method():
+    """Test the get method returns correct data."""
+    metrics = Metrics(model_name="gpt-4o-mini")
+    metrics.add_cost(5.0)
+    metrics.add_token_usage(100, 50, 10, 5, 4096, "test-123")
+    metrics.add_response_latency(1.5, "test-123")
+
+    data = metrics.get()
+
+    assert data["accumulated_cost"] == 5.0
+    assert data["accumulated_token_usage"]["prompt_tokens"] == 100
+    assert len(data["costs"]) == 1
+    assert len(data["response_latencies"]) == 1
+
+
+def test_metrics_diff_method():
+    """Test the diff method calculates differences correctly."""
+    metrics1 = Metrics()
+    metrics1.add_cost(10.0)
+    metrics1.add_token_usage(500, 250, 50, 25, 4096, "test-1")
+
+    metrics2 = Metrics()
+    metrics2.add_cost(3.0)
+    metrics2.add_token_usage(200, 100, 20, 10, 4096, "test-2")
+
+    diff = metrics1.diff(metrics2)
+
+    assert diff.accumulated_cost == 7.0  # 10.0 - 3.0
+    assert diff.accumulated_token_usage is not None
+    assert diff.accumulated_token_usage.prompt_tokens == 300  # 500 - 200
+    assert diff.accumulated_token_usage.completion_tokens == 150  # 250 - 100
+
+
+def test_metrics_diff_with_none_token_usage():
+    """Test diff method when one metrics has None token usage."""
+    metrics1 = Metrics()
+    metrics1.add_cost(10.0)
+    metrics1.add_token_usage(500, 250, 50, 25, 4096, "test-1")
+
+    metrics2 = Metrics()
+    metrics2.add_cost(3.0)
+    # No token usage added to metrics2
+
+    diff = metrics1.diff(metrics2)
+
+    assert diff.accumulated_cost == 7.0
+    assert diff.accumulated_token_usage is not None
+    assert diff.accumulated_token_usage.prompt_tokens == 500
+    assert diff.accumulated_token_usage.completion_tokens == 250
+
+
+def test_metrics_deep_copy():
+    """Test the deep_copy method creates independent copy."""
+    metrics = Metrics(model_name="gpt-4o-mini")
+    metrics.add_cost(5.0)
+    metrics.add_token_usage(100, 50, 10, 5, 4096, "test-123")
+
+    copied = metrics.deep_copy()
+
+    # Verify copy has same data
+    assert copied.model_name == metrics.model_name
+    assert copied.accumulated_cost == metrics.accumulated_cost
+    assert copied.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage is not None
+    assert (
+        copied.accumulated_token_usage.prompt_tokens
+        == metrics.accumulated_token_usage.prompt_tokens
+    )
+
+    # Verify they are independent
+    copied.add_cost(2.0)
+    assert copied.accumulated_cost == 7.0
+    assert metrics.accumulated_cost == 5.0
+
+
+def test_metrics_empty_state_operations():
+    """Test operations on empty metrics work correctly."""
+    metrics = Metrics()
+
+    # Test get on empty metrics
+    data = metrics.get()
+    assert data["accumulated_cost"] == 0.0
+    assert data["accumulated_token_usage"] is not None
+
+    # Test diff with empty metrics
+    other = Metrics()
+    diff = metrics.diff(other)
+    assert diff.accumulated_cost == 0.0
+    assert diff.accumulated_token_usage is not None
+
+    # Test merge with empty metrics
+    metrics.merge(other)
+    assert metrics.accumulated_cost == 0.0
+    assert metrics.accumulated_token_usage is not None
+
+
+def test_metrics_accumulated_cost_negative_validation():
+    """Test Metrics accumulated cost validation with negative values (line 105)."""
+    # Create a metrics instance with negative accumulated cost
+    with pytest.raises(
+        ValidationError, match="Input should be greater than or equal to 0"
+    ):
+        Metrics(accumulated_cost=-1.0)
+
+
+def test_metrics_merge_max_budget_from_other():
+    """Test merging when max_budget_per_task is None in self but set in other."""
+    # Create metrics with no max_budget_per_task
+    metrics1 = Metrics()
+    assert metrics1.max_budget_per_task is None
+
+    # Create metrics with max_budget_per_task
+    metrics2 = Metrics(max_budget_per_task=100.0)
+
+    # Merge - should copy max_budget_per_task from other (line 182)
+    metrics1.merge(metrics2)
+    assert metrics1.max_budget_per_task == 100.0
+
+
+def test_metrics_merge_accumulated_token_usage_none_self():
+    """Test merging when self.accumulated_token_usage is None (line 190)."""
+    # Create metrics and manually set accumulated_token_usage to None
+    metrics1 = Metrics()
+    metrics1.accumulated_token_usage = None
+
+    # Create metrics with accumulated token usage
+    metrics2 = Metrics()
+    metrics2.add_token_usage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=100,
+        response_id="test",
+    )
+
+    # Merge - should copy accumulated_token_usage from other (line 190)
+    metrics1.merge(metrics2)
+    assert metrics1.accumulated_token_usage is not None
+    assert metrics1.accumulated_token_usage.prompt_tokens == 10
+    assert metrics1.accumulated_token_usage.completion_tokens == 5
+
+
+def test_metrics_diff_both_usage_none():
+    """Test diff method when both accumulated_token_usage are None (lines 276-277)."""
+    # Create metrics and manually set accumulated_token_usage to None
+    metrics1 = Metrics()
+    metrics1.accumulated_token_usage = None
+    metrics2 = Metrics()
+    metrics2.accumulated_token_usage = None
+
+    # Calculate diff - should handle both None (lines 276-277)
+    diff = metrics1.diff(metrics2)
+    assert diff.accumulated_token_usage is None
+
+
+def test_metrics_add_token_usage_none_accumulated_initial():
+    """Test add_token_usage when accumulated_token_usage is None initially."""
+    # Create metrics and manually set accumulated_token_usage to None
+    metrics = Metrics()
+    metrics.accumulated_token_usage = None
+
+    # Add usage - should trigger line 172 (if branch)
+    metrics.add_token_usage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=100,
+        response_id="test",
+    )
+
+    # Should have set the usage
+    assert metrics.accumulated_token_usage is not None
+    assert metrics.accumulated_token_usage.prompt_tokens == 10
+    assert metrics.accumulated_token_usage.completion_tokens == 5
+
+
+def test_metrics_diff_current_only_not_none():
+    """Test diff method when current has usage but baseline doesn't (line 275)."""
+    # Create metrics with usage
+    metrics1 = Metrics()
+    metrics1.add_token_usage(
+        prompt_tokens=15,
+        completion_tokens=8,
+        cache_read_tokens=2,
+        cache_write_tokens=1,
+        context_window=200,
+        response_id="test",
+    )
+
+    # Create baseline metrics with None usage
+    metrics2 = Metrics()
+    metrics2.accumulated_token_usage = None
+
+    # Calculate diff - should copy current_usage (line 275)
+    diff = metrics1.diff(metrics2)
+    assert diff.accumulated_token_usage is not None
+    assert diff.accumulated_token_usage.prompt_tokens == 15
+    assert diff.accumulated_token_usage.completion_tokens == 8
+    assert diff.accumulated_token_usage.cache_read_tokens == 2
+    assert diff.accumulated_token_usage.cache_write_tokens == 1
+
+
+@pytest.mark.parametrize(
+    "prompt_tokens, cache_read_tokens, expected",
+    [
+        # litellm/OpenAI convention: prompt_tokens already includes cached reads.
+        (100, 10, 0.10),
+        (100, 0, 0.0),
+        # cache_read == prompt -> prompt is the denominator.
+        (50, 50, 1.0),
+        # ACP convention: input excludes cached reads, so they are disjoint and
+        # the denominator is prompt + cache_read.
+        (10, 90, 0.90),
+        (0, 50, 1.0),  # zero prompt, all cache -> 100% hit (not None)
+        # Nothing to measure -> undefined.
+        (0, 0, None),
+    ],
+)
+def test_cache_hit_rate_conventions(prompt_tokens, cache_read_tokens, expected):
+    """cache_hit_rate handles both provider conventions and zero input."""
+    snapshot = MetricsSnapshot(
+        accumulated_token_usage=TokenUsage(
+            prompt_tokens=prompt_tokens, cache_read_tokens=cache_read_tokens
+        )
+    )
+    if expected is None:
+        assert snapshot.cache_hit_rate is None
+    else:
+        assert snapshot.cache_hit_rate == pytest.approx(expected)
+
+
+def test_cache_hit_rate_reflects_accumulated_usage():
+    """Metrics.cache_hit_rate derives from accumulated usage across calls."""
+    metrics = Metrics()
+    metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=10,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=4096,
+        response_id="r1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=10,
+        cache_read_tokens=40,
+        cache_write_tokens=0,
+        context_window=4096,
+        response_id="r2",
+    )
+    # accumulated prompt=200, cache_read=40 -> 40 / 200
+    assert metrics.cache_hit_rate == pytest.approx(0.20)
+
+
+def test_cache_hit_rate_none_without_usage():
+    """No usage yet -> undefined rather than a misleading 0% or a crash."""
+    assert MetricsSnapshot(accumulated_token_usage=None).cache_hit_rate is None
+    assert Metrics().cache_hit_rate is None  # fresh metrics are all-zeros
+
+
+def test_cache_hit_rate_is_not_serialized():
+    """Derived rate stays out of the serialized schema (no public-API change)."""
+    snapshot = Metrics().get_snapshot()
+    assert "cache_hit_rate" not in snapshot.model_dump()
+    assert "cache_hit_rate" not in MetricsSnapshot.model_json_schema()["properties"]

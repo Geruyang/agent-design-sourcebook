@@ -1,0 +1,470 @@
+"""Tests for the DelegationVisualizer class."""
+
+import json
+from unittest.mock import MagicMock
+
+from rich.rule import Rule
+
+from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.tool import Action, Observation
+from openhands.tools.delegate import DelegationVisualizer
+
+
+class MockDelegateAction(Action):
+    """Mock action for testing."""
+
+    command: str = "test command"
+
+
+class MockDelegateObservation(Observation):
+    """Mock observation for testing."""
+
+    result: str = "test result"
+
+
+def create_tool_call(
+    call_id: str, function_name: str, arguments: dict
+) -> MessageToolCall:
+    """Helper to create a MessageToolCall."""
+    return MessageToolCall(
+        id=call_id,
+        name=function_name,
+        arguments=json.dumps(arguments),
+        origin="completion",
+    )
+
+
+def test_delegation_visualizer_user_message_without_sender():
+    """Test user message without sender shows 'User Message to [Agent] Agent'."""
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    user_message = Message(role="user", content=[TextContent(text="Hello")])
+    user_event = MessageEvent(source="user", llm_message=user_message)
+    block = visualizer._create_message_event_block(user_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "User Message to Main Agent Agent" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_user_message_with_sender():
+    """Test delegated message shows sender and receiver agent names."""  # noqa: E501
+    visualizer = DelegationVisualizer(name="Lodging Expert")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    delegated_message = Message(
+        role="user", content=[TextContent(text="Task from parent")]
+    )
+    delegated_event = MessageEvent(
+        source="user", llm_message=delegated_message, sender="Delegator"
+    )
+    block = visualizer._create_message_event_block(delegated_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Delegator Agent Message to Lodging Expert Agent" in str(
+        block.renderables[0]
+    )
+
+
+def test_delegation_visualizer_framework_user_role_messages_use_event_source():
+    """Framework messages keep a user LLM role without looking human-authored."""
+    visualizer = DelegationVisualizer(name="WorkerAgent")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    environment_event = MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Correct the missing tool call.")],
+        ),
+    )
+    hook_event = MessageEvent(
+        source="hook",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Apply hook feedback.")],
+        ),
+    )
+
+    environment_block = visualizer._create_event_block(environment_event)
+    hook_block = visualizer._create_event_block(hook_event)
+
+    assert environment_block is not None
+    assert hook_block is not None
+    environment_header = environment_block.renderables[0]
+    hook_header = hook_block.renderables[0]
+    assert isinstance(environment_header, Rule)
+    assert isinstance(hook_header, Rule)
+    assert "Message from Environment to Worker Agent Agent" in str(environment_header)
+    assert "Message from Hook to Worker Agent Agent" in str(hook_header)
+    assert "User Message" not in str(environment_header)
+    assert "User Message" not in str(hook_header)
+    assert environment_header.style == "magenta"
+    assert hook_header.style == "magenta"
+
+
+def test_delegation_visualizer_skip_user_messages_uses_event_source():
+    """Skipping human input must retain framework feedback with a user LLM role."""
+    visualizer = DelegationVisualizer(name="WorkerAgent", skip_user_messages=True)
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    human_event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="Human input")]),
+    )
+    environment_event = MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Framework feedback")],
+        ),
+    )
+
+    assert visualizer._create_event_block(human_event) is None
+    assert visualizer._create_event_block(environment_event) is not None
+
+
+def test_delegation_visualizer_agent_response_to_user():
+    """Test agent response to user shows 'Message from [Agent] Agent to User'."""
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    agent_message = Message(
+        role="assistant", content=[TextContent(text="Response to user")]
+    )
+    response_event = MessageEvent(source="agent", llm_message=agent_message)
+    block = visualizer._create_message_event_block(response_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Message from Main Agent Agent to User" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_agent_response_to_delegator():
+    """Framework feedback must not hide the parent-agent recipient."""
+    visualizer = DelegationVisualizer(name="Lodging Expert")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+
+    # Set up event history with delegated message
+    delegated_message = Message(
+        role="user", content=[TextContent(text="Task from parent")]
+    )
+    delegated_event = MessageEvent(
+        source="user", llm_message=delegated_message, sender="Delegator"
+    )
+    corrective_nudge = MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Correct the missing tool call.")],
+        ),
+    )
+    mock_state.events = [delegated_event, corrective_nudge]
+    visualizer.initialize(mock_state)
+
+    # Sub-agent responds
+    agent_message = Message(
+        role="assistant", content=[TextContent(text="Response to delegator")]
+    )
+    response_event = MessageEvent(source="agent", llm_message=agent_message)
+    block = visualizer._create_message_event_block(response_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Message to Delegator Agent" in str(
+        block.renderables[0]
+    )
+
+
+def test_delegation_visualizer_formats_agent_names():
+    """Test agent names are properly formatted (snake_case to Title Case)."""
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+
+    # Set up event history with delegated message from another agent
+    delegated_message = Message(
+        role="user", content=[TextContent(text="Task from parent")]
+    )
+    delegated_event = MessageEvent(
+        source="user", llm_message=delegated_message, sender="main_delegator"
+    )
+    mock_state.events = [delegated_event]
+    visualizer.initialize(mock_state)
+
+    # Create block for delegated message
+    block = visualizer._create_message_event_block(delegated_event)
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Main Delegator Agent Message to Lodging Expert Agent" in str(
+        block.renderables[0]
+    )
+
+    # Sub-agent responds
+    agent_message = Message(
+        role="assistant", content=[TextContent(text="Response to delegator")]
+    )
+    response_event = MessageEvent(source="agent", llm_message=agent_message)
+    block = visualizer._create_message_event_block(response_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Message to Main Delegator Agent" in str(
+        block.renderables[0]
+    )
+
+
+def test_delegation_visualizer_action_event():
+    """Test action event shows agent name in title."""
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    # Create a proper action event
+    action = MockDelegateAction(command="search hotels")
+    tool_call = create_tool_call("call_123", "search", {"command": "search hotels"})
+    action_event = ActionEvent(
+        thought=[TextContent(text="Searching for hotels")],
+        action=action,
+        tool_name="search",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+
+    block = visualizer._create_event_block(action_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Action" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_action_event_shows_per_request_usage():
+    """Regression: DelegationVisualizer overrides _create_event_block and must
+    forward the event into _format_metrics_subtitle. Without it, ActionEvent
+    subtitles silently stay cumulative-only while Condensation (handled by the
+    parent class, and the only other event type carrying an llm_response_id)
+    shows per-request numbers, mixing formats within a single delegate
+    transcript (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    action = MockDelegateAction(command="search hotels")
+    tool_call = create_tool_call("call_123", "search", {"command": "search hotels"})
+    action_event = ActionEvent(
+        thought=[TextContent(text="Searching for hotels")],
+        action=action,
+        tool_name="search",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    block = visualizer._create_event_block(action_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    # Per-request usage for response_2, not just the running cumulative total.
+    assert "input 2K (total 3K)" in rendered
+    assert "output 200 (total 300)" in rendered
+
+
+def test_delegation_visualizer_observation_event():
+    """Test observation event shows agent name in title."""
+    visualizer = DelegationVisualizer(name="main_delegator")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    # Create a proper observation event
+    observation = MockDelegateObservation(result="Hotel search results")
+    observation_event = ObservationEvent(
+        source="environment",
+        observation=observation,
+        tool_name="search",
+        tool_call_id="call_123",
+        action_id="action_789",
+    )
+
+    block = visualizer._create_event_block(observation_event)
+
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Main Delegator Agent Observation" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_create_sub_visualizer():
+    """Test create_sub_visualizer creates a new visualizer for sub-agents."""
+    parent_visualizer = DelegationVisualizer(
+        name="main_delegator",
+        highlight_regex={"test": "bold"},
+        skip_user_messages=True,
+    )
+
+    # Create sub-visualizer for a sub-agent
+    sub_visualizer = parent_visualizer.create_sub_visualizer("lodging_expert")
+
+    # Verify sub-visualizer is a DelegationVisualizer
+    assert isinstance(sub_visualizer, DelegationVisualizer)
+    # Verify sub-visualizer has the correct agent name
+    assert sub_visualizer._name == "lodging_expert"
+    # Verify settings are inherited from parent
+    assert sub_visualizer._highlight_patterns == {"test": "bold"}
+    assert sub_visualizer._skip_user_messages is True
+
+
+def test_delegation_visualizer_create_sub_visualizer_with_defaults():
+    """Test create_sub_visualizer works with default parent settings."""
+    parent_visualizer = DelegationVisualizer(name="parent")
+
+    sub_visualizer = parent_visualizer.create_sub_visualizer("child_agent")
+
+    assert isinstance(sub_visualizer, DelegationVisualizer)
+    assert sub_visualizer._name == "child_agent"
+    # Default values should be inherited
+    assert sub_visualizer._highlight_patterns is not None  # Has default patterns
+    assert sub_visualizer._skip_user_messages is False
+
+
+def test_delegation_visualizer_user_message_labels_totals():
+    """User MessageEvents carry no llm_response_id, so the delegate message
+    block can only show running totals -- they must be labeled "(total)"
+    instead of printed as bare numbers next to per-request subtitles (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    user_message = Message(role="user", content=[TextContent(text="Hello")])
+    user_event = MessageEvent(source="user", llm_message=user_message)
+    block = visualizer._create_message_event_block(user_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    assert "input (total 1K)" in rendered
+    assert "output (total 100)" in rendered
+    assert "$ (total 0.00)" in rendered
+
+
+def _delegate_batch_action(call_id: str, response_id: str) -> ActionEvent:
+    """Build an ActionEvent for a delegate parallel-batch test."""
+    return ActionEvent(
+        thought=[TextContent(text="Searching")],
+        action=MockDelegateAction(command="search"),
+        tool_name="search",
+        tool_call_id=call_id,
+        tool_call=create_tool_call(call_id, "search", {}),
+        llm_response_id=response_id,
+    )
+
+
+def test_delegation_visualizer_parallel_batch_siblings_fall_back():
+    """Parallel tool calls in a delegate transcript: only the first ActionEvent
+    of the shared-llm_response_id batch shows per-request numbers; siblings show
+    totals-only so the same usage isn't repeated under each event (#4189)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    # Prior request so the running total (3K/300) differs from this batch's
+    # per-request usage (2K/200).
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_prev",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_batch",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    a1 = _delegate_batch_action("call_1", "resp_batch")
+    a2 = _delegate_batch_action("call_2", "resp_batch")
+
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    # Rendered in stream order: a1 is the batch primary, a2 a sibling.
+    primary_block = visualizer._create_event_block(a1)
+    sibling_block = visualizer._create_event_block(a2)
+    assert primary_block is not None and sibling_block is not None
+    primary = "".join(str(r) for r in primary_block.renderables)
+    sibling = "".join(str(r) for r in sibling_block.renderables)
+
+    # Primary shows per-request usage; the sibling shows totals-only.
+    assert "input 2K (total 3K)" in primary
+    assert "input (total 3K)" in sibling
+    assert "input 2K" not in sibling

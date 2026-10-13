@@ -1,0 +1,423 @@
+"""App-owned Thread scratch and retained inputs, independent of presentation."""
+
+from __future__ import annotations
+
+import json
+import logging
+import mimetypes
+import os
+import re
+import shutil
+import stat
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO
+from uuid import uuid4
+
+from anyio import CancelScope, Lock, to_thread
+from filelock import FileLock, Timeout
+from pydantic import BaseModel, ConfigDict
+
+from a13n_harness_ui.file_context import CapturedSource
+
+logger = logging.getLogger(__name__)
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_INPUT_BYTES = 20 * 1024 * 1024
+MAX_ATTACHMENTS = 8
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,100}\Z")
+
+
+class ThreadAttachment(BaseModel):
+    """A Thread-scoped handle; paths are resolved by the App, never by clients."""
+
+    # Metadata is immutable on disk; tolerate additive display fields on read.
+    model_config = ConfigDict(frozen=True, extra="ignore")
+    attachment_id: str
+    name: str
+    media_type: str
+    size: int
+    source: CapturedSource | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentUpload:
+    name: str
+    data: bytes
+    media_type: str | None = None
+    source: CapturedSource | None = None
+
+
+def composer_attachment_label(label: str, name: str | None = None) -> str:
+    """Format a compact file label consistently before and after admission."""
+    if not label.startswith("file#") or not name:
+        return label
+    # Match retained attachment names; never expose a supplied parent path or
+    # allow a filename to introduce terminal controls or extra composer lines.
+    name = Path(name.replace("\\", "/")).name
+    name = "".join(char for char in name if char.isprintable())[:160]
+    if len(name) > 44:
+        name = name[:27] + "…" + name[-16:]
+    return f"{label}: {name}" if name else label
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerAttachment:
+    """An ordered draft attachment, resolved by the App before Harness admission."""
+
+    upload: AttachmentUpload
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerAttachmentReference:
+    """An ordered reference to bytes already staged in this Thread."""
+
+    attachment_id: str
+    label: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerInput:
+    """Ordered authored content; editor tokens never cross this boundary."""
+
+    parts: tuple[str | ComposerAttachment | ComposerAttachmentReference, ...]
+    source_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        return "".join(part for part in self.parts if isinstance(part, str))
+
+    @property
+    def attachments(self) -> tuple[AttachmentUpload, ...]:
+        return tuple(part.upload for part in self.parts if isinstance(part, ComposerAttachment))
+
+    @property
+    def attachment_ids(self) -> tuple[str, ...]:
+        return tuple(part.attachment_id for part in self.parts if isinstance(part, ComposerAttachmentReference))
+
+    @property
+    def display_text(self) -> str:
+        return "".join(
+            part
+            if isinstance(part, str)
+            else f"[{composer_attachment_label(part.label, part.upload.name)}]"
+            if isinstance(part, ComposerAttachment)
+            else f"[{part.label or 'attachment'}]"
+            for part in self.parts
+        )
+
+
+@contextmanager
+def _directory(root: Path, parts: tuple[str, ...], *, create: bool = False) -> Iterator[tuple[Path, int | None]]:
+    """Anchor POSIX access to directory descriptors, never re-resolved symlinks.
+
+    Windows only offers Full Control, not the local sandbox security boundary.
+    Its fallback still rejects explicit symlinks and directory junctions.
+    """
+    path = root
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    descriptor: int | None = None
+    try:
+        if os.name == "posix":
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            descriptor = os.open(root, flags)
+            for part in parts:
+                if create:
+                    try:
+                        os.mkdir(part, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                child = os.open(part, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+                path /= part
+        else:
+            for part in ("", *parts):
+                path /= part
+                if path.is_symlink() or path.is_junction():
+                    raise ValueError("Attachment paths must not be symbolic links or junctions.")
+                if create:
+                    path.mkdir(exist_ok=True)
+                if not path.is_dir():
+                    raise FileNotFoundError(path)
+        yield path, descriptor
+    except OSError as exc:
+        import errno
+
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError("Attachment paths must be directories, not symbolic links.") from exc
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+@contextmanager
+def _open_file(directory: tuple[Path, int | None], name: str) -> Iterator[BinaryIO]:
+    path, descriptor = directory
+    if descriptor is None:
+        target = path / name
+        if target.is_symlink() or not target.is_file():
+            raise ValueError("Attachment files must be regular files, not symbolic links.")
+        with target.open("rb") as stream:
+            yield stream
+        return
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+    except OSError as exc:
+        import errno
+
+        if exc.errno == errno.ELOOP:
+            raise ValueError("Attachment files must not be symbolic links.") from exc
+        raise
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Attachment files must be regular files.")
+        yield stream
+
+
+def _read_file(directory: tuple[Path, int | None], name: str, limit: int) -> bytes:
+    with _open_file(directory, name) as stream:
+        return stream.read(limit)
+
+
+def _write_file(directory: tuple[Path, int | None], name: str, data: bytes) -> None:
+    path, descriptor = directory
+    if descriptor is None:
+        with (path / name).open("xb") as stream:
+            stream.write(data)
+    else:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+
+
+class ThreadFiles:
+    """Protect touched Threads until App close, including across local processes.
+
+    Hard OS locks protect file use only, not execution ownership. A short gate
+    makes registration and pruning atomic. Each App has its own held token, so
+    concurrent Apps can use the same Thread without serializing Runs.
+    """
+
+    def __init__(self, root: Path, *, retention_seconds: float = 3 * 86400) -> None:
+        self.root = root / "threads"
+        self._locks = root / "thread-file-locks"
+        self._retention = retention_seconds
+        self._held: dict[str, FileLock] = {}
+        self._mutex = Lock()
+
+    def directory(self, thread_id: str) -> Path:
+        if not _SAFE_ID.fullmatch(thread_id):
+            raise ValueError("Invalid Thread identifier.")
+        return self.root / thread_id
+
+    def _gate(self, thread_id: str) -> FileLock:
+        self.directory(thread_id)
+        directory = self._locks / thread_id
+        directory.mkdir(parents=True, exist_ok=True)
+        return FileLock(directory / "gate.lock", timeout=5, thread_local=False)
+
+    def _touch(self, thread_id: str) -> Path:
+        directory = self.directory(thread_id)
+        with self._gate(thread_id):
+            with _directory(directory, ("tmp",), create=True) as (scratch, descriptor):
+                os.utime(descriptor if descriptor is not None else scratch, None)
+            if thread_id not in self._held:
+                token = FileLock(self._locks / thread_id / f"use-{uuid4().hex}.lock", thread_local=False)
+                token.acquire()
+                self._held[thread_id] = token
+        return directory
+
+    async def touch(self, thread_id: str) -> Path:
+        async with self._mutex:
+            return await to_thread.run_sync(self._touch, thread_id)
+
+    async def stage(self, thread_id: str, upload: AttachmentUpload) -> ThreadAttachment:
+        if len(upload.data) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("Attachments must not exceed 10 MiB.")
+        name = Path(upload.name.replace("\\", "/")).name
+        name = "".join(c for c in name if c.isprintable())[:160]
+        if name in {"", ".", ".."}:
+            raise ValueError("An attachment needs a file name.")
+        media_type = upload.media_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if media_type.startswith("image/"):
+            # Shared validation also applies to non-terminal callers.
+            from a13n_harness_ui.input_images import image_bytes
+
+            image = await to_thread.run_sync(image_bytes, name, upload.data)
+            assert image.media_type is not None
+            media_type = image.media_type
+        attachment = ThreadAttachment(
+            attachment_id=f"attachment-{uuid4().hex}",
+            name=name,
+            media_type=media_type,
+            size=len(upload.data),
+            source=upload.source,
+        )
+        directory = await self.touch(thread_id)
+        await to_thread.run_sync(self._stage, directory, attachment, upload.data)
+        return attachment
+
+    @staticmethod
+    def _stage(directory: Path, attachment: ThreadAttachment, data: bytes) -> None:
+        with _directory(directory, ("tmp", "uploads", attachment.attachment_id), create=True) as target:
+            _write_file(target, "content", data)
+            # Only omit absent top-level metadata, not required nullable fields
+            # inside captured provenance (for example an unborn Git HEAD).
+            absent = set()
+            if attachment.source is None:
+                absent.add("source")
+            metadata = attachment.model_dump_json(exclude=absent)
+            _write_file(target, "metadata.json", metadata.encode("utf-8"))
+
+    @contextmanager
+    def _open_attachment(self, thread_id: str, attachment_id: str) -> Iterator[tuple[ThreadAttachment, BinaryIO]]:
+        if not _SAFE_ID.fullmatch(attachment_id):
+            raise ValueError("Invalid attachment identifier.")
+        for parent in (("attachments",), ("tmp", "uploads")):
+            try:
+                with _directory(self.directory(thread_id), (*parent, attachment_id)) as directory:
+                    metadata = json.loads(_read_file(directory, "metadata.json", 65536))
+                    # Retired comment captures keep their independent bytes as ordinary files.
+                    source = metadata.get("source") if isinstance(metadata, dict) else None
+                    if isinstance(source, dict) and source.get("kind") == "comment_reference":
+                        metadata["source"] = None
+                    attachment = ThreadAttachment.model_validate(metadata)
+                    with _open_file(directory, "content") as stream:
+                        size = os.fstat(stream.fileno()).st_size
+                        if (
+                            attachment.attachment_id != attachment_id
+                            or size != attachment.size
+                            or size > MAX_ATTACHMENT_BYTES
+                        ):
+                            raise ValueError("Attachment content has changed or exceeds the size limit.")
+                        yield attachment, stream
+                    return
+            except FileNotFoundError:
+                continue
+        raise ValueError("Attachment is missing or its unsubmitted draft has expired.")
+
+    def _read(self, thread_id: str, attachment_id: str) -> tuple[ThreadAttachment, bytes]:
+        with self._open_attachment(thread_id, attachment_id) as (attachment, stream):
+            data = stream.read(MAX_ATTACHMENT_BYTES + 1)
+            if len(data) != attachment.size or len(data) > MAX_ATTACHMENT_BYTES:
+                raise ValueError("Attachment content has changed or exceeds the size limit.")
+            return attachment, data
+
+    async def validate_attachments(self, thread_id: str, attachment_ids: tuple[str, ...]) -> None:
+        """Validate live selections without rereading payload bytes on each edit."""
+        if not attachment_ids:
+            return
+        await self.touch(thread_id)
+        await to_thread.run_sync(self._validate_attachments, thread_id, attachment_ids)
+
+    def _validate_attachments(self, thread_id: str, attachment_ids: tuple[str, ...]) -> None:
+        with self._gate(thread_id):
+            sizes: dict[str, int] = {}
+            for identity in dict.fromkeys(attachment_ids):
+                with self._open_attachment(thread_id, identity) as (attachment, _):
+                    sizes[identity] = attachment.size
+            # Repeated references still count toward the admitted input limit.
+            if sum(sizes[identity] for identity in attachment_ids) > MAX_INPUT_BYTES:
+                raise ValueError("An input supports up to 20 MiB of attachments.")
+
+    def _read_locked(self, thread_id: str, attachment_id: str) -> tuple[ThreadAttachment, bytes]:
+        with self._gate(thread_id):
+            return self._read(thread_id, attachment_id)
+
+    async def read(self, thread_id: str, attachment_id: str) -> tuple[ThreadAttachment, bytes]:
+        await self.touch(thread_id)
+        return await to_thread.run_sync(self._read_locked, thread_id, attachment_id)
+
+    async def retain(self, thread_id: str, attachment_id: str) -> tuple[ThreadAttachment, bytes]:
+        await self.touch(thread_id)
+        return await to_thread.run_sync(self._retain, thread_id, attachment_id)
+
+    def _retain(self, thread_id: str, attachment_id: str) -> tuple[ThreadAttachment, bytes]:
+        with self._gate(thread_id):
+            result = self._read(thread_id, attachment_id)
+            root = self.directory(thread_id)
+            with _directory(root, ("attachments",), create=True) as (destination, destination_fd):
+                if destination_fd is None:
+                    present = (destination / attachment_id).exists()
+                else:
+                    try:
+                        os.stat(attachment_id, dir_fd=destination_fd, follow_symlinks=False)
+                        present = True
+                    except FileNotFoundError:
+                        present = False
+                if not present:
+                    with _directory(root, ("tmp", "uploads")) as (source, source_fd):
+                        if source_fd is None:
+                            (source / attachment_id).rename(destination / attachment_id)
+                        else:
+                            os.rename(attachment_id, attachment_id, src_dir_fd=source_fd, dst_dir_fd=destination_fd)
+            return result
+
+    async def prune(self) -> tuple[str, ...]:
+        """Best effort; age selects candidates, held OS locks determine use."""
+        async with self._mutex:
+            return await to_thread.run_sync(self._prune)
+
+    def _prune(self) -> tuple[str, ...]:
+        removed: list[str] = []
+        if not self.root.exists():
+            return ()
+        try:
+            directories = tuple(self.root.iterdir())
+        except OSError:
+            logger.warning("Could not list Thread scratch directories", exc_info=True)
+            return ()
+        for directory in directories:
+            scratch = directory / "tmp"
+            if not _SAFE_ID.fullmatch(directory.name) or directory.is_symlink():
+                continue
+            try:
+                with self._gate(directory.name):
+                    if scratch.is_symlink() or not scratch.is_dir():
+                        continue
+                    if time.time() - scratch.stat().st_mtime < self._retention:
+                        continue
+                    busy = False
+                    for path in (self._locks / directory.name).glob("use-*.lock"):
+                        token = FileLock(path, timeout=0, thread_local=False)
+                        try:
+                            with token:
+                                pass
+                        except Timeout:
+                            busy = True
+                            break
+                        path.unlink(missing_ok=True)
+                    if not busy:
+                        shutil.rmtree(scratch)
+                        removed.append(directory.name)
+            except (OSError, Timeout):
+                logger.warning("Could not prune Thread scratch: %s", directory.name, exc_info=True)
+        return tuple(removed)
+
+    async def close(self) -> None:
+        with CancelScope(shield=True):
+            async with self._mutex:
+                await to_thread.run_sync(self._close)
+
+    def _close(self) -> None:
+        for thread_id, token in self._held.items():
+            try:
+                with self._gate(thread_id):
+                    try:
+                        with _directory(self.directory(thread_id), ("tmp",)) as (scratch, descriptor):
+                            os.utime(descriptor if descriptor is not None else scratch, None)
+                    except (FileNotFoundError, ValueError):
+                        pass
+                    token.release()
+                    Path(token.lock_file).unlink(missing_ok=True)
+            except (OSError, Timeout):
+                logger.warning("Could not update Thread file usage: %s", thread_id, exc_info=True)
+            finally:
+                token.release()
+        self._held.clear()

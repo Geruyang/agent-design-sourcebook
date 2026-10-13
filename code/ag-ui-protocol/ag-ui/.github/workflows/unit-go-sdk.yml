@@ -1,0 +1,61 @@
+name: unit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/community/go/**"
+      - ".github/workflows/unit-go-sdk.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "sdks/community/go/**"
+      - ".github/workflows/unit-go-sdk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect fork PR
+        id: fork-check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && \
+                "${GITHUB_EVENT_PULL_REQUEST_HEAD_REPO_FULL_NAME}" != "${{ github.repository }}" ]]; then
+            echo "prefix=fork-" >> "$GITHUB_OUTPUT"
+          else
+            echo "prefix=" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GITHUB_EVENT_PULL_REQUEST_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.24.4"
+
+      - name: Setup Go module cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ steps.fork-check.outputs.prefix }}${{ runner.os }}-go-
+
+      - name: Download dependencies
+        working-directory: sdks/community/go
+        run: go mod download
+
+      - name: Run tests
+        working-directory: sdks/community/go
+        run: go test ./... -v

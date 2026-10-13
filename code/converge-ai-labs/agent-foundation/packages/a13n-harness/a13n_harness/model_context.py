@@ -1,0 +1,400 @@
+"""Typed dynamic model-context projection and its single request commit boundary."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from copy import copy
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol
+
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
+from pydantic_ai.messages import (
+    BaseToolCallPart,
+    BaseToolReturnPart,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextContent,
+    ToolAvailabilityDeltaPart,
+    UserContent,
+    UserPromptPart,
+)
+from pydantic_ai.models import ModelRequestContext
+
+from a13n_harness.content import ContentItem, ContentMetadata, replace_request_parts, request_parts
+from a13n_harness.context import AgentContext
+from a13n_harness.errors import DefinitionError
+from a13n_harness.events import input_events
+
+MODEL_CONTEXT_COORDINATOR_CAPABILITY_ID = "a13n.model-context-coordinator"
+_MAX_BLOCKS = 128
+_MAX_SOURCE_ID_LENGTH = 256
+_MAX_BLOCK_BYTES = 2 * 1024 * 1024
+_MAX_AGGREGATE_BYTES = 2 * 1024 * 1024
+
+
+def user_prompt_content(part: UserPromptPart) -> list[UserContent]:
+    """Observe native content, making plain text metadata-capable without editing history."""
+    items = [part.content] if isinstance(part.content, str) else part.content
+    return [TextContent(item) if isinstance(item, str) else item for item in items]
+
+
+class ModelContextRequestKind(StrEnum):
+    """Eligible semantic request boundaries."""
+
+    INPUT = "input"
+    TOOL_RESULTS = "tool_results"
+
+
+class ModelContextInputOrigin(StrEnum):
+    """Provenance of an input boundary when the producer makes it explicit."""
+
+    USER = "user"
+    ENQUEUE = "enqueue"
+
+
+class ModelContextPlacement(StrEnum):
+    """The two structurally safe locations for projected blocks."""
+
+    INPUT_PREAMBLE = "input_preamble"
+    REQUEST_EPILOGUE = "request_epilogue"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelContextProjectionRequest:
+    """Detached description of the current eligible model request."""
+
+    kind: ModelContextRequestKind
+    input_origin: ModelContextInputOrigin | None = None
+    tool_call_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tool_call_ids", tuple(self.tool_call_ids))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelContextBlock:
+    """One source-owned context block awaiting structural placement."""
+
+    source_id: str
+    placement: ModelContextPlacement
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelContextProjection:
+    """An immutable ordered set of projected blocks."""
+
+    blocks: tuple[ModelContextBlock, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "blocks", tuple(self.blocks))
+
+
+ModelContextNext = Callable[[ModelContextProjectionRequest], Awaitable[ModelContextProjection]]
+
+
+class ModelContextMiddleware(Protocol):
+    """Fresh Host middleware around one run's default projection chain."""
+
+    async def wrap_model_context(
+        self,
+        ctx: AgentContext,
+        request: ModelContextProjectionRequest,
+        handler: ModelContextNext,
+    ) -> ModelContextProjection: ...
+
+
+class AbstractModelContextCapability(AbstractCapability[AgentContext]):
+    """Capability subtype that transforms detached dynamic model context."""
+
+    async def wrap_model_context(
+        self,
+        ctx: RunContext[AgentContext],
+        request: ModelContextProjectionRequest,
+        handler: ModelContextNext,
+    ) -> ModelContextProjection:
+        return await handler(request)
+
+
+@dataclass(init=False)
+class ModelContextCoordinatorCapability(AbstractCapability[AgentContext]):
+    """Classify, resolve, validate, and commit exactly one request overlay."""
+
+    id = MODEL_CONTEXT_COORDINATOR_CAPABILITY_ID
+
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(position="innermost")
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[AgentContext],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        if _requires_exact_boundary(ctx, request_context.messages) or _requires_exact_boundary(ctx, ctx.messages):
+            return request_context
+        request = _classify_request(ctx, request_context.messages)
+        if request is None:
+            return request_context
+
+        projection = await _project_model_context(ctx, request)
+        original_request = request_context.messages[-1]
+        assert isinstance(original_request, ModelRequest)
+        committed = _commit_projection(request_context.messages, request, projection)
+        _persist_projection(ctx.messages, original_request, committed, request, projection)
+        # Observe only freshly produced overlay content. Native user input and
+        # delivered steering have their own event boundaries, never history replay.
+        for event in input_events(
+            [
+                ContentItem(block.content, ContentMetadata(display=False, source_id=block.source_id))
+                for block in projection.blocks
+            ],
+            source="context",
+            input_id=f"context-{ctx.run_id}-{ctx.run_step}",
+        ):
+            await ctx.emit(event)
+        return _replace_messages(request_context, committed)
+
+
+async def _project_model_context(
+    ctx: RunContext[AgentContext], request: ModelContextProjectionRequest
+) -> ModelContextProjection:
+    """Resolve the same validated projection for request and duplex boundaries."""
+
+    async def terminal(current: ModelContextProjectionRequest) -> ModelContextProjection:
+        return await ctx.deps.project_model_context(current)
+
+    projection_handler: ModelContextNext = terminal
+    capabilities = tuple(
+        capability for capability in ctx.capabilities.values() if isinstance(capability, AbstractModelContextCapability)
+    )
+    for capability in reversed(capabilities):
+        inner = projection_handler
+
+        async def wrapped(
+            current: ModelContextProjectionRequest,
+            *,
+            capability: AbstractModelContextCapability = capability,
+            inner: ModelContextNext = inner,
+        ) -> ModelContextProjection:
+            return await capability.wrap_model_context(ctx, current, inner)
+
+        projection_handler = wrapped
+
+    host = ctx.deps.model_context
+    if host is not None:
+        inner = projection_handler
+
+        async def host_wrapped(current: ModelContextProjectionRequest) -> ModelContextProjection:
+            return await host.wrap_model_context(ctx.deps, current, inner)
+
+        projection_handler = host_wrapped
+
+    projection = await projection_handler(request)
+    _validate_projection(projection, request)
+    return projection
+
+
+def _classify_request(
+    ctx: RunContext[AgentContext],
+    messages: list[ModelMessage],
+) -> ModelContextProjectionRequest | None:
+    if not messages or not isinstance(messages[-1], ModelRequest):
+        return None
+    final = messages[-1]
+    if any(isinstance(part, RetryPromptPart) for part in final.parts):
+        return None
+
+    tool_results = tuple(part for part in final.parts if isinstance(part, BaseToolReturnPart))
+    if tool_results:
+        if len(tool_results) == len(final.parts):
+            return ModelContextProjectionRequest(
+                kind=ModelContextRequestKind.TOOL_RESULTS,
+                tool_call_ids=tuple(part.tool_call_id for part in tool_results),
+            )
+        # Native enqueue appends input after the complete result batch.
+        # Project at that input without splitting sibling tool results.
+        if tuple(final.parts[: len(tool_results)]) != tool_results or not all(
+            isinstance(part, UserPromptPart) for part in final.parts[len(tool_results) :]
+        ):
+            return None
+
+    if any(isinstance(part, UserPromptPart) for part in final.parts):
+        # Pydantic does not expose reliable enqueue provenance on ordinary text input.
+        return ModelContextProjectionRequest(
+            kind=ModelContextRequestKind.INPUT,
+            input_origin=ModelContextInputOrigin.USER,
+            tool_call_ids=tuple(part.tool_call_id for part in tool_results),
+        )
+    return None
+
+
+def _validate_projection(
+    projection: ModelContextProjection,
+    request: ModelContextProjectionRequest,
+) -> None:
+    if not isinstance(projection, ModelContextProjection):
+        raise DefinitionError(
+            "Model context middleware must return ModelContextProjection.",
+            code="model_context_projection_invalid",
+        )
+    if len(projection.blocks) > _MAX_BLOCKS:
+        raise DefinitionError("Model context contains too many blocks.", code="model_context_projection_invalid")
+
+    aggregate_bytes = 0
+    for block in projection.blocks:
+        if not isinstance(block, ModelContextBlock):
+            raise DefinitionError(
+                "Model context projection contains an invalid block.",
+                code="model_context_projection_invalid",
+            )
+        if (
+            not isinstance(block.source_id, str)
+            or not block.source_id.strip()
+            or block.source_id != block.source_id.strip()
+            or len(block.source_id) > _MAX_SOURCE_ID_LENGTH
+            or "\x00" in block.source_id
+        ):
+            raise DefinitionError(
+                "Model context source_id must be a non-blank bounded string.",
+                code="model_context_projection_invalid",
+            )
+        if not isinstance(block.placement, ModelContextPlacement) or not isinstance(block.content, str):
+            raise DefinitionError(
+                "Model context block placement or content is invalid.",
+                code="model_context_projection_invalid",
+            )
+        size = len(block.content.encode("utf-8"))
+        if size > _MAX_BLOCK_BYTES:
+            raise DefinitionError(
+                "Model context block exceeds its byte limit.", code="model_context_projection_invalid"
+            )
+        aggregate_bytes += size
+        if (
+            request.kind is ModelContextRequestKind.TOOL_RESULTS
+            and block.placement is ModelContextPlacement.INPUT_PREAMBLE
+        ):
+            raise DefinitionError(
+                "Tool-result context cannot use INPUT_PREAMBLE placement.",
+                code="model_context_placement_invalid",
+            )
+    if aggregate_bytes > _MAX_AGGREGATE_BYTES:
+        raise DefinitionError(
+            "Model context exceeds its aggregate byte limit.", code="model_context_projection_invalid"
+        )
+
+
+def _commit_projection(
+    messages: list[ModelMessage],
+    request: ModelContextProjectionRequest,
+    projection: ModelContextProjection,
+) -> list[ModelMessage]:
+    if not projection.blocks:
+        return messages
+    final = messages[-1]
+    assert isinstance(final, ModelRequest)
+    original_parts = request_parts(final)
+    preamble = [block for block in projection.blocks if block.placement is ModelContextPlacement.INPUT_PREAMBLE]
+    epilogue = [block for block in projection.blocks if block.placement is ModelContextPlacement.REQUEST_EPILOGUE]
+
+    if request.kind is ModelContextRequestKind.INPUT and preamble:
+        # Native provider preparation can render typed parts as user input only
+        # in the outgoing request (for example ToolAvailabilityDeltaPart).
+        # Preserve the same preamble position before the canonical native part.
+        input_index = next(
+            index
+            for index, part in enumerate(original_parts)
+            if isinstance(part[0], (UserPromptPart, ToolAvailabilityDeltaPart))
+        )
+    else:
+        input_index = len(original_parts)
+
+    inserted_parts = [
+        (
+            UserPromptPart(block.content),
+            [ContentItem(block.content, ContentMetadata(display=False, source_id=block.source_id))],
+        )
+        for block in preamble
+    ]
+    parts = [*original_parts[:input_index], *inserted_parts, *original_parts[input_index:]]
+    parts.extend(
+        (
+            UserPromptPart(block.content),
+            [ContentItem(block.content, ContentMetadata(display=False, source_id=block.source_id))],
+        )
+        for block in epilogue
+    )
+    updated = list(messages)
+    updated[-1] = replace_request_parts(final, parts)
+    return updated
+
+
+def _persist_projection(
+    active_messages: list[ModelMessage],
+    original_request: ModelRequest,
+    committed_messages: list[ModelMessage],
+    request: ModelContextProjectionRequest,
+    projection: ModelContextProjection,
+) -> None:
+    """Record the exact outgoing overlay on its active-history request."""
+    if not projection.blocks:
+        return
+    committed_request = committed_messages[-1]
+    assert isinstance(committed_request, ModelRequest)
+    for index in range(len(active_messages) - 1, -1, -1):
+        if active_messages[index] is original_request:
+            active_messages[index] = committed_request
+            return
+    active_messages[:] = _commit_projection(active_messages, request, projection)
+
+
+def _requires_exact_boundary(ctx: RunContext[AgentContext], messages: list[ModelMessage]) -> bool:
+    return _requires_exact_history(messages) or _is_deferred_result_boundary(ctx, messages)
+
+
+def _is_deferred_result_boundary(ctx: RunContext[AgentContext], messages: list[ModelMessage]) -> bool:
+    resume = ctx.deps.deferred_resume
+    if resume is None or not messages or not isinstance(messages[-1], ModelRequest):
+        return False
+    expected = {part.tool_call_id for part in (*resume.requests.calls, *resume.requests.approvals)}
+    integrated = {
+        part.tool_call_id for part in messages[-1].parts if isinstance(part, BaseToolReturnPart | RetryPromptPart)
+    }
+    return bool(expected) and expected <= integrated
+
+
+def _requires_exact_history(messages: list[ModelMessage]) -> bool:
+    if messages and isinstance(messages[-1], ModelResponse) and messages[-1].state == "suspended":
+        return True
+    pending: set[str] = set()
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            pending.update(part.tool_call_id for part in message.parts if isinstance(part, BaseToolCallPart))
+        # Provider-executed native tools return inside ModelResponse, not ModelRequest.
+        pending.difference_update(
+            part.tool_call_id for part in message.parts if isinstance(part, BaseToolReturnPart | RetryPromptPart)
+        )
+    return bool(pending)
+
+
+def _replace_messages(request_context: ModelRequestContext, messages: list[ModelMessage]) -> ModelRequestContext:
+    updated = copy(request_context)
+    updated.messages = messages
+    return updated
+
+
+__all__ = [
+    "AbstractModelContextCapability",
+    "ModelContextBlock",
+    "ModelContextInputOrigin",
+    "ModelContextMiddleware",
+    "ModelContextNext",
+    "ModelContextPlacement",
+    "ModelContextProjection",
+    "ModelContextProjectionRequest",
+    "ModelContextRequestKind",
+    "user_prompt_content",
+]

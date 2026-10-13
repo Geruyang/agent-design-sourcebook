@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "name": "research-bot",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "zod": "^4.3.5"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "node main.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
+  }
+}

@@ -1,0 +1,207 @@
+name: a13n Service CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/ci-a13n-service.yml"
+      - ".github/workflows/release-a13n-service.yml"
+      - "conftest.py"
+      - "scripts/tests/test_ci_inputs.py"
+      - "dev/**"
+      - "packages/a13n-service/**"
+      - "docs/a13n-service/**"
+      - "packages/a13n-logging/**"
+      - "pyproject.toml"
+      - "Makefile"
+      - "proto/a13n-service/**"
+      - "scripts/export-a13n-service-openapi.py"
+      - "scripts/tests/test_service_contract.py"
+      - "packages/a13n-harness/**"
+      - "packages/a13n-stream-protocol/**"
+      - "packages/a13n-envd-client/**"
+      - "uv.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ci-a13n-service.yml"
+      - ".github/workflows/release-a13n-service.yml"
+      - "conftest.py"
+      - "scripts/tests/test_ci_inputs.py"
+      - "dev/**"
+      - "packages/a13n-service/**"
+      - "docs/a13n-service/**"
+      - "packages/a13n-logging/**"
+      - "pyproject.toml"
+      - "Makefile"
+      - "proto/a13n-service/**"
+      - "scripts/export-a13n-service-openapi.py"
+      - "scripts/tests/test_service_contract.py"
+      - "packages/a13n-harness/**"
+      - "packages/a13n-stream-protocol/**"
+      - "packages/a13n-envd-client/**"
+      - "uv.lock"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validation:
+    name: a13n Service Python (${{ matrix.name }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: checks
+            runner: ubuntu-latest
+          - name: tests
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Synchronize Python workspace
+        run: uv sync --locked --all-packages
+
+      - name: Type-check a13n Service Python packages
+        if: matrix.name == 'checks'
+        run: >-
+          uv run --locked pyright
+          packages/a13n-logging/a13n_logging
+          packages/a13n-service/a13n_service
+
+      - name: Check Service import boundaries
+        if: matrix.name == 'checks'
+        run: make service-boundaries
+
+      - name: Check Service contract export
+        if: matrix.name == 'checks'
+        run: uv run --locked python scripts/export-a13n-service-openapi.py --check
+
+      - name: Test Service contract export
+        if: matrix.name == 'checks'
+        run: uv run --locked python -m pytest scripts/tests/test_service_contract.py --junitxml=test-results/contract.xml
+
+      - name: Test logging
+        if: matrix.name == 'checks'
+        run: uv run --locked python -m pytest packages/a13n-logging/tests --junitxml=test-results/logging.xml
+
+      - name: Check local Service development tools
+        if: matrix.name == 'checks'
+        run: make dev-state-check
+
+      - name: Test a13n Service
+        if: matrix.name == 'tests'
+        # Allow the full database-backed suite to finish on slower hosted runners.
+        # Individual stalled tests still fail through faulthandler below.
+        timeout-minutes: 15
+        run: >-
+          /usr/bin/time -p uv run --locked python -m pytest
+          -n 3 --dist loadgroup --max-worker-restart=0
+          -vv --tb=short --durations=30 -r a
+          --junitxml=test-results/service.xml
+          -o faulthandler_timeout=120
+          -o faulthandler_exit_on_timeout=true
+          --ignore=packages/a13n-service/tests/test_environments_envd.py
+          --ignore=packages/a13n-service/tests/environment_providers
+          packages/a13n-service/tests
+
+      - name: Test native Environment management drivers
+        if: matrix.name == 'tests'
+        run: uv run --locked python -m pytest packages/a13n-service/tests/environment_providers --junitxml=test-results/environment-providers.xml
+
+      - name: Require Service execution without skips
+        if: matrix.name == 'tests'
+        run: |
+          python - <<'PYCODE'
+          import xml.etree.ElementTree as ET
+
+          report = ET.parse("test-results/service.xml").getroot()
+          assert report.findall(".//testcase"), "Service tests did not execute any cases"
+          assert not report.findall(".//skipped"), "Service tests must not skip implemented capabilities"
+          PYCODE
+
+      - name: Retain Service test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-${{ matrix.name }}-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+
+      - name: Set up pnpm
+        if: matrix.name == 'checks'
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Set up Node.js
+        if: matrix.name == 'checks'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build a13n Service Python distributions
+        if: matrix.name == 'checks'
+        run: |
+          make a13n-service-assets
+          uv build --package a13n-logging --out-dir dist/a13n-service
+          uv build --package a13n-service --out-dir dist/a13n-service
+          # uv builds the wheel from the sdist. Search that artifact, not the editable checkout.
+          uv run --locked python - <<'PY'
+          import sys
+          from pathlib import Path
+          from importlib.metadata import distribution
+          from importlib.resources import files
+
+          wheel = next(Path("dist/a13n-service").glob("a13n_service-*.whl")).resolve()
+          sys.path.insert(0, str(wheel))
+          from a13n_service.documentation import Documents
+
+          assert str(files("a13n_service")).startswith(str(wheel))
+          assert str(distribution("a13n-service").locate_file("a13n_service/documentation.json")).startswith(str(wheel))
+          docs = Documents()
+          assert docs.search("upload")["results"]
+          assert docs.search("上传", language="zh-CN")["results"]
+          assert any("assigned_run_id" in item["text"] for item in docs.search("Execute an Agent", limit=10)["results"])
+          PY
+
+  python:
+    name: a13n Service Python
+    needs: validation
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all a13n Service checks to pass
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+        run: test "$VALIDATION_RESULT" = success

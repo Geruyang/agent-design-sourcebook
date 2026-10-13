@@ -1,0 +1,2224 @@
+{
+  "info": {
+    "title": "Environment Interaction Protocol",
+    "version": "0.1"
+  },
+  "methods": [
+    {
+      "name": "computer.click",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerClickParams/properties/context"
+          }
+        },
+        {
+          "name": "observation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerClickParams/properties/observation_id"
+          }
+        },
+        {
+          "name": "point",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerClickParams/properties/point"
+          }
+        },
+        {
+          "name": "button",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerClickParams/properties/button"
+          }
+        },
+        {
+          "name": "count",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerClickParams/properties/count"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerClickParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.close_observation",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderCloseParams/properties/context"
+          }
+        },
+        {
+          "name": "reader",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderCloseParams/properties/reader"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileReaderCloseResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileReaderCloseParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "close",
+      "x-eip-transfer-direction": "server_to_client"
+    },
+    {
+      "name": "computer.describe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDescribeParams/properties/context"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerDescribeResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerDescribeParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.drag",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/context"
+          }
+        },
+        {
+          "name": "observation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/observation_id"
+          }
+        },
+        {
+          "name": "start",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/start"
+          }
+        },
+        {
+          "name": "end",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/end"
+          }
+        },
+        {
+          "name": "button",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/button"
+          }
+        },
+        {
+          "name": "duration_ms",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerDragParams/properties/duration_ms"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerDragParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.move",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerMoveParams/properties/context"
+          }
+        },
+        {
+          "name": "observation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerMoveParams/properties/observation_id"
+          }
+        },
+        {
+          "name": "point",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerMoveParams/properties/point"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerMoveParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.observe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerObserveParams/properties/context"
+          }
+        },
+        {
+          "name": "target_id",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerObserveParams/properties/target_id"
+          }
+        },
+        {
+          "name": "max_dimension",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerObserveParams/properties/max_dimension"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerObserveResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerObserveParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "open",
+      "x-eip-transfer-direction": "server_to_client"
+    },
+    {
+      "name": "computer.press_keys",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerPressKeysParams/properties/context"
+          }
+        },
+        {
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerPressKeysParams/properties/keys"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerPressKeysParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.scroll",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/context"
+          }
+        },
+        {
+          "name": "observation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/observation_id"
+          }
+        },
+        {
+          "name": "point",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/point"
+          }
+        },
+        {
+          "name": "delta_x",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/delta_x"
+          }
+        },
+        {
+          "name": "delta_y",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/delta_y"
+          }
+        },
+        {
+          "name": "unit",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerScrollParams/properties/unit"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerScrollParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "computer.type_text",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerTypeTextParams/properties/context"
+          }
+        },
+        {
+          "name": "text",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ComputerTypeTextParams/properties/text"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ComputerActionResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ComputerTypeTextParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "device.describe",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/DeviceDescribeResult"
+        }
+      },
+      "x-eip-error-family": "initialization",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/DeviceDescribeParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "directory.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "expected_device_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/DirectoryListParams/properties/expected_device_id"
+          }
+        },
+        {
+          "name": "expected_generation",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/DirectoryListParams/properties/expected_generation"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/DirectoryListParams/properties/path"
+          }
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/DirectoryListParams/properties/offset"
+          }
+        },
+        {
+          "name": "limit",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/DirectoryListParams/properties/limit"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/DirectoryListResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/DirectoryListParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "egress.update",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "expected_revision",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/EgressUpdateParams/properties/expected_revision"
+          }
+        },
+        {
+          "name": "destinations",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/EgressUpdateParams/properties/destinations"
+          }
+        },
+        {
+          "name": "set_secrets",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/EgressUpdateParams/properties/set_secrets"
+          }
+        },
+        {
+          "name": "remove_secrets",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/EgressUpdateParams/properties/remove_secrets"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/EgressUpdateResult"
+        }
+      },
+      "x-eip-error-family": "session",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/EgressUpdateParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "environment.describe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/EnvironmentDescribeParams/properties/context"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/EnvironmentDescribeResult"
+        }
+      },
+      "x-eip-error-family": "common",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/EnvironmentDescribeParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "environment.readiness",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/EnvironmentReadinessParams/properties/context"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/EnvironmentReadinessResult"
+        }
+      },
+      "x-eip-error-family": "common",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/EnvironmentReadinessParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.abort_writer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterAbortParams/properties/context"
+          }
+        },
+        {
+          "name": "writer",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterAbortParams/properties/writer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileWriterAbortResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileWriterAbortParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "abort",
+      "x-eip-transfer-direction": "client_to_server"
+    },
+    {
+      "name": "file.close_reader",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderCloseParams/properties/context"
+          }
+        },
+        {
+          "name": "reader",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderCloseParams/properties/reader"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileReaderCloseResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileReaderCloseParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "close",
+      "x-eip-transfer-direction": "server_to_client"
+    },
+    {
+      "name": "file.commit_writer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterCommitParams/properties/context"
+          }
+        },
+        {
+          "name": "writer",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterCommitParams/properties/writer"
+          }
+        },
+        {
+          "name": "transferred_bytes",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterCommitParams/properties/transferred_bytes"
+          }
+        },
+        {
+          "name": "transfer_digest",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterCommitParams/properties/transfer_digest"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileWriterCommitResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileWriterCommitParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": "commit",
+      "x-eip-transfer-direction": "client_to_server"
+    },
+    {
+      "name": "file.copy",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileCopyParams/properties/context"
+          }
+        },
+        {
+          "name": "source",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileCopyParams/properties/source"
+          }
+        },
+        {
+          "name": "destination",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileCopyParams/properties/destination"
+          }
+        },
+        {
+          "name": "replace",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileCopyParams/properties/replace"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileCopyResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileCopyParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.find",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/context"
+          }
+        },
+        {
+          "name": "root",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/root"
+          }
+        },
+        {
+          "name": "pattern",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/pattern"
+          }
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/offset"
+          }
+        },
+        {
+          "name": "max_results",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/max_results"
+          }
+        },
+        {
+          "name": "recursive",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/recursive"
+          }
+        },
+        {
+          "name": "include_hidden",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/include_hidden"
+          }
+        },
+        {
+          "name": "kinds",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/kinds"
+          }
+        },
+        {
+          "name": "respect_git_ignore",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileFindParams/properties/respect_git_ignore"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileFindResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileFindParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileListParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileListParams/properties/path"
+          }
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileListParams/properties/offset"
+          }
+        },
+        {
+          "name": "max_results",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileListParams/properties/max_results"
+          }
+        },
+        {
+          "name": "include_hidden",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileListParams/properties/include_hidden"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileListResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileListParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.mkdir",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMkdirParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMkdirParams/properties/path"
+          }
+        },
+        {
+          "name": "parents",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMkdirParams/properties/parents"
+          }
+        },
+        {
+          "name": "exist_ok",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMkdirParams/properties/exist_ok"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileMkdirResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileMkdirParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.move",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMoveParams/properties/context"
+          }
+        },
+        {
+          "name": "source",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMoveParams/properties/source"
+          }
+        },
+        {
+          "name": "destination",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMoveParams/properties/destination"
+          }
+        },
+        {
+          "name": "replace",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileMoveParams/properties/replace"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileMoveResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileMoveParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.open_reader",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderOpenParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderOpenParams/properties/path"
+          }
+        },
+        {
+          "name": "byte_range",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderOpenParams/properties/byte_range"
+          }
+        },
+        {
+          "name": "transfer_timeout_ms",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReaderOpenParams/properties/transfer_timeout_ms"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileReaderOpenResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileReaderOpenParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "open",
+      "x-eip-transfer-direction": "server_to_client"
+    },
+    {
+      "name": "file.open_writer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterOpenParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterOpenParams/properties/path"
+          }
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterOpenParams/properties/mode"
+          }
+        },
+        {
+          "name": "executable",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterOpenParams/properties/executable"
+          }
+        },
+        {
+          "name": "transfer_timeout_ms",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriterOpenParams/properties/transfer_timeout_ms"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileWriterOpenResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileWriterOpenParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": "open",
+      "x-eip-transfer-direction": "client_to_server"
+    },
+    {
+      "name": "file.patch_text",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FilePatchTextParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FilePatchTextParams/properties/path"
+          }
+        },
+        {
+          "name": "patch_format",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FilePatchTextParams/properties/patch_format"
+          }
+        },
+        {
+          "name": "patch",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FilePatchTextParams/properties/patch"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FilePatchTextResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FilePatchTextParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.read_text",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReadTextParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReadTextParams/properties/path"
+          }
+        },
+        {
+          "name": "line_limit",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReadTextParams/properties/line_limit"
+          }
+        },
+        {
+          "name": "line_offset",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReadTextParams/properties/line_offset"
+          }
+        },
+        {
+          "name": "max_line_length",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileReadTextParams/properties/max_line_length"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileReadTextResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileReadTextParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.remove",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileRemoveParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileRemoveParams/properties/path"
+          }
+        },
+        {
+          "name": "expected_kind",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileRemoveParams/properties/expected_kind"
+          }
+        },
+        {
+          "name": "recursive",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileRemoveParams/properties/recursive"
+          }
+        },
+        {
+          "name": "max_entries",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileRemoveParams/properties/max_entries"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileRemoveResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileRemoveParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.search",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/context"
+          }
+        },
+        {
+          "name": "root",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/root"
+          }
+        },
+        {
+          "name": "query",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/query"
+          }
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/mode"
+          }
+        },
+        {
+          "name": "case_sensitive",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/case_sensitive"
+          }
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/offset"
+          }
+        },
+        {
+          "name": "max_results",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/max_results"
+          }
+        },
+        {
+          "name": "include_hidden",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/include_hidden"
+          }
+        },
+        {
+          "name": "max_line_length",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/max_line_length"
+          }
+        },
+        {
+          "name": "include_pattern",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/include_pattern"
+          }
+        },
+        {
+          "name": "respect_git_ignore",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/respect_git_ignore"
+          }
+        },
+        {
+          "name": "context_lines",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/context_lines"
+          }
+        },
+        {
+          "name": "max_matches_per_file",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/max_matches_per_file"
+          }
+        },
+        {
+          "name": "max_files",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/max_files"
+          }
+        },
+        {
+          "name": "max_file_bytes",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileSearchParams/properties/max_file_bytes"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileSearchResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileSearchParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.stat",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileStatParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileStatParams/properties/path"
+          }
+        },
+        {
+          "name": "follow_symlinks",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileStatParams/properties/follow_symlinks"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileStatResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileStatParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "file.write_text",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriteTextParams/properties/context"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriteTextParams/properties/path"
+          }
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriteTextParams/properties/mode"
+          }
+        },
+        {
+          "name": "text",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriteTextParams/properties/text"
+          }
+        },
+        {
+          "name": "executable",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/FileWriteTextParams/properties/executable"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/FileWriteTextResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/FileWriteTextParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "initialize",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "supported_protocol_versions",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/InitializeParams/properties/supported_protocol_versions"
+          }
+        },
+        {
+          "name": "client",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/InitializeParams/properties/client"
+          }
+        },
+        {
+          "name": "expected_device_id",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/InitializeParams/properties/expected_device_id"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/InitializeResult"
+        }
+      },
+      "x-eip-error-family": "initialization",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/InitializeParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "operation.cancel",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OperationCancelParams/properties/context"
+          }
+        },
+        {
+          "name": "target_operation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OperationCancelParams/properties/target_operation_id"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/OperationCancelResult"
+        }
+      },
+      "x-eip-error-family": "common",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/OperationCancelParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "output.read",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReadParams/properties/context"
+          }
+        },
+        {
+          "name": "reference",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReadParams/properties/reference"
+          }
+        },
+        {
+          "name": "start_offset",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReadParams/properties/start_offset"
+          }
+        },
+        {
+          "name": "wait_ms",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReadParams/properties/wait_ms"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/OutputReadResult"
+        }
+      },
+      "x-eip-error-family": "output",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/OutputReadParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "output.release",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReleaseParams/properties/context"
+          }
+        },
+        {
+          "name": "reference",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/OutputReleaseParams/properties/reference"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/OutputReleaseResult"
+        }
+      },
+      "x-eip-error-family": "output",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/OutputReleaseParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "port.inspect",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/PortInspectParams/properties/context"
+          }
+        },
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/PortInspectParams/properties/target"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/PortInspectResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/PortInspectParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "port.wait",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/PortWaitParams/properties/context"
+          }
+        },
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/PortWaitParams/properties/target"
+          }
+        },
+        {
+          "name": "desired_status",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/PortWaitParams/properties/desired_status"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/PortWaitResult"
+        }
+      },
+      "x-eip-error-family": "resource",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/PortWaitParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.close_stdin",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessCloseStdinParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessCloseStdinParams/properties/handle"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessCloseStdinResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessCloseStdinParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.inspect",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessInspectParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessInspectParams/properties/handle"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessInspectResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessInspectParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.kill",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessKillParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessKillParams/properties/handle"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessKillResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessKillParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.release",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessReleaseParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessReleaseParams/properties/handle"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessReleaseResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessReleaseParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.signal",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessSignalParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessSignalParams/properties/handle"
+          }
+        },
+        {
+          "name": "signal",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessSignalParams/properties/signal"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessSignalResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessSignalParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessStartParams/properties/context"
+          }
+        },
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessStartParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessStartResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessStartParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.wait",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWaitParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWaitParams/properties/handle"
+          }
+        },
+        {
+          "name": "condition",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWaitParams/properties/condition"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessWaitResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessWaitParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "process.write_stdin",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWriteStdinParams/properties/context"
+          }
+        },
+        {
+          "name": "handle",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWriteStdinParams/properties/handle"
+          }
+        },
+        {
+          "name": "data",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWriteStdinParams/properties/data"
+          }
+        },
+        {
+          "name": "close_after_write",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/ProcessWriteStdinParams/properties/close_after_write"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ProcessWriteStdinResult"
+        }
+      },
+      "x-eip-error-family": "process",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ProcessWriteStdinParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "receipt.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ReceiptGetParams/properties/context"
+          }
+        },
+        {
+          "name": "operation_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ReceiptGetParams/properties/operation_id"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ReceiptGetResult"
+        }
+      },
+      "x-eip-error-family": "common",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ReceiptGetParams"
+      },
+      "x-eip-replay-class": "active_only",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "session.attach",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/SessionOpenResult"
+        }
+      },
+      "x-eip-error-family": "session",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/SessionAttachParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "session.close",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/SessionCloseResult"
+        }
+      },
+      "x-eip-error-family": "session",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/SessionCloseParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "session.keepalive",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/SessionKeepaliveResult"
+        }
+      },
+      "x-eip-error-family": "session",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/SessionKeepaliveParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "session.open",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "expected_device_id",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/expected_device_id"
+          }
+        },
+        {
+          "name": "expected_generation",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/expected_generation"
+          }
+        },
+        {
+          "name": "protocol_version",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/protocol_version"
+          }
+        },
+        {
+          "name": "working_directory",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/working_directory"
+          }
+        },
+        {
+          "name": "required_methods",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/required_methods"
+          }
+        },
+        {
+          "name": "egress",
+          "required": false,
+          "schema": {
+            "$ref": "schema.json#/$defs/SessionOpenParams/properties/egress"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/SessionOpenResult"
+        }
+      },
+      "x-eip-error-family": "session",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/SessionOpenParams"
+      },
+      "x-eip-replay-class": "ledger_external",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    },
+    {
+      "name": "shell.exec",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "context",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ShellExecParams/properties/context"
+          }
+        },
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/ShellExecParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schema.json#/$defs/ShellExecResult"
+        }
+      },
+      "x-eip-error-family": "command",
+      "x-eip-introduced": "0.1",
+      "x-eip-kind": "request_response",
+      "x-eip-params-schema": {
+        "$ref": "schema.json#/$defs/ShellExecParams"
+      },
+      "x-eip-replay-class": "terminal_evidence",
+      "x-eip-transfer-action": null,
+      "x-eip-transfer-direction": null
+    }
+  ],
+  "openrpc": "1.3.2"
+}

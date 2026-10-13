@@ -1,0 +1,82 @@
+# Independent Service SDK repositories (not submodules)
+/sdk/
+
+# Task worktrees
+/.worktrees/
+
+# Local reference and discussion material
+discussion/
+local-reference/
+tmp/
+
+# Local runtime storage and caches, including make cli config/data in var/harness-ui/
+/var/
+
+# Python bytecode and native extensions
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Python environments
+.env
+.env.*
+!.env.harness.example
+!/dev/harness/.env.example
+!/dev/harness-ui/.env.example
+.venv/
+env/
+venv/
+
+# Tests, coverage, and static analysis
+.coverage
+.coverage.*
+.tia/
+.cache/
+.hypothesis/
+.mypy_cache/
+.nox/
+.pyright/
+.pytest_cache/
+.ruff_cache/
+.tox/
+coverage.xml
+htmlcov/
+test-results/
+
+# Cloudflare Wrangler local state
+.wrangler/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Frontend tooling
+node_modules/
+*.tsbuildinfo
+/frontend/apps/*/dist/
+/packages/a13n-harness-ui/a13n_harness_ui/static/
+/packages/a13n-service/a13n_service/static/
+/packages/a13n-service/a13n_service/documentation.json
+/packages/a13n-harness-ui/a13n_harness_ui/assets/builtin_skills/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+.anycap/
+
+/frontend/packages/*/dist/
+
+# Checkout-local deployment workflows and private environment configuration
+/.internal/

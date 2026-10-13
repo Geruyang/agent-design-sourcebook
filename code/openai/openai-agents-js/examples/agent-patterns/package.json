@@ -1,0 +1,34 @@
+{
+  "private": true,
+  "name": "agent-patterns",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "@openai/agents-openai": "workspace:*",
+    "chalk": "^5.4.1",
+    "openai": "^7.2.0",
+    "zod": "^4.3.5"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start:agents-as-tools": "node agents-as-tools.ts",
+    "start:agents-as-tools-conditional": "node agents-as-tools-conditional.ts",
+    "start:agents-as-tools-structured": "node agents-as-tools-structured.ts",
+    "start:agents-as-tools-streaming": "node agents-as-tools-streaming.ts",
+    "start:deterministic": "node deterministic.ts",
+    "start:forcing-tool-use": "node forcing-tool-use.ts -t default",
+    "start:human-in-the-loop-stream": "node human-in-the-loop-stream.ts",
+    "start:human-in-the-loop": "node human-in-the-loop.ts",
+    "start:hosted-multi-agent": "tsx hosted-multi-agent-beta.ts",
+    "start:input-guardrails": "node input-guardrails.ts",
+    "start:llm-as-a-judge": "node llm-as-a-judge.ts",
+    "start:output-guardrails": "node output-guardrails.ts",
+    "start:parallelization": "node parallelization.ts",
+    "start:routing": "node routing.ts",
+    "start:streamed": "node streamed.ts",
+    "start:streaming-guardrails": "node streaming-guardrails.ts",
+    "start:human-in-the-loop-server": "tsx human-in-the-loop-server.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "name": "@openai/agents-extensions",
+  "repository": "https://github.com/openai/openai-agents-js",
+  "homepage": "https://openai.github.io/openai-agents-js/",
+  "version": "0.20.0",
+  "description": "Extensions for the OpenAI Agents SDK",
+  "author": "OpenAI <support@openai.com>",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "node ../../scripts/embedMeta.mts",
+    "build": "tsc",
+    "build-check": "tsc --noEmit -p ./tsconfig.test.json",
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
+  },
+  "dependencies": {
+    "@openai/agents-core": "workspace:*",
+    "@types/ws": "^8.18.2"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./ai-sdk": {
+      "types": "./dist/ai-sdk/index.d.ts",
+      "require": "./dist/ai-sdk/index.js",
+      "import": "./dist/ai-sdk/index.mjs"
+    },
+    "./ai-sdk-ui": {
+      "types": "./dist/ai-sdk-ui/index.d.ts",
+      "require": "./dist/ai-sdk-ui/index.js",
+      "import": "./dist/ai-sdk-ui/index.mjs"
+    },
+    "./sandbox/blaxel": {
+      "types": "./dist/sandbox/blaxel/index.d.ts",
+      "require": "./dist/sandbox/blaxel/index.js",
+      "import": "./dist/sandbox/blaxel/index.mjs"
+    },
+    "./sandbox/cloudflare": {
+      "types": "./dist/sandbox/cloudflare/index.d.ts",
+      "require": "./dist/sandbox/cloudflare/index.js",
+      "import": "./dist/sandbox/cloudflare/index.mjs"
+    },
+    "./sandbox/daytona": {
+      "types": "./dist/sandbox/daytona/index.d.ts",
+      "require": "./dist/sandbox/daytona/index.js",
+      "import": "./dist/sandbox/daytona/index.mjs"
+    },
+    "./sandbox/e2b": {
+      "types": "./dist/sandbox/e2b/index.d.ts",
+      "require": "./dist/sandbox/e2b/index.js",
+      "import": "./dist/sandbox/e2b/index.mjs"
+    },
+    "./sandbox/modal": {
+      "types": "./dist/sandbox/modal/index.d.ts",
+      "require": "./dist/sandbox/modal/index.js",
+      "import": "./dist/sandbox/modal/index.mjs"
+    },
+    "./sandbox/runloop": {
+      "types": "./dist/sandbox/runloop/index.d.ts",
+      "require": "./dist/sandbox/runloop/index.js",
+      "import": "./dist/sandbox/runloop/index.mjs"
+    },
+    "./sandbox/vercel": {
+      "types": "./dist/sandbox/vercel/index.d.ts",
+      "require": "./dist/sandbox/vercel/index.js",
+      "import": "./dist/sandbox/vercel/index.mjs"
+    },
+    "./experimental/codex": {
+      "types": "./dist/experimental/codex/index.d.ts",
+      "require": "./dist/experimental/codex/index.js",
+      "import": "./dist/experimental/codex/index.mjs"
+    }
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^2.0.0 || ^3.0.0 || ^4.0.0",
+    "@blaxel/core": "^0.2.82",
+    "@daytonaio/sdk": "^0.201.0",
+    "@e2b/code-interpreter": "^2.3.3",
+    "@openai/agents": "workspace:>=0.0.0",
+    "@openai/codex-sdk": ">=0.86.0",
+    "@runloop/api-client": "^1.16.2",
+    "@vercel/sandbox": "^1.9.3",
+    "ai": "^6.0.0 || ^7.0.0",
+    "e2b": "^2.14.1",
+    "modal": "^0.7.6",
+    "ws": "^8.21.3",
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
+    "@ai-sdk/provider": {
+      "optional": true
+    },
+    "@blaxel/core": {
+      "optional": true
+    },
+    "@openai/codex-sdk": {
+      "optional": true
+    },
+    "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@e2b/code-interpreter": {
+      "optional": true
+    },
+    "e2b": {
+      "optional": true
+    },
+    "modal": {
+      "optional": true
+    },
+    "@runloop/api-client": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "openai",
+    "agents",
+    "ai",
+    "agentic"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@ai-sdk/provider": "^4.0.21",
+    "@blaxel/core": "0.2.82",
+    "@daytonaio/sdk": "0.201.0",
+    "@e2b/code-interpreter": "2.8.0",
+    "@openai/agents": "workspace:>=0.0.0",
+    "@openai/codex-sdk": "^0.160.0",
+    "@runloop/api-client": "1.32.0",
+    "@vercel/sandbox": "1.9.3",
+    "ai": "^6.0.277",
+    "e2b": "2.52.0",
+    "modal": "0.7.6",
+    "undici-types": "6.21.0",
+    "ws": "^8.22.0",
+    "zod": "^4.3.5"
+  },
+  "files": [
+    "dist"
+  ],
+  "typesVersions": {
+    "*": {
+      "sandbox/blaxel": [
+        "dist/sandbox/blaxel/index.d.ts"
+      ],
+      "sandbox/cloudflare": [
+        "dist/sandbox/cloudflare/index.d.ts"
+      ],
+      "sandbox/daytona": [
+        "dist/sandbox/daytona/index.d.ts"
+      ],
+      "sandbox/e2b": [
+        "dist/sandbox/e2b/index.d.ts"
+      ],
+      "sandbox/modal": [
+        "dist/sandbox/modal/index.d.ts"
+      ],
+      "sandbox/runloop": [
+        "dist/sandbox/runloop/index.d.ts"
+      ],
+      "sandbox/vercel": [
+        "dist/sandbox/vercel/index.d.ts"
+      ],
+      "ai-sdk": [
+        "dist/ai-sdk/index.d.ts"
+      ],
+      "ai-sdk-ui": [
+        "dist/ai-sdk-ui/index.d.ts"
+      ],
+      "experimental/codex": [
+        "dist/experimental/codex/index.d.ts"
+      ]
+    }
+  }
+}

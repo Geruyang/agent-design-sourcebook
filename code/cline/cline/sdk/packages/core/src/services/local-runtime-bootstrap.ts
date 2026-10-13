@@ -1,0 +1,620 @@
+import { resolveProviderRequestHeaders } from "@cline/llms";
+import type {
+	AgentConfig,
+	AgentEvent,
+	AgentHooks,
+	AgentTool,
+	BasicLogger,
+	ClientContext,
+	ExtensionContext,
+	ITelemetryService,
+	RuntimeConfigExtensionKind,
+	ToolApprovalRequest,
+	ToolApprovalResult,
+	WorkspaceInfo,
+} from "@cline/shared";
+import {
+	buildClineSystemPrompt,
+	hasRuntimeConfigExtension,
+} from "@cline/shared";
+import { version as corePackageVersion } from "../../package.json";
+import {
+	type AgentPluginPackageDiagnostic,
+	loadAgentPluginPackages,
+} from "../extensions/agent-plugin";
+import { createComposioToolsExtension } from "../extensions/composio/composio-tools-extension";
+import {
+	resolveAndLoadAgentPlugins,
+	resolvePluginSkillDirectoriesFromPaths,
+} from "../extensions/plugin/plugin-config-loader";
+import type {
+	PluginInitializationFailure,
+	PluginInitializationWarning,
+} from "../extensions/plugin/plugin-load-report";
+import type {
+	SubAgentEndContext,
+	SubAgentStartContext,
+	TeamEvent,
+} from "../extensions/tools/team";
+import { createCheckpointHooks } from "../hooks/checkpoint-hooks";
+import {
+	createHookAuditHooks,
+	createHookConfigFileExtension,
+	mergeAgentHooks,
+} from "../hooks/hook-file-hooks";
+import type { RuntimeCapabilities } from "../runtime/capabilities";
+import { normalizeRuntimeCapabilities } from "../runtime/capabilities";
+import type {
+	LocalRuntimeStartOptions,
+	ResolvedStartSessionInput,
+} from "../runtime/host/runtime-host";
+import type { RuntimeBuilderInput } from "../runtime/orchestration/session-runtime";
+import type { SessionHistoryOriginMetadata } from "../session/history-origin";
+import { SessionSource } from "../types/common";
+import type { CoreSessionConfig } from "../types/config";
+import {
+	type ProviderConfig,
+	type ProviderSettings,
+	toProviderConfig,
+} from "../types/provider-settings";
+import { resolveWorkspacePath } from "./config";
+import {
+	filterExtensionToolRegistrations,
+	resolveDisabledAgentPluginNames,
+} from "./global-settings";
+import { hasRuntimeHooks, mergeAgentExtensions } from "./session-data";
+import type { ProviderSettingsManager } from "./storage/provider-settings-manager";
+import { captureDetachedHookRuntime } from "./telemetry/core-events";
+import {
+	createClientScopedTelemetryService,
+	createScopedTelemetryService,
+} from "./telemetry/scoped-telemetry";
+import { InMemoryWorkspaceManager } from "./workspace/workspace-manager";
+import type { GitWorkspaceState } from "./workspace/workspace-manifest";
+import { buildWorkspaceMetadataWithInfo } from "./workspace/workspace-manifest";
+import { emitWorkspaceLifecycleTelemetry } from "./workspace/workspace-telemetry";
+
+function formatPluginFailure(failure: PluginInitializationFailure): string {
+	const label = failure.pluginName ?? failure.pluginPath;
+	return `${label}: ${failure.message}`;
+}
+
+function logPluginDiagnostics(
+	failures: PluginInitializationFailure[],
+	warnings: PluginInitializationWarning[],
+	logger: CoreSessionConfig["logger"],
+): void {
+	if (warnings.length > 0) {
+		for (const warning of warnings) {
+			logger?.log(warning.message, { severity: "warn" });
+		}
+	}
+	if (failures.length === 0) {
+		return;
+	}
+	const preview = failures.slice(0, 3).map(formatPluginFailure).join("; ");
+	const suffix = failures.length > 3 ? `; and ${failures.length - 3} more` : "";
+	logger?.log(
+		`Some plugins failed to initialize. ${preview}${suffix}. Use --verbose for more details.`,
+		{ severity: "warn" },
+	);
+	for (const failure of failures) {
+		logger?.log(
+			`Plugin initialization failed (${failure.phase}) for ${failure.pluginPath}`,
+			{
+				severity: "warn",
+				stack: failure.stack,
+				pluginPath: failure.pluginPath,
+				pluginName: failure.pluginName,
+			},
+		);
+	}
+}
+
+function logAgentPluginDiagnostics(
+	diagnostics: ReadonlyArray<AgentPluginPackageDiagnostic>,
+	logger: BasicLogger | undefined,
+): void {
+	for (const item of diagnostics) {
+		const component = item.componentName ? ` (${item.componentName})` : "";
+		logger?.log(
+			`[agent-plugins] ${item.pluginName ?? item.pluginPath}${component}: ${item.message}`,
+			{ severity: item.level === "warning" ? "warn" : "error" },
+		);
+	}
+}
+
+/**
+ * Recover client identity from the Cline request headers baked into the
+ * session config. Current Hub clients transport the serializable identity
+ * explicitly; these headers preserve attribution for older clients and other
+ * transport implementations that only forward the neutral session config.
+ */
+function resolveClientContextFromHeaders(
+	headers: Record<string, string> | undefined,
+): ClientContext | undefined {
+	const name = headers?.["X-CLIENT-TYPE"]?.trim();
+	if (!name) {
+		return undefined;
+	}
+	const version = headers?.["X-CLIENT-VERSION"]?.trim();
+	return { name, ...(version ? { version } : {}) };
+}
+
+function resolveReasoningSettings(
+	config: CoreSessionConfig,
+	storedReasoning: ProviderSettings["reasoning"],
+): ProviderSettings["reasoning"] {
+	const hasThinking = typeof config.thinking === "boolean";
+	const hasEffort = typeof config.reasoningEffort === "string";
+	if (!hasThinking && !hasEffort) return storedReasoning;
+	return {
+		...(storedReasoning ?? {}),
+		...(hasThinking ? { enabled: config.thinking } : {}),
+		...(hasEffort ? { effort: config.reasoningEffort } : {}),
+	};
+}
+
+function hasConfigExtension(
+	extensions: ReadonlyArray<RuntimeConfigExtensionKind> | undefined,
+	kind: RuntimeConfigExtensionKind,
+): boolean {
+	return hasRuntimeConfigExtension(extensions, kind);
+}
+
+function resolveBootstrapSystemPrompt(
+	config: CoreSessionConfig,
+	workspaceInfo: WorkspaceInfo,
+	workspaceMetadata: string,
+): string {
+	if (config.systemPrompt?.trim()) {
+		return config.systemPrompt;
+	}
+
+	return buildClineSystemPrompt({
+		ide: "Terminal Shell",
+		workspaceRoot: workspaceInfo.rootPath,
+		workspaceName: workspaceInfo.hint,
+		metadata: workspaceMetadata,
+		rules: config.rules,
+		mode: config.mode,
+		providerId: config.providerId,
+		platform: process.platform || "unknown",
+	});
+}
+
+function buildProviderConfig(
+	config: CoreSessionConfig,
+	sessionId: string,
+	source: ResolvedStartSessionInput["source"],
+	providerSettingsManager: ProviderSettingsManager,
+	modelCatalogDefaults?: Partial<ProviderSettings["modelCatalog"]>,
+	defaultFetch?: typeof fetch,
+): ProviderConfig {
+	const stored = providerSettingsManager.getProviderSettings(config.providerId);
+	const modelCatalog =
+		modelCatalogDefaults || stored?.modelCatalog
+			? {
+					...(modelCatalogDefaults ?? {}),
+					...(stored?.modelCatalog ?? {}),
+				}
+			: undefined;
+	const sessionProviderConfig =
+		config.providerConfig?.providerId === config.providerId
+			? config.providerConfig
+			: undefined;
+	const resolvedHeaders = resolveProviderRequestHeaders({
+		providerId: config.providerId,
+		sessionId,
+		source,
+		defaultSource: SessionSource.CLI,
+		client: {
+			name: config.extensionContext?.client?.name,
+			version: config.extensionContext?.client?.version,
+			versionHeaderFallback: config.headers?.["X-CLIENT-VERSION"],
+			platform: config.extensionContext?.client?.platform,
+			platformVersion: config.extensionContext?.client?.platformVersion,
+			isMultiRoot: config.extensionContext?.client?.isMultiRoot,
+		},
+		coreVersion: corePackageVersion,
+		openAiCodex: {
+			accountId: sessionProviderConfig?.accountId ?? stored?.auth?.accountId,
+			accessToken:
+				sessionProviderConfig?.accessToken ??
+				config.apiKey ??
+				stored?.auth?.accessToken ??
+				stored?.apiKey,
+			userAgentVersion: process.env.npm_package_version,
+		},
+		headers: {
+			stored: stored?.headers,
+			config: config.headers,
+			session: sessionProviderConfig?.headers,
+		},
+	});
+	const settings: ProviderSettings = {
+		...(stored ?? {}),
+		provider: config.providerId,
+		model: config.modelId,
+		apiKey: config.apiKey ?? stored?.apiKey,
+		baseUrl: config.baseUrl ?? stored?.baseUrl,
+		headers: undefined,
+		reasoning: resolveReasoningSettings(config, stored?.reasoning),
+		modelCatalog,
+	};
+	const providerConfig: ProviderConfig = {
+		...toProviderConfig(settings),
+		...(sessionProviderConfig ?? {}),
+	};
+	if (resolvedHeaders) {
+		providerConfig.headers = resolvedHeaders;
+	}
+	if (config.knownModels) {
+		providerConfig.knownModels = config.knownModels;
+	}
+	if (config.extensionContext) {
+		providerConfig.extensionContext = config.extensionContext;
+	}
+	// Thread a host-provided custom fetch through to the AI gateway providers.
+	// Precedence: explicit per-session config > stored provider settings > host default.
+	const sessionFetch = (config as { fetch?: typeof fetch }).fetch;
+	const resolvedFetch = sessionFetch ?? providerConfig.fetch ?? defaultFetch;
+	if (resolvedFetch) {
+		providerConfig.fetch = resolvedFetch;
+	}
+	return providerConfig;
+}
+
+export interface PrepareLocalRuntimeBootstrapOptions {
+	input: ResolvedStartSessionInput;
+	localRuntime?: LocalRuntimeStartOptions;
+	sessionId: string;
+	/**
+	 * How the session was initiated (user, automation, import, ...). Stamped
+	 * on every telemetry event the session emits so errors can be filtered by
+	 * provenance, e.g. transcripts imported from another agent.
+	 */
+	sessionOrigin?: SessionHistoryOriginMetadata;
+	providerSettingsManager: ProviderSettingsManager;
+	defaultTelemetry?: ITelemetryService;
+	defaultLogger?: BasicLogger;
+	defaultCapabilities?: RuntimeCapabilities;
+	defaultToolPolicies?: AgentConfig["toolPolicies"];
+	/**
+	 * Host-level default `fetch` threaded into `ProviderConfig.fetch` so the
+	 * AI gateway providers can use a custom HTTP implementation.
+	 */
+	defaultFetch?: typeof fetch;
+	onPluginEvent: (event: { name: string; payload?: unknown }) => void;
+	onTeamEvent: (event: TeamEvent) => void;
+	createSubAgentLifecycleCallbacks?: (config: CoreSessionConfig) => {
+		onSubAgentEvent?: (event: AgentEvent) => void;
+		onSubAgentStart?: (context: SubAgentStartContext) => void | Promise<void>;
+		onSubAgentEnd?: (context: SubAgentEndContext) => void | Promise<void>;
+	};
+	createSpawnTool: () => AgentTool;
+	readSessionMetadata: () => Promise<Record<string, unknown> | undefined>;
+	writeSessionMetadata: (
+		metadata: Record<string, unknown>,
+	) => Promise<void> | void;
+}
+
+export interface LocalRuntimeBootstrap {
+	effectiveInput: ResolvedStartSessionInput;
+	config: CoreSessionConfig;
+	providerConfig: ProviderConfig;
+	workspaceMetadata: string;
+	/** Structured git + path metadata generated alongside workspaceMetadata. */
+	workspaceInfo: WorkspaceInfo;
+	gitState: GitWorkspaceState;
+	extensions: AgentConfig["extensions"];
+	hooks: AgentHooks | undefined;
+	toolPolicies: AgentConfig["toolPolicies"];
+	requestToolApproval?: (
+		request: ToolApprovalRequest,
+	) => Promise<ToolApprovalResult> | ToolApprovalResult;
+	pluginSandboxShutdown?: () => Promise<void>;
+	runtimeBuilderInput: RuntimeBuilderInput;
+}
+
+export async function prepareLocalRuntimeBootstrap(
+	options: PrepareLocalRuntimeBootstrapOptions,
+): Promise<LocalRuntimeBootstrap> {
+	const {
+		input,
+		sessionId,
+		sessionOrigin,
+		providerSettingsManager,
+		defaultTelemetry,
+		defaultLogger,
+		defaultCapabilities,
+		defaultToolPolicies,
+		defaultFetch,
+		onPluginEvent,
+		onTeamEvent,
+		createSubAgentLifecycleCallbacks,
+		createSpawnTool,
+		localRuntime,
+		readSessionMetadata,
+		writeSessionMetadata,
+	} = options;
+	const workspacePath = resolveWorkspacePath(input.config);
+	const {
+		modelCatalogDefaults,
+		userInstructionService,
+		configExtensions,
+		onTeamRestored,
+		...localConfigFields
+	} = localRuntime ?? {};
+	const localConfig =
+		Object.keys(localConfigFields).length > 0
+			? (localConfigFields as Partial<CoreSessionConfig>)
+			: undefined;
+
+	// Generate workspace + git metadata once, early, so it can be forwarded to
+	// hooks and extensions. The serialized string goes into CoreSessionConfig
+	// as workspaceMetadata; the structured object is kept as workspaceInfo.
+	const {
+		workspaceInfo,
+		workspaceMetadata,
+		gitState,
+		durationMs,
+		vcsType,
+		initError,
+	} = await buildWorkspaceMetadataWithInfo(workspacePath);
+	const configuredExtensionContext = localConfig?.extensionContext;
+	const headerClientContext = configuredExtensionContext?.client
+		? undefined
+		: resolveClientContextFromHeaders(input.config.headers);
+	const clientContext =
+		configuredExtensionContext?.client ?? headerClientContext;
+	const configuredTelemetry =
+		configuredExtensionContext?.telemetry ?? localConfig?.telemetry;
+	// Hub-backed sessions execute inside a shared daemon and therefore inherit
+	// its process telemetry service. Scope that singleton to the serialized
+	// client identity without mutating it; local clients already carry their
+	// own telemetry instance and keep using it directly.
+	const clientTelemetry =
+		configuredTelemetry ??
+		(defaultTelemetry && clientContext
+			? createClientScopedTelemetryService(defaultTelemetry, {
+					client: clientContext,
+					source: input.source,
+					user: configuredExtensionContext?.user,
+				})
+			: defaultTelemetry);
+	const telemetry =
+		clientTelemetry && sessionOrigin
+			? createScopedTelemetryService(clientTelemetry, {
+					session_origin: sessionOrigin.mode,
+					session_origin_trigger: sessionOrigin.trigger,
+				})
+			: clientTelemetry;
+	const extensionContext: ExtensionContext = {
+		...(configuredExtensionContext ?? {}),
+		...(headerClientContext ? { client: headerClientContext } : {}),
+		workspace: {
+			...workspaceInfo,
+			...(configuredExtensionContext?.workspace ?? {}),
+		},
+		session: {
+			...(configuredExtensionContext?.session ?? {}),
+			sessionId,
+		},
+		logger:
+			configuredExtensionContext?.logger ??
+			localConfig?.logger ??
+			defaultLogger,
+		telemetry,
+	};
+	emitWorkspaceLifecycleTelemetry({
+		telemetry: extensionContext.telemetry,
+		rootPath: workspaceInfo.rootPath,
+		dedupeScope: extensionContext.client?.name ?? input.source,
+		workspaceInfo,
+		rootCount: 1,
+		vcsType,
+		durationMs,
+		initError,
+		featureFlagEnabled: true,
+	});
+
+	// Hosts with their own hook execution layer (the VS Code extension's
+	// hooks adapter) exclude "hooks" so file hooks run exactly once.
+	const fileHookExtension = hasConfigExtension(configExtensions, "hooks")
+		? createHookConfigFileExtension({
+				cwd: input.config.cwd,
+				workspacePath,
+				rootSessionId: sessionId,
+				logger: localConfig?.logger,
+				workspaceInfo,
+				// Detached hooks are never awaited, so their runtime is
+				// invisible today. Measuring it is what tells us whether
+				// run-start hooks could safely become blocking.
+				onHookRuntime: (event) =>
+					captureDetachedHookRuntime(extensionContext.telemetry, event),
+			})
+		: undefined;
+	const auditHooks = hasRuntimeHooks(localConfig?.hooks)
+		? undefined
+		: createHookAuditHooks({
+				rootSessionId: sessionId,
+				workspacePath,
+				workspaceInfo,
+			});
+	const baseHooks = mergeAgentHooks([localConfig?.hooks, auditHooks]);
+
+	let loadedPlugins:
+		| Awaited<ReturnType<typeof resolveAndLoadAgentPlugins>>
+		| undefined;
+	if (hasConfigExtension(configExtensions, "plugins")) {
+		try {
+			loadedPlugins = await resolveAndLoadAgentPlugins({
+				pluginPaths: localConfig?.pluginPaths,
+				workspacePath,
+				cwd: input.config.cwd,
+				onEvent: onPluginEvent,
+				providerId: input.config.providerId,
+				modelId: input.config.modelId,
+				workspaceInfo,
+				session: extensionContext.session,
+				client: extensionContext.client,
+				user: extensionContext.user,
+				logger: extensionContext.logger,
+				telemetry: extensionContext.telemetry,
+				automation: extensionContext.automation,
+			});
+			logPluginDiagnostics(
+				loadedPlugins.failures,
+				loadedPlugins.warnings,
+				localConfig?.logger,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			localConfig?.logger?.log?.(
+				`plugin loading failed; continuing without plugins (${message})`,
+			);
+		}
+	}
+
+	let loadedAgentPluginPackages:
+		| Awaited<ReturnType<typeof loadAgentPluginPackages>>
+		| undefined;
+	if (hasConfigExtension(configExtensions, "plugins")) {
+		try {
+			loadedAgentPluginPackages = await loadAgentPluginPackages({
+				pluginPaths: input.config.agentPluginPaths,
+				cwd: input.config.cwd,
+				disabledPluginNames: [...resolveDisabledAgentPluginNames()],
+			});
+			logAgentPluginDiagnostics(
+				loadedAgentPluginPackages.diagnostics,
+				extensionContext.logger,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			extensionContext.logger?.log(
+				`[agent-plugins] Package discovery failed; continuing without Agent Plugins: ${message}`,
+				{ severity: "error" },
+			);
+		}
+	}
+
+	// Composio connector tools register in-process from persisted connection
+	// state rather than through a drop-in plugin: compiled hosts (the packaged
+	// desktop app) cannot spawn the plugin sandbox, and every host with the
+	// state file should serve the same tools.
+	const composioToolsExtension = await createComposioToolsExtension({
+		logger: localConfig?.logger,
+	});
+	const builtInExtensionList = [
+		...(fileHookExtension ? [fileHookExtension] : []),
+		...(composioToolsExtension ? [composioToolsExtension] : []),
+	];
+	const builtInExtensions =
+		builtInExtensionList.length > 0 ? builtInExtensionList : undefined;
+	const extensions = mergeAgentExtensions(
+		builtInExtensions,
+		mergeAgentExtensions(
+			localConfig?.extensions,
+			filterExtensionToolRegistrations(loadedPlugins?.extensions),
+		),
+	);
+	const pluginSkillDirectories = hasConfigExtension(configExtensions, "plugins")
+		? resolvePluginSkillDirectoriesFromPaths(loadedPlugins?.pluginPaths ?? [])
+		: undefined;
+	const baseConfig: CoreSessionConfig = {
+		...input.config,
+		...(localConfig ?? {}),
+		sessionId,
+		hooks: baseHooks,
+		extensions,
+		extensionContext,
+		telemetry: extensionContext.telemetry,
+		logger: extensionContext.logger,
+	};
+	const providerConfig = buildProviderConfig(
+		baseConfig,
+		sessionId,
+		input.source,
+		providerSettingsManager,
+		modelCatalogDefaults,
+		defaultFetch,
+	);
+	const hooks = mergeAgentHooks([
+		baseConfig.hooks,
+		baseConfig.checkpoint?.enabled === true
+			? createCheckpointHooks({
+					cwd: baseConfig.cwd,
+					sessionId,
+					logger: baseConfig.logger,
+					createCheckpoint: baseConfig.checkpoint?.createCheckpoint,
+					telemetry: baseConfig.telemetry,
+					readSessionMetadata,
+					writeSessionMetadata,
+				})
+			: undefined,
+	]);
+	const config: CoreSessionConfig = {
+		...baseConfig,
+		providerConfig,
+		workspaceMetadata,
+		systemPrompt: resolveBootstrapSystemPrompt(
+			baseConfig,
+			workspaceInfo,
+			workspaceMetadata,
+		),
+		hooks,
+	};
+	const toolPolicies =
+		input.toolPolicies ?? baseConfig.toolPolicies ?? defaultToolPolicies;
+	const capabilities = normalizeRuntimeCapabilities(
+		defaultCapabilities,
+		input.capabilities,
+	);
+	const requestToolApproval = capabilities?.requestToolApproval;
+	const effectiveToolExecutors = capabilities?.toolExecutors;
+	const subAgentLifecycleCallbacks = createSubAgentLifecycleCallbacks?.(config);
+	const workspaceManager = new InMemoryWorkspaceManager({
+		currentWorkspacePath: workspaceInfo.rootPath,
+		workspaces: {
+			[workspaceInfo.rootPath]: workspaceInfo,
+		},
+	});
+
+	return {
+		effectiveInput: input,
+		config,
+		providerConfig,
+		workspaceMetadata,
+		workspaceInfo,
+		gitState,
+		extensions,
+		hooks,
+		toolPolicies,
+		requestToolApproval,
+		pluginSandboxShutdown: loadedPlugins?.shutdown,
+		runtimeBuilderInput: {
+			config,
+			hooks,
+			extensions,
+			onTeamEvent,
+			createSpawnTool,
+			onTeamRestored: onTeamRestored,
+			onSubAgentEvent: subAgentLifecycleCallbacks?.onSubAgentEvent,
+			onSubAgentStart: subAgentLifecycleCallbacks?.onSubAgentStart,
+			onSubAgentEnd: subAgentLifecycleCallbacks?.onSubAgentEnd,
+			userInstructionService: userInstructionService,
+			pluginSkillDirectories,
+			agentPluginSkills: loadedAgentPluginPackages?.skills,
+			agentPluginMcpServers: loadedAgentPluginPackages?.mcpServers,
+			configExtensions: configExtensions,
+			toolExecutors: effectiveToolExecutors,
+			toolPolicies,
+			workspaceManager,
+			logger: config.logger,
+			telemetry: config.telemetry,
+			requestToolApproval,
+		},
+	};
+}

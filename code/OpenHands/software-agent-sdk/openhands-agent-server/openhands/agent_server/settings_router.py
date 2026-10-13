@@ -1,0 +1,612 @@
+from collections.abc import Callable
+from functools import lru_cache
+from typing import cast
+
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from pydantic import ValidationError
+
+from openhands.agent_server._secrets_exposure import (
+    build_expose_context,
+    get_cipher,
+    get_config,
+    parse_expose_secrets_header,
+    store_errors,
+    translate_missing_cipher,
+)
+from openhands.agent_server.persistence import (
+    SECRET_NAME_PATTERN,
+    PersistedSettings,
+    get_agent_profile_store,
+    get_llm_profile_store,
+    get_secrets_store,
+    get_settings_store,
+)
+from openhands.agent_server.persistence.models import SettingsUpdatePayload
+from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.llm import LLM
+from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.settings import (
+    ConversationSettings,
+    SecretCreateRequest,
+    SecretItemResponse,
+    SecretsListResponse,
+    SettingsResponse,
+    SettingsSchema,
+    SettingsUpdateRequest,
+    export_agent_settings_schema,
+)
+from openhands.sdk.settings.api_models import MCPServerPatch
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
+
+
+logger = get_logger(__name__)
+
+# ── Route Path Constants ─────────────────────────────────────────────────
+# These are relative to the router prefix (/settings).
+# When mounted on /api, full paths become /api/settings, /api/settings/secrets, etc.
+# Note: RemoteWorkspace (client) uses absolute paths (e.g., "/api/settings")
+# while this router uses relative paths. The paths are intentionally separate
+# to match their respective contexts (router prefix vs full URL path).
+SETTINGS_PATH = ""  # -> /api/settings
+MCP_SERVER_PATH = "/mcp/{settings_key}"  # -> /api/settings/mcp/{settings_key}
+SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
+SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
+
+settings_router = APIRouter(prefix="/settings", tags=["Settings"])
+
+
+# ── Schema Endpoints ─────────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def _get_agent_settings_schema() -> SettingsSchema:
+    # ``AgentSettings`` is now a discriminated union over
+    # ``OpenHandsAgentSettings`` and ``ACPAgentSettings``; the combined
+    # schema tags sections with a ``variant`` so the frontend can
+    # show LLM-only or ACP-only sections based on the active
+    # ``agent_kind`` value.
+    return export_agent_settings_schema()
+
+
+@lru_cache(maxsize=1)
+def _get_conversation_settings_schema() -> SettingsSchema:
+    return ConversationSettings.export_schema()
+
+
+@settings_router.get("/agent-schema", response_model=SettingsSchema)
+async def get_agent_settings_schema() -> SettingsSchema:
+    """Return the schema used to render AgentSettings-based settings forms."""
+    return _get_agent_settings_schema()
+
+
+@settings_router.get("/conversation-schema", response_model=SettingsSchema)
+async def get_conversation_settings_schema() -> SettingsSchema:
+    """Return the schema used to render ConversationSettings-based forms."""
+    return _get_conversation_settings_schema()
+
+
+# ── Settings CRUD Endpoints ──────────────────────────────────────────────
+
+
+def _validate_secret_name(name: str) -> None:
+    """Validate secret name format.
+
+    Secret names must:
+    - Start with a letter
+    - Contain only letters, numbers, and underscores
+    - Be 1-64 characters long
+
+    Raises:
+        HTTPException: 422 if name format is invalid.
+    """
+    if not SECRET_NAME_PATTERN.match(name):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Invalid secret name format. Must start with a letter, "
+                "contain only letters, numbers, and underscores, "
+                "and be 1-64 characters long."
+            ),
+        )
+
+
+@settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
+async def get_settings(request: Request) -> SettingsResponse:
+    """Get current settings.
+
+    Returns the persisted settings including agent configuration,
+    conversation settings, and whether an LLM API key is configured.
+
+    Use the ``X-Expose-Secrets`` header to control secret exposure:
+    - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
+    - ``plaintext``: Returns raw secret values (backend clients only!)
+    - (absent): Returns redacted values ("**********")
+
+    Security:
+        When the server is configured with ``session_api_keys``, all endpoints
+        under ``/api`` (including this one) require the ``X-Session-API-Key``
+        header. When no session API keys are configured, endpoints are open.
+
+        **Trust model:** All authenticated clients are treated as equally
+        trusted. There is no role-based authorization for ``X-Expose-Secrets``
+        modes—any authenticated client can request ``plaintext`` or
+        ``encrypted`` exposure. This design assumes:
+
+        - All clients sharing session API keys operate in the same trust domain
+        - Network-level controls (firewalls, VPCs) restrict access to trusted
+          clients only
+        - Production deployments use session API keys to prevent anonymous access
+
+        The ``plaintext`` mode exists for backend-to-backend communication
+        (e.g., RemoteWorkspace). Frontend clients should prefer ``encrypted``
+        mode for round-tripping secrets, or omit the header to receive redacted
+        values.
+    """
+    expose_mode = parse_expose_secrets_header(request)
+    config = get_config(request)
+    store = get_settings_store(config)
+    settings = store.load() or PersistedSettings()
+
+    # Audit log all settings access for security visibility
+    # Use WARNING level for plaintext mode to highlight security-sensitive operations
+    client_host = request.client.host if request.client else "unknown"
+    log_extra = {
+        "client_host": client_host,
+        "expose_mode": expose_mode or "redacted",
+        "has_llm_api_key": settings.llm_api_key_is_set,
+    }
+    if expose_mode == "plaintext":
+        logger.warning("Settings accessed with PLAINTEXT secrets", extra=log_extra)
+    else:
+        logger.info("Settings accessed", extra=log_extra)
+
+    context = build_expose_context(expose_mode, config.cipher)
+    with translate_missing_cipher():
+        return SettingsResponse(
+            agent_settings=settings.agent_settings.model_dump(
+                mode="json", context=context
+            ),
+            conversation_settings=settings.conversation_settings.model_dump(
+                mode="json"
+            ),
+            llm_api_key_is_set=settings.llm_api_key_is_set,
+            active_profile=settings.active_profile,
+            active_agent_profile_id=settings.active_agent_profile_id,
+            active_meta_profile=settings.active_meta_profile,
+            misc_settings=settings.misc_settings,
+        )
+
+
+@settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
+async def update_settings(
+    request: Request, payload: SettingsUpdateRequest
+) -> SettingsResponse:
+    """Update settings with partial changes.
+
+    Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
+    ``misc_settings_diff``, and/or ``active_profile`` for incremental updates.
+    Setting ``active_profile`` loads and applies that profile's LLM, same as
+    ``POST /api/profiles/{name}/activate``, unless ``agent_settings_diff.llm``
+    is also given.
+
+    The three ``*_settings_diff`` fields are deep-merged; nested objects merge
+    recursively, and a ``null`` value **inside a nested map deletes that entry**
+    — the "unset" primitive that lets a client remove a single map key without
+    round-tripping the whole map. To remove one MCP server's header::
+
+        PATCH /api/settings
+        {"agent_settings_diff":
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
+
+    A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
+    is **not** an unset — it flows to model validation as before, so it still
+    fails loudly rather than silently resetting the field to its default.
+
+    ``misc_settings_diff`` is deep-merged into the persisted ``misc_settings``
+    block. The agent-server treats ``misc_settings`` as opaque frontend-owned
+    data: nested dicts are merged recursively, lists are replaced wholesale,
+    and the contents are never read or validated server-side.
+
+    Uses file locking to prevent concurrent updates from overwriting each other.
+
+    Raises:
+        HTTPException: 400 if the update payload contains invalid values.
+    """
+    update_data = payload.model_dump(exclude_none=True)
+    # exclude_none drops an explicit null, so re-add nullable pointers when the
+    # client set them (including to None) to allow clearing.
+    if "active_profile" in payload.model_fields_set:
+        update_data["active_profile"] = payload.active_profile
+    if "active_agent_profile_id" in payload.model_fields_set:
+        update_data["active_agent_profile_id"] = payload.active_agent_profile_id
+    if "active_meta_profile" in payload.model_fields_set:
+        update_data["active_meta_profile"] = payload.active_meta_profile
+    if not update_data:
+        # No updates provided - this is a client error
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one of agent_settings_diff, "
+                "conversation_settings_diff, misc_settings_diff, "
+                "active_profile, active_agent_profile_id, or active_meta_profile "
+                "must be provided"
+            ),
+        )
+
+    return _apply_settings_update(
+        request,
+        cast(SettingsUpdatePayload, update_data),
+    )
+
+
+def _load_active_profile_llm(
+    request: Request, update_data: SettingsUpdatePayload
+) -> LLM | None:
+    """Load the named profile's LLM unless the caller already gave one."""
+    profile_name = update_data.get("active_profile")
+    agent_diff = update_data.get("agent_settings_diff")
+    explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
+    if not profile_name or explicit_llm_diff:
+        return None
+
+    cipher = get_cipher(request)
+    profile_store = get_llm_profile_store()
+    # ``load`` resolves any referenced provider connection (read-at-use); a
+    # dangling reference raises ProviderConnectionNotFound, which
+    # store_errors() maps to 422.
+    try:
+        with store_errors():
+            llm = profile_store.load(profile_name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+    return llm
+
+
+def _with_profile_llm(
+    update_data: SettingsUpdatePayload,
+    llm: LLM | None,
+    settings: PersistedSettings,
+) -> SettingsUpdatePayload:
+    """Fold the profile's LLM into OpenHands settings. Mirrors ``/activate``."""
+    agent_diff = update_data.get("agent_settings_diff")
+    agent_diff = agent_diff if isinstance(agent_diff, dict) else {}
+    agent_kind = agent_diff.get("agent_kind") or settings.agent_settings.agent_kind
+    if llm is None or agent_kind == "acp":
+        return update_data
+    return cast(
+        SettingsUpdatePayload,
+        {
+            **update_data,
+            "agent_settings_diff": {
+                **agent_diff,
+                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+            },
+        },
+    )
+
+
+def _apply_settings_update(
+    request: Request,
+    update_data: SettingsUpdatePayload,
+    before_update: Callable[[PersistedSettings], None] | None = None,
+) -> SettingsResponse:
+    profile_llm = _load_active_profile_llm(request, update_data)
+    applied_update = update_data
+
+    # Apply updates atomically with file locking
+    def apply_update(settings: PersistedSettings) -> PersistedSettings:
+        nonlocal applied_update
+        if before_update is not None:
+            before_update(settings)
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        applied_update = _with_profile_llm(update_data, profile_llm, settings)
+        settings.update(applied_update, context=context)
+        return settings
+
+    config = get_config(request)
+    store = get_settings_store(config)
+    client_host = request.client.host if request.client else "unknown"
+    try:
+        settings = store.update(apply_update)
+        # Audit log: settings modified
+        logger.info(
+            "Settings updated",
+            extra={
+                "client_host": client_host,
+                "agent_settings_modified": "agent_settings_diff" in applied_update,
+                "conversation_settings_modified": (
+                    "conversation_settings_diff" in update_data
+                ),
+                "misc_settings_modified": "misc_settings_diff" in update_data,
+            },
+        )
+        # Consent lives in misc_settings.telemetry.consent, so a settings write
+        # is the only way it changes. Re-resolve before returning: a revocation
+        # must stop delivery and discard the queue while the caller is still
+        # waiting, not on the sink's next refresh.
+        if "misc_settings_diff" in update_data:
+            notify_misc_settings_changed(settings.misc_settings)
+    except (ValueError, ValidationError):
+        # Audit log: validation failed
+        # Note: PersistedSettings.update() raises ValueError (sanitized message)
+        # while Pydantic validation raises ValidationError
+        logger.warning(
+            "Settings update validation failed",
+            extra={"client_host": client_host},
+        )
+        # 422 Unprocessable Entity - semantic validation failure
+        # Don't expose error details - could contain secrets in tracebacks
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Settings validation failed",
+        )
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Settings update blocked: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
+        )
+    except (OSError, PermissionError):
+        # Note: exc_info omitted to prevent secrets in scope from leaking in tracebacks
+        logger.error("Settings update failed - file I/O error")
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+
+    # Don't expose secrets in mutation responses (consistent with GET behavior)
+    return SettingsResponse(
+        agent_settings=settings.agent_settings.model_dump(mode="json"),
+        conversation_settings=settings.conversation_settings.model_dump(mode="json"),
+        llm_api_key_is_set=settings.llm_api_key_is_set,
+        active_profile=settings.active_profile,
+        active_agent_profile_id=settings.active_agent_profile_id,
+        active_meta_profile=settings.active_meta_profile,
+        misc_settings=settings.misc_settings,
+    )
+
+
+def _require_mcp_server_absent(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"MCP server '{settings_key}' already exists",
+        )
+
+
+def _require_mcp_server_present(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key not in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server '{settings_key}' was not found",
+        )
+
+
+@settings_router.post(
+    MCP_SERVER_PATH,
+    response_model=SettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_server(
+    request: Request,
+    settings_key: str,
+    server: MCPServer,
+) -> SettingsResponse:
+    """Create one named MCP server without replacing an existing map entry."""
+    server_data = server.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_absent(settings, settings_key),
+    )
+
+
+@settings_router.patch(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def patch_mcp_server(
+    request: Request,
+    settings_key: str,
+    patch: MCPServerPatch,
+) -> SettingsResponse:
+    """Sparsely update one existing named MCP server."""
+    patch_data = patch.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_unset=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
+    )
+
+
+@settings_router.delete(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResponse:
+    """Delete one existing named MCP server without altering sibling entries."""
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
+    )
+
+
+# ── Secrets CRUD Endpoints ───────────────────────────────────────────────
+
+
+@settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
+async def list_secrets(
+    request: Request, agent_profile_id: str | None = None
+) -> SecretsListResponse:
+    """List available secret names, optionally scoped by an agent profile."""
+    config = get_config(request)
+    store = get_secrets_store(config)
+    secrets = store.load()
+
+    allowed_names: set[str] | None = None
+    if agent_profile_id is not None:
+        profile_store = get_agent_profile_store()
+        profile_name = profile_store.name_for_id(agent_profile_id)
+        if profile_name is None:
+            raise HTTPException(status_code=404, detail="Agent profile not found")
+        profile = profile_store.load(profile_name)
+        if profile.secret_refs is not None:
+            allowed_names = set(profile.secret_refs)
+
+    client_host = request.client.host if request.client else "unknown"
+    secret_count = len(secrets.custom_secrets) if secrets else 0
+    logger.info(
+        "Secrets list accessed",
+        extra={"client_host": client_host, "secret_count": secret_count},
+    )
+
+    if secrets is None:
+        return SecretsListResponse(secrets=[])
+
+    return SecretsListResponse(
+        secrets=[
+            SecretItemResponse(name=name, description=secret.description)
+            for name, secret in secrets.custom_secrets.items()
+            if allowed_names is None or name in allowed_names
+        ]
+    )
+
+
+@settings_router.get(SECRET_VALUE_PATH)
+async def get_secret_value(request: Request, name: str) -> Response:
+    """Get a single secret value by name.
+
+    Returns the raw secret value as plain text. This endpoint is designed
+    to be used with LookupSecret for lazy secret resolution.
+
+    Raises:
+        HTTPException: 400 if name format is invalid, 404 if secret not found.
+    """
+    _validate_secret_name(name)
+
+    config = get_config(request)
+    store = get_secrets_store(config)
+    value = store.get_secret(name)
+
+    client_host = request.client.host if request.client else "unknown"
+    if value is None:
+        # Log failed access attempts to detect enumeration attacks
+        logger.warning(
+            "Secret access failed - not found",
+            extra={"secret_name": name, "client_host": client_host},
+        )
+        # Use generic message to prevent secret name enumeration attacks
+        raise HTTPException(status_code=404, detail="Secret not found")
+
+    logger.info(
+        "Secret accessed",
+        extra={"secret_name": name, "client_host": client_host},
+    )
+    return Response(content=value, media_type="text/plain")
+
+
+@settings_router.put(SECRETS_PATH, response_model=SecretItemResponse)
+async def create_secret(
+    request: Request, secret: SecretCreateRequest
+) -> SecretItemResponse:
+    """Create or update a custom secret (upsert).
+
+    Raises:
+        HTTPException: 422 if the name or value is invalid, 500 if file is corrupted.
+    """
+    _validate_secret_name(secret.name)
+
+    value = secret.value.get_secret_value()
+    if not value.strip() or is_redacted_secret(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Secret value must not be empty or redacted",
+        )
+
+    config = get_config(request)
+    store = get_secrets_store(config)
+
+    try:
+        store.set_secret(
+            name=secret.name,
+            value=value,
+            description=secret.description,
+        )
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Secret create blocked: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Secrets file is corrupted or encrypted with a different key",
+        )
+    except (OSError, PermissionError):
+        # Note: exc_info omitted to prevent secret values from leaking in tracebacks
+        logger.error("Failed to save secret - file I/O error")
+        raise HTTPException(status_code=500, detail="Failed to save secret")
+
+    logger.info(
+        "Secret created/updated",
+        extra={
+            "secret_name": secret.name,
+            "client_host": request.client.host if request.client else "unknown",
+        },
+    )
+    return SecretItemResponse(name=secret.name, description=secret.description)
+
+
+@settings_router.delete(SECRET_VALUE_PATH)
+async def delete_secret(request: Request, name: str) -> dict[str, bool]:
+    """Delete a custom secret by name.
+
+    Raises:
+        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        500 if file is corrupted.
+    """
+    _validate_secret_name(name)
+
+    config = get_config(request)
+    store = get_secrets_store(config)
+
+    client_host = request.client.host if request.client else "unknown"
+    try:
+        deleted = store.delete_secret(name)
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Secret delete blocked: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Secrets file is corrupted or encrypted with a different key",
+        )
+
+    if not deleted:
+        # Log failed deletion attempts to detect enumeration attacks
+        logger.warning(
+            "Secret deletion failed - not found",
+            extra={"secret_name": name, "client_host": client_host},
+        )
+        # Use generic message to prevent secret name enumeration attacks
+        raise HTTPException(status_code=404, detail="Secret not found")
+
+    logger.info(
+        "Secret deleted",
+        extra={"secret_name": name, "client_host": client_host},
+    )
+    return {"deleted": True}

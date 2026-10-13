@@ -1,0 +1,311 @@
+import re
+from typing import Any, cast
+
+import pytest
+from a13n_harness import (
+    HarnessRunResult,
+    HarnessState,
+    SafeFailure,
+    StateError,
+)
+from a13n_harness.environment.models import EnvironmentState
+from a13n_harness.state import (
+    AgentContextState,
+    AgentContextStateSnapshot,
+    CapabilityState,
+    StoredRef,
+)
+from a13n_harness.usage import RunUsageSummary
+from pydantic import BaseModel, ValidationError
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_environment_states_reject_non_finite_json(value: float) -> None:
+    with pytest.raises(ValueError, match="bounded finite JSON"):
+        HarnessState.new(
+            environment_states={
+                "workspace": EnvironmentState(
+                    provider_key="test_provider",
+                    state_version="state-1",
+                    state=value,
+                )
+            }
+        )
+
+
+class CounterState(BaseModel):
+    value: int
+
+
+async def test_capability_state_namespaces_are_typed_and_detached() -> None:
+    state = AgentContextState()
+    await state.write("counter", CounterState(value=1), version="1")
+
+    value = await state.read("counter", CounterState, version="1")
+    assert value == CounterState(value=1)
+
+    snapshot = await state.snapshot()
+    await state.write("counter", CounterState(value=2), version="1")
+
+    assert snapshot.entries["counter"].data == {"value": 1}
+    assert (await state.read("counter", CounterState, version="1")) == CounterState(value=2)
+
+
+@pytest.mark.parametrize("capability_id", ["wanted", "entry", "a13n.example", "model_config", "a/b~c"])
+def test_snapshot_single_namespace_lookup_is_detached(capability_id: str) -> None:
+    snapshot = AgentContextStateSnapshot(entries={capability_id: CapabilityState(version="2", data={"items": [1]})})
+    entry = snapshot.get(capability_id)
+    assert entry is not None and entry.version == "2"
+    data = cast(dict[str, Any], entry.data)
+    cast(list[Any], data["items"]).append(2)
+    assert snapshot.get(capability_id).data == {"items": [1]}
+    assert snapshot.get("missing") is None
+    assert snapshot.get(capability_id) == snapshot.entries[capability_id]
+    assert AgentContextStateSnapshot.model_validate_json(snapshot.model_dump_json()).get(capability_id) == entry
+
+
+def test_snapshot_single_lookup_does_not_materialize_other_namespaces() -> None:
+    import tracemalloc
+
+    snapshot = AgentContextStateSnapshot(
+        entries={
+            "wanted": CapabilityState(version="1", data={"value": 1}),
+            "large": CapabilityState(version="1", data={"text": "x" * (4 * 1024 * 1024)}),
+        }
+    )
+    tracemalloc.start()
+    try:
+        assert snapshot.get("wanted").data == {"value": 1}
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    # A full entries decode allocates over 12 MiB for this fixture. Allow ample
+    # schema/compiler overhead without allowing the unrelated payload copy.
+    assert peak < 1024 * 1024
+
+
+@pytest.mark.parametrize("thread_id", ["thr_hostroot", "thread-" + "a" * 32])
+def test_thread_identity_is_stable_on_copy_and_rotates_on_fork(thread_id: str) -> None:
+    state = HarnessState.new(thread_id=thread_id)
+    copied = state.model_copy(deep=True)
+    restored = HarnessState.model_validate_json(state.model_dump_json())
+    forked = state.fork()
+    host_forked = state.fork(thread_id="thr_hostfork")
+
+    assert state.schema_version == "1"
+    assert state.thread_id == thread_id
+    assert copied.thread_id == state.thread_id
+    assert restored.thread_id == state.thread_id
+    assert re.fullmatch(r"thread_[0-9a-f]{32}", forked.thread_id)
+    assert forked.thread_id != state.thread_id
+    assert host_forked.thread_id == "thr_hostfork"
+    for value in (forked, host_forked):
+        assert value.message_history == state.message_history
+        assert value.agent_context_state == state.agent_context_state
+        assert value.environment_states == {}
+
+    with pytest.raises(ValueError, match="must differ"):
+        state.fork(thread_id=state.thread_id)
+
+
+def test_fields_a_later_harness_adds_are_kept_through_serialization_and_fork() -> None:
+    later = {"memory": {"note": "kept"}}
+    state = HarnessState.model_validate(HarnessState.new().model_dump(mode="json") | later)
+    restored = HarnessState.model_validate_json(state.model_dump_json())
+
+    for value in (state, restored, state.fork()):
+        assert value.model_extra == later
+
+
+def test_independent_states_receive_distinct_thread_identities() -> None:
+    first = HarnessState.new().thread_id
+    assert re.fullmatch(r"thread_[0-9a-f]{32}", first)
+    assert first != HarnessState.new().thread_id
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"schema_version": "1", "message_history": []},
+        {
+            "thread_id": "thread-0123456789abcdef0123456789abcdef",
+            "message_history": [],
+        },
+    ],
+)
+def test_import_requires_explicit_schema_version_and_thread_identity(payload: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        HarnessState.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "thread_id",
+    [
+        "",
+        "1-thread",
+        "thread with space",
+        "thread-custom",
+        "conversation-0123456789abcdef0123456789abcdef",
+        "thread-0123456789ABCDEF0123456789ABCDEF",
+    ],
+)
+def test_state_rejects_malformed_thread_identities(thread_id: str) -> None:
+    with pytest.raises(ValidationError):
+        HarnessState(schema_version="1", thread_id=thread_id)
+
+
+async def test_state_and_result_views_do_not_expose_mutable_aliases() -> None:
+    source_data: dict[str, Any] = {"items": [1]}
+    capability = CapabilityState(version="1", data=source_data)
+    cast(list[Any], source_data["items"]).append(2)
+    assert capability.data == {"items": [1]}
+    returned_data = cast(dict[str, Any], capability.data)
+    cast(list[Any], returned_data["items"]).append(3)
+    assert capability.data == {"items": [1]}
+
+    message = ModelRequest(parts=[UserPromptPart(content="hello")])
+    state = HarnessState.new(message_history=(message,))
+    message.parts.append(UserPromptPart(content="source mutation"))
+    assert len(state.message_history[0].parts) == 1
+    returned_messages = state.message_history
+    returned_messages[0].parts.append(UserPromptPart(content="view mutation"))
+    assert len(state.message_history[0].parts) == 1
+
+    source_output = {"items": [1]}
+    source_usage = RunUsageSummary(requests=1, details={"cached": 2})
+    result = HarnessRunResult(
+        thread_id=state.thread_id,
+        run_id="run-1",
+        status="completed",
+        output=source_output,
+        state=state,
+        usage=source_usage,
+        _messages=(message,),
+    )
+    source_output["items"].append(2)
+    source_usage.details["cached"] = 9
+    returned_output = result.output
+    assert returned_output is not None
+    returned_output["items"].append(3)
+    returned_usage = result.usage
+    returned_usage.details["cached"] = 4
+
+    assert result.output == {"items": [1]}
+    assert result.usage.requests == 1
+    assert result.usage.details == {"cached": 2}
+    assert len(result.all_messages()[0].parts) == 2
+    returned_result_messages = result.all_messages()
+    returned_result_messages[0].parts.append(UserPromptPart(content="result view mutation"))
+    assert len(result.all_messages()[0].parts) == 2
+
+    source_details: dict[str, Any] = {"items": [1]}
+    failure = SafeFailure(code="failed", message="safe", details=source_details)
+    cast(list[Any], source_details["items"]).append(2)
+    returned_details = cast(dict[str, Any], failure.details)
+    cast(list[Any], returned_details["items"]).append(3)
+    assert failure.details == {"items": [1]}
+
+
+async def test_result_rejects_mismatched_thread_state() -> None:
+    with pytest.raises(ValueError, match=r"state\.thread_id"):
+        HarnessRunResult(
+            thread_id="thread-other",
+            run_id="run-1",
+            status="completed",
+            output="done",
+            state=HarnessState.new(),
+            usage=RunUsageSummary(),
+        )
+
+
+async def test_result_rejects_inconsistent_terminal_fields() -> None:
+    state = HarnessState.new()
+    with pytest.raises(ValueError, match="Invalid HarnessRunResult"):
+        HarnessRunResult(
+            thread_id=state.thread_id,
+            run_id="run-1",
+            status="suspended",
+            output=None,
+            state=state,
+            usage=RunUsageSummary(),
+            suspend_reason="deferred",
+        )
+
+
+async def test_capability_state_rejects_an_unsupported_version() -> None:
+    state = AgentContextState(
+        AgentContextStateSnapshot(
+            entries={"counter": CapabilityState(version="1", data={"value": 1})},
+        )
+    )
+
+    try:
+        await state.read("counter", CounterState, version="2")
+    except StateError as exc:
+        assert exc.code == "capability_state_version_unsupported"
+    else:
+        raise AssertionError("Expected an unsupported state version to fail.")
+
+
+def test_fork_moves_inline_children_to_new_threads_without_reading_their_states() -> None:
+    from a13n_harness.capabilities.subagents import (
+        SUBAGENT_CAPABILITY_ID,
+        InlineSubagentCollectionState,
+        InlineSubagentState,
+    )
+
+    opaque = CapabilityState(version="private", data={"thread_id": "thr_opaque"})
+    history = [ModelRequest(parts=[UserPromptPart(content="resume worker-abcd")])]
+    inline = HarnessState.new()
+    saved = StoredRef(key="subagents/worker", digest="1" * 64, size=10)
+    screenshot = StoredRef(key="contents/screenshot", digest="2" * 64, size=20)
+    registry = InlineSubagentCollectionState(
+        children={
+            "worker-abcd": InlineSubagentState(
+                child_instance_id="worker-abcd",
+                subagent_name="worker",
+                child_definition_id="worker",
+                child_thread_id=inline.thread_id,
+                state=inline,
+            ),
+            "worker-beef": InlineSubagentState(
+                child_instance_id="worker-beef",
+                subagent_name="worker",
+                child_definition_id="worker",
+                child_thread_id="thr_saved",
+                state=saved,
+                refs=(screenshot,),
+            ),
+        }
+    )
+    assert registry.refs == (saved, screenshot)
+    original = HarnessState(
+        schema_version="1",
+        thread_id="thr_parent",
+        message_history=history,
+        agent_context_state=AgentContextStateSnapshot(
+            entries={
+                "plugin.private": opaque,
+                SUBAGENT_CAPABILITY_ID: CapabilityState(version="2", data=registry.model_dump(mode="json")),
+            }
+        ),
+        refs=registry.refs,
+    )
+    restored = HarnessState.model_validate_json(original.model_dump_json())
+    assert restored == original
+
+    forked = restored.fork(thread_id="thr_fork")
+
+    assert forked.message_history == original.message_history
+    assert forked.environment_states == {}
+    assert forked.refs == original.refs
+    entries = forked.agent_context_state.entries
+    assert entries["plugin.private"] == opaque
+    children = InlineSubagentCollectionState.model_validate(entries[SUBAGENT_CAPABILITY_ID].data).children
+    threads = {child.child_thread_id for child in children.values()}
+    assert len(threads) == 2 and threads.isdisjoint({inline.thread_id, "thr_saved", "thr_fork"})
+    assert children["worker-abcd"].state == inline
+    assert children["worker-beef"].state == saved and children["worker-beef"].refs == (screenshot,)

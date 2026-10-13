@@ -1,0 +1,98 @@
+---
+title: "Multi-Agent Teams"
+sidebarTitle: "Multi-Agent Teams"
+description: "Coordinate multiple agents working together on complex tasks with delegation, shared context, and result merging."
+---
+
+Multi-agent teams let you break complex work across multiple agents that coordinate through a shared task board. One agent acts as the coordinator, delegating subtasks to specialist agents and merging their results.
+
+## Enabling Teams
+
+Teams are a ClineCore feature. Enable them in the session config:
+
+```typescript
+import { ClineCore } from "@cline/sdk"
+
+const cline = await ClineCore.create({ clientName: "team-app" })
+
+const session = await cline.start({
+  prompt: "Plan and implement a user authentication module with tests",
+  config: {
+    providerId: "anthropic",
+    modelId: "claude-sonnet-4-6",
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    systemPrompt: "You are a coordinator for a multi-agent coding team.",
+    cwd: "/path/to/project",
+    workspaceRoot: "/path/to/project",
+    enableTools: true,
+    enableSpawnAgent: true,
+    enableAgentTeams: true,
+    teamName: "auth-sprint",
+  },
+})
+```
+
+## How Teams Work
+
+When teams are enabled, the coordinator agent gets these tools:
+
+| Purpose | Tools |
+|---------|-------|
+| Teammates | `team_spawn_teammate`, `team_shutdown_teammate`, `team_status` |
+| Task board | `team_task` (create, list, claim, complete and block tasks) |
+| Running tasks | `team_run_task`, `team_list_runs`, `team_await_runs`, `team_cancel_run` |
+| Messages | `team_send_message`, `team_broadcast`, `team_read_mailbox`, `team_mission_log` |
+| Combined results | `team_create_outcome`, `team_attach_outcome_fragment`, `team_review_outcome_fragment`, `team_finalize_outcome`, `team_list_outcomes` |
+| Clean-up | `team_cleanup` |
+
+Teammates get the same tools except `team_spawn_teammate`, and only the coordinator can shut teammates down or clean up the team. The coordinator decides how to split work, which agents to create, and how to combine results.
+
+## Team Persistence
+
+Team state belongs to the session. Cline saves each team's task board, mailbox, mission log, results and teammates in `~/.cline/data/db/teams.db`, under the session's ID. When the session resumes, its team and teammates come back.
+
+## Via CLI
+
+Start a prompt with `/team` to start a team, and resume the session with `cline --id <session-id>` to continue its work. [Agent Teams](/cli/agent-teams) has the details.
+
+```bash
+cline "/team Plan and implement user auth with tests"
+```
+
+## Sub-Agents vs Teams
+
+The SDK offers two levels of multi-agent coordination:
+
+| Feature | Sub-Agents | Teams |
+|---------|-----------|-------|
+| Enable with | `enableSpawnAgent: true` | `enableAgentTeams: true` |
+| Persistence | Within session only | Restored when the session resumes |
+| Coordination | Parent-child | Peer-to-peer with task board |
+| Shared state | None | Task board, mailbox, mission log |
+| Best for | One-off delegation | Complex projects that you resume over time |
+
+Sub-agents are lighter weight. The parent agent spawns a child, waits for its result, and continues. No persistent state, no task board.
+
+```typescript
+// Sub-agents: simple delegation within a single session
+const session = await cline.start({
+  config: {
+    enableSpawnAgent: true,  // Agent can spawn sub-agents
+    // ...
+  },
+  // ...
+})
+```
+
+Teams are for bigger efforts that you come back to, where agents need to coordinate asynchronously.
+
+## When to Use Teams
+
+Teams add overhead. Use them when:
+
+- The task naturally decomposes into independent subtasks
+- Different subtasks benefit from different system prompts or specializations
+- You will resume the session over several days
+- You want a persistent record of task delegation and completion
+
+For simpler cases, a single agent with good tools is usually more efficient than a team.

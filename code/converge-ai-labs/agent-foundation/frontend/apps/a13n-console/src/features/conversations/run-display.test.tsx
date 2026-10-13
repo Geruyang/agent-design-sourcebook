@@ -1,0 +1,949 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
+import {
+  createClient,
+  type Client,
+  type ThreadFrame,
+} from "../../service-client";
+import type { Schema } from "../../shared/api";
+import { conversationQueries, invalidateConversation } from "./api";
+import { useRunDisplay } from "./run-display";
+import { useEarlierItems } from "./earlier-items";
+import {
+  fixtureAttempt,
+  fixtureRun,
+  fixtureThread,
+} from "./transcript/fixture";
+
+let client: Client;
+let cache: QueryClient;
+let requests: Request[];
+let read: (request: Request) => Promise<Response>;
+let display: Schema["RunItems"];
+let attempts: number[];
+let thread: Schema["ThreadView"];
+let frames: ReturnType<typeof channel>;
+vi.mock("../../auth/context", () => ({
+  useClient: () => client,
+  revalidateSession: vi.fn(),
+}));
+vi.mock("../../layout/workspace", () => ({
+  useWorkspace: () => ({
+    basePath: "/workspace/design",
+    workspace: { id: "workspace" },
+    can: () => false,
+  }),
+}));
+
+const run = (fields: Partial<Schema["RunView"]> = {}) =>
+  fixtureRun({
+    id: "run_one",
+    thread_id: "thread_one",
+    session_id: "session_one",
+    status: "running",
+    sealed_at: null,
+    ...fields,
+  });
+
+function message(
+  text: string,
+  first: string,
+  last = first,
+  state: Schema["ItemState"] = "in_progress",
+  ordinal = 1,
+): Schema["Item"] {
+  return {
+    id: `item_${first}`,
+    ordinal,
+    kind: "text_message",
+    state,
+    first_stream_id: first,
+    last_stream_id: last,
+    started_at: "2026-09-20T10:00:01.000Z",
+    ended_at:
+      state === "completed" || state === "failed"
+        ? "2026-09-20T10:00:03.000Z"
+        : null,
+    content: { messageId: `item_${first}`, role: "assistant", text },
+  };
+}
+
+function response(request: Request) {
+  const path = new URL(request.url).pathname;
+  if (path.endsWith("/items")) return Response.json(display);
+  if (path.endsWith("/attempts"))
+    return Response.json({
+      items: attempts.map((number) =>
+        fixtureAttempt(number, { run_id: "run_one", status: "running" }),
+      ),
+    });
+  if (path.endsWith("/threads/thread_one")) return Response.json(thread);
+  return Response.json(display.run);
+}
+
+/** The Thread stream the test feeds, frame by frame, until it detaches. */
+function channel() {
+  const queue: ThreadFrame[] = [];
+  let wake: (() => void) | undefined;
+  return {
+    push(...next: ThreadFrame[]) {
+      queue.push(...next);
+      wake?.();
+    },
+    async *stream(
+      _workspace: string,
+      _thread: string,
+      options: { signal?: AbortSignal } = {},
+    ): AsyncGenerator<ThreadFrame> {
+      const { signal } = options;
+      while (!signal?.aborted) {
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+    },
+  };
+}
+
+const delta = (
+  attempt: number,
+  sequence: number,
+  text: string,
+  item = "item_1-0",
+): ThreadFrame => ({
+  type: "delta",
+  cursor: `c${attempt}-${sequence}`,
+  delta: {
+    run_id: "run_one",
+    attempt,
+    sequence,
+    event: { type: "TEXT_MESSAGE_CONTENT", messageId: item, delta: text },
+    item: { id: item, kind: "text_message", state: "in_progress" },
+  },
+});
+const boundary = (attempt: number, sequence: number): ThreadFrame => ({
+  type: "boundary",
+  cursor: `c${attempt}-${sequence}`,
+  run_id: "run_one",
+  attempt,
+  sequence,
+});
+
+function Readers() {
+  const queries = conversationQueries(client, "workspace");
+  const current = useQuery(queries.run("run_one"));
+  useQuery(queries.thread("thread_one"));
+  return <output data-testid="status">{current.data?.status}</output>;
+}
+function Live({ live }: { live: boolean }) {
+  const stream = useRunDisplay("run_one", { live });
+  return (
+    <>
+      <output data-testid="live">{stream.state}</output>
+      <output data-testid="items">
+        {stream.items.map((item) => item.text).join("|")}
+      </output>
+      <output data-testid="times">
+        {stream.items
+          .map((item) => `${item.startedAt} → ${item.endedAt}`)
+          .join("|")}
+      </output>
+      <output data-testid="coverage">{stream.execution.coverage}</output>
+      <output data-testid="steps">
+        {stream.execution.steps
+          .map((step) => `${step.kind}:${step.state}`)
+          .join("|")}
+      </output>
+      <output data-testid="attempts">
+        {stream.attempts.map((attempt) => attempt.number).join("|")}
+      </output>
+      <output data-testid="gap">{String(stream.gap)}</output>
+      <output data-testid="incomplete">{String(stream.incomplete)}</output>
+      <button onClick={stream.earlier.load}>Earlier</button>
+      <button onClick={stream.reconnect}>Reconnect</button>
+    </>
+  );
+}
+function View({ live = true, mounted = true }) {
+  return (
+    <QueryClientProvider client={cache}>
+      <Readers />
+      {mounted && <Live live={live} />}
+    </QueryClientProvider>
+  );
+}
+function pathRequests(suffix: string) {
+  return requests.filter((request) =>
+    new URL(request.url).pathname.endsWith(suffix),
+  );
+}
+const text = () => screen.getByTestId("items").textContent;
+function resumeOptions() {
+  const resume = vi.mocked(client.streamThread).mock.calls.at(-1)?.[2]?.resume;
+  return typeof resume === "function" ? resume() : resume;
+}
+
+beforeEach(() => {
+  requests = [];
+  attempts = [1];
+  display = {
+    run: run(),
+    baseline: true,
+    items: [message("Hello", "1-0", "1-1")],
+    position: "1-1",
+    complete: false,
+  };
+  thread = fixtureThread({
+    id: "thread_one",
+    session_id: "session_one",
+    current_run_id: "run_one",
+  });
+  cache = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  read = async (request) => response(request);
+  client = createClient({
+    baseUrl: "https://service.example",
+    auth: { type: "session" },
+    fetch: async (input, init) => {
+      // Keep the caller's Request: a re-wrapped Request follows its source's
+      // abort signal only weakly.
+      const request =
+        input instanceof Request && init === undefined
+          ? input
+          : new Request(input, init);
+      requests.push(request);
+      return read(request);
+    },
+  });
+  frames = channel();
+  client.streamThread = vi.fn(frames.stream);
+});
+afterEach(() => {
+  cleanup();
+  cache.clear();
+  client.close();
+});
+
+it("detaches a sealed run without fetching its display again when a successor is followed", async () => {
+  display = { ...display, complete: true, run: run({ status: "completed" }) };
+  const view = render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  const reads = pathRequests("/items").length;
+  const attemptReads = pathRequests("/attempts").length;
+  view.rerender(<View live={false} />);
+  await waitFor(() =>
+    expect(screen.getByTestId("live").textContent).toBe("closed"),
+  );
+  expect(text()).toBe("Hello");
+  expect(pathRequests("/items")).toHaveLength(reads);
+  expect(pathRequests("/attempts")).toHaveLength(attemptReads);
+});
+
+it("continues the committed display with the Thread's later deltas", async () => {
+  display.resume_after = "1720000000000-0";
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  expect(resumeOptions()).toEqual({
+    run: "run_one",
+    position: "1-1",
+    after: "1720000000000-0",
+  });
+  // The stream repeats what the display already covers before what it does not.
+  await act(async () => {
+    frames.push(delta(1, 1, "Hello"), delta(1, 2, " world"));
+  });
+  await waitFor(() => expect(text()).toBe("Hello world"));
+  expect(screen.getByTestId("live").textContent).toBe("connected");
+  expect(screen.getByTestId("coverage").textContent).toBe("complete");
+  // The display's Run is the Run every reader shares.
+  expect(screen.getByTestId("status").textContent).toBe("running");
+  expect(client.streamThread).toHaveBeenCalledWith(
+    "workspace",
+    "thread_one",
+    expect.objectContaining({
+      signal: expect.any(AbortSignal),
+      resume: expect.any(Function),
+    }),
+  );
+});
+
+it("reads a Run without following its Thread when not live", async () => {
+  display = { ...display, run: run({ status: "completed" }), complete: true };
+  render(<View live={false} />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  expect(screen.getByTestId("live").textContent).toBe("closed");
+  expect(client.streamThread).not.toHaveBeenCalled();
+});
+
+it("times a reloaded Run's Items from its display", async () => {
+  display = {
+    ...display,
+    run: run({ status: "completed" }),
+    items: [message("Hello", "1-0", "1-1", "completed")],
+    complete: true,
+  };
+  render(<View live={false} />);
+  await waitFor(() =>
+    expect(screen.getByTestId("times").textContent).toBe(
+      "2026-09-20T10:00:01.000Z → 2026-09-20T10:00:03.000Z",
+    ),
+  );
+});
+
+it("closes delivery without interrupting the Run after detachment", async () => {
+  const view = render(<View />);
+  await waitFor(() => expect(client.streamThread).toHaveBeenCalled());
+  const signal = vi.mocked(client.streamThread).mock.calls[0]![2]!.signal!;
+  const count = requests.length;
+  await act(async () => {
+    view.rerender(<View mounted={false} />);
+  });
+  expect(signal.aborted).toBe(true);
+  expect(requests).toHaveLength(count);
+  expect(requests.every((request) => request.method === "GET")).toBe(true);
+});
+
+it("discards provisional output when the Run changes attempt", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () => {
+    frames.push(delta(1, 2, " world"));
+  });
+  await waitFor(() => expect(text()).toBe("Hello world"));
+  attempts = [1, 2];
+  display = {
+    ...display,
+    items: [
+      message("Hello", "1-0", "1-1", "interrupted"),
+      message("Retry", "2-1"),
+    ],
+    position: "2-1",
+  };
+  await act(async () => {
+    frames.push({ type: "reset", run_id: "run_one" });
+  });
+  await waitFor(() => expect(text()).toBe("Hello|Retry"));
+  await act(async () => {
+    frames.push(delta(2, 2, " again", "item_2-1"));
+  });
+  await waitFor(() => expect(text()).toBe("Hello|Retry again"));
+});
+
+it("reports partial history after a gap until a boundary's display covers it", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () => {
+    frames.push({ type: "gap", run_id: "run_one" });
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("coverage").textContent).toBe("partial"),
+  );
+  expect(screen.getByTestId("gap").textContent).toBe("true");
+  display = {
+    ...display,
+    items: [message("Hello there", "1-0", "1-6")],
+    position: "1-6",
+  };
+  await act(async () => {
+    frames.push(boundary(1, 6));
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("coverage").textContent).toBe("complete"),
+  );
+  expect(text()).toBe("Hello there");
+  expect(screen.getByTestId("gap").textContent).toBe("false");
+});
+
+it("reports content the display omitted as incomplete", async () => {
+  display = {
+    ...display,
+    items: [{ ...message("", "1-0"), content: { omitted: true } }],
+  };
+  render(<View />);
+  await waitFor(() =>
+    expect(screen.getByTestId("coverage").textContent).toBe("partial"),
+  );
+  expect(screen.getByTestId("incomplete").textContent).toBe("true");
+  expect(screen.getByTestId("gap").textContent).toBe("true");
+});
+
+it("reads earlier Items on request until the first, completing the execution facts", async () => {
+  display = {
+    ...display,
+    items: [message("Hello", "1-4", "1-5", "in_progress", 3)],
+  };
+  // Each earlier page holds the one Item before `before`.
+  read = async (request) => {
+    const before = Number(new URL(request.url).searchParams.get("before"));
+    if (!before) return response(request);
+    const first = `1-${before - 2}`;
+    return Response.json({
+      ...display,
+      items: [
+        message(`Item ${before - 1}`, first, first, "completed", before - 1),
+      ],
+    });
+  };
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  // Unread Items take their execution facts with them, though nothing is missing.
+  expect(screen.getByTestId("coverage").textContent).toBe("partial");
+  expect(screen.getByTestId("gap").textContent).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Earlier" }));
+  await waitFor(() => expect(text()).toBe("Item 2|Hello"));
+  fireEvent.click(screen.getByRole("button", { name: "Earlier" }));
+  await waitFor(() => expect(text()).toBe("Item 1|Item 2|Hello"));
+  expect(screen.getByTestId("coverage").textContent).toBe("complete");
+  expect(
+    pathRequests("/items").map((request) =>
+      new URL(request.url).searchParams.get("before"),
+    ),
+  ).toEqual([null, "3", "2"]);
+});
+
+it("keeps earlier Items as the newest window moves on and reads those it leaves behind", async () => {
+  const item = (ordinal: number) =>
+    message(
+      `Item ${ordinal}`,
+      `1-${ordinal}`,
+      `1-${ordinal}`,
+      "completed",
+      ordinal,
+    );
+  display = { ...display, items: [item(3)] };
+  // A page before `before` holds one Item; a page after `after` holds `limit`.
+  read = async (request) => {
+    const query = new URL(request.url).searchParams;
+    const before = Number(query.get("before")),
+      after = Number(query.get("after"));
+    if (before) return Response.json({ ...display, items: [item(before - 1)] });
+    if (!after) return response(request);
+    const limit = Number(query.get("limit"));
+    return Response.json({
+      ...display,
+      items: Array.from({ length: limit }, (_, index) =>
+        item(after + 1 + index),
+      ),
+    });
+  };
+  const view = render(<View />);
+  await waitFor(() => expect(text()).toBe("Item 3"));
+  fireEvent.click(screen.getByRole("button", { name: "Earlier" }));
+  await waitFor(() => expect(text()).toBe("Item 2|Item 3"));
+  fireEvent.click(screen.getByRole("button", { name: "Earlier" }));
+  await waitFor(() => expect(text()).toBe("Item 1|Item 2|Item 3"));
+
+  display = { ...display, items: [item(6)] };
+  await act(async () => {
+    frames.push({ type: "reset", run_id: "run_one" });
+  });
+  const all = "Item 1|Item 2|Item 3|Item 4|Item 5|Item 6";
+  await waitFor(() => expect(text()).toBe(all));
+  expect(screen.getByTestId("coverage").textContent).toBe("complete");
+  const windows = () =>
+    pathRequests("/items")
+      .map((request) => new URL(request.url).search)
+      .filter(Boolean);
+  expect(windows()).toEqual(["?before=3", "?before=2", "?after=2&limit=3"]);
+
+  // The Run keeps them for its next reader.
+  view.rerender(<View mounted={false} />);
+  view.rerender(<View />);
+  await waitFor(() => expect(text()).toBe(all));
+  expect(windows()).toHaveLength(3);
+});
+
+it("learns a new attempt's identity once before folding its deltas", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  expect(pathRequests("/attempts")).toHaveLength(1);
+  attempts = [1, 2];
+  await act(async () => {
+    frames.push(
+      {
+        type: "delta",
+        cursor: "c2-1",
+        delta: {
+          run_id: "run_one",
+          attempt: 2,
+          sequence: 1,
+          event: {
+            type: "TEXT_MESSAGE_START",
+            messageId: "item_2-1",
+            role: "assistant",
+          },
+          item: { id: "item_2-1", kind: "text_message", state: "in_progress" },
+        },
+      },
+      delta(2, 2, "Second", "item_2-1"),
+      delta(2, 3, " try", "item_2-1"),
+    );
+  });
+  await waitFor(() => expect(text()).toBe("Hello|Second try"));
+  expect(pathRequests("/attempts")).toHaveLength(2);
+  expect(screen.getByTestId("attempts").textContent).toBe("1|2");
+});
+
+const observed = (
+  sequence: number,
+  name: string,
+  value: unknown,
+): ThreadFrame => ({
+  type: "delta",
+  cursor: `c1-${sequence}`,
+  delta: {
+    run_id: "run_one",
+    attempt: 1,
+    sequence,
+    event: { type: "CUSTOM", name, value },
+    item: {
+      id: `obs_${sequence}`,
+      kind: "observation",
+      state: "completed",
+      ordinal: sequence,
+    },
+  },
+});
+
+it("reads the execution from the observations the stream delivers", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  const lifecycle = (sequence: number, type: string) =>
+    observed(sequence, "a13n.harness.lifecycle", {
+      event: { payload: { type, request_id: "model-request-1" } },
+    });
+  await act(async () => {
+    frames.push(lifecycle(2, "model_request_started"));
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("steps").textContent).toBe("llm:running"),
+  );
+  await act(async () => {
+    frames.push(lifecycle(3, "model_request_completed"));
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("steps").textContent).toBe("llm:completed"),
+  );
+});
+
+it("refreshes durable coverage after a complete observation batch", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  expect(pathRequests("/items")).toHaveLength(1);
+  await act(async () => {
+    frames.push(observed(2, "plugin.large", "whole"));
+  });
+  display = {
+    ...display,
+    items: [
+      message("Hello", "1-0", "1-1"),
+      {
+        id: "obs_2",
+        ordinal: 2,
+        kind: "observation",
+        state: "completed",
+        first_stream_id: "1-2",
+        last_stream_id: "1-2",
+        started_at: "2026-09-20T10:00:02.000Z",
+        ended_at: "2026-09-20T10:00:02.000Z",
+        content: { name: "plugin.large", value: "whole" },
+      },
+    ],
+    position: "1-2",
+  };
+  await act(async () => {
+    frames.push(boundary(1, 2));
+  });
+  await waitFor(() => expect(pathRequests("/items")).toHaveLength(2));
+});
+
+it("reconciles the sealed display once the Thread's current Run moves on", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  thread = { ...thread, current_run_id: null, version: 5 };
+  display = {
+    run: run({ status: "completed", sealed_at: "2026-09-20T10:00:09.000Z" }),
+    baseline: true,
+    items: [message("Hello", "1-0", "1-2", "completed")],
+    position: "1-2",
+    complete: true,
+  };
+  await act(async () => {
+    frames.push({ type: "changed", version: 5 });
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("live").textContent).toBe("closed"),
+  );
+  expect(screen.getByTestId("status").textContent).toBe("completed");
+});
+
+it("joins replacement reads when a Thread change cancels reconciliation", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let blocked = false;
+  read = async (request) => {
+    if (
+      !blocked &&
+      new URL(request.url).pathname.endsWith("/threads/thread_one")
+    ) {
+      blocked = true;
+      await pending;
+    }
+    return response(request);
+  };
+  thread = { ...thread, current_run_id: null, version: 5 };
+  display = { ...display, run: run({ status: "completed" }), complete: true };
+  await act(async () => {
+    frames.push({ type: "changed", version: 5 });
+  });
+  await waitFor(() => expect(blocked).toBe(true));
+  await act(async () => {
+    await invalidateConversation(cache, "workspace", {
+      threadId: "thread_one",
+    });
+    release();
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("live").textContent).toBe("closed"),
+  );
+});
+
+it("re-reads the display on reconnect even when cached reads remain fresh", async () => {
+  client.streamThread = vi.fn(async function* (): AsyncGenerator<ThreadFrame> {
+    throw new Error("Disconnected");
+  });
+  render(<View />);
+  await waitFor(() =>
+    expect(screen.getByTestId("live").textContent).toBe("disconnected"),
+  );
+  display = {
+    ...display,
+    run: run({ status: "completed" }),
+    items: [message("Hello again", "1-0", "1-3", "completed")],
+    position: "1-3",
+    resume_after: "1720000000001-0",
+    complete: true,
+  };
+  fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+  await waitFor(() => expect(text()).toBe("Hello again"));
+  expect(pathRequests("/items")).toHaveLength(2);
+  expect(screen.getByTestId("status").textContent).toBe("completed");
+  expect(resumeOptions()).toEqual({
+    run: "run_one",
+    position: "1-3",
+    after: "1720000000001-0",
+  });
+  expect(client.streamThread).toHaveBeenLastCalledWith(
+    "workspace",
+    "thread_one",
+    expect.objectContaining({ resume: expect.any(Function) }),
+  );
+});
+
+it("keeps the contiguous local suffix when reconnecting to an older checkpoint", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () => frames.push(delta(1, 2, " world")));
+  await waitFor(() => expect(text()).toBe("Hello world"));
+  fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+  await waitFor(() => expect(client.streamThread).toHaveBeenCalledTimes(2));
+  expect(text()).toBe("Hello world");
+  expect(resumeOptions()).toEqual({
+    run: "run_one",
+    position: "1-2",
+    after: "c1-2",
+  });
+  await act(async () => frames.push(delta(1, 2, " world"), delta(1, 3, "!")));
+  await waitFor(() => expect(text()).toBe("Hello world!"));
+});
+
+it("heals a known gap immediately when the refreshed snapshot covers it", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  display = {
+    ...display,
+    items: [message("Repaired", "1-0", "1-5")],
+    position: "1-5",
+  };
+  await act(async () =>
+    frames.push(
+      { type: "gap", run_id: "run_one", position: "1-4" },
+      delta(1, 6, "!"),
+    ),
+  );
+  await waitFor(() => expect(text()).toBe("Repaired!"));
+  expect(screen.getByTestId("gap").textContent).toBe("false");
+  expect(screen.getByTestId("coverage").textContent).toBe("complete");
+});
+
+it.each([true, false])(
+  "resolves an unknown gap once its range is covered (already covered: %s)",
+  async (alreadyCovered) => {
+    render(<View />);
+    await waitFor(() => expect(text()).toBe("Hello"));
+    const repaired = {
+      ...display,
+      items: [message("Repaired", "1-0", "1-5")],
+      position: "1-5",
+    };
+    if (alreadyCovered) display = repaired;
+    await act(async () => frames.push({ type: "gap", run_id: "run_one" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("gap").textContent).toBe(
+        alreadyCovered ? "false" : "true",
+      ),
+    );
+    expect(pathRequests("/items")).toHaveLength(2);
+
+    display = repaired;
+    await act(async () =>
+      frames.push({ type: "gap", run_id: "run_one", position: "1-4" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("gap").textContent).toBe("false");
+      expect(text()).toBe("Repaired");
+      expect(screen.getByTestId("coverage").textContent).toBe("complete");
+    });
+    expect(resumeOptions()?.position).toBe("1-5");
+    expect(pathRequests("/items")).toHaveLength(alreadyCovered ? 2 : 3);
+  },
+);
+
+it("keeps an unknown gap incomplete when its clarified range is not yet covered", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () => frames.push({ type: "gap", run_id: "run_one" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("gap").textContent).toBe("true"),
+  );
+  display = {
+    ...display,
+    items: [message("Still incomplete", "1-0", "1-2")],
+    position: "1-2",
+  };
+  await act(async () =>
+    frames.push({ type: "gap", run_id: "run_one", position: "1-4" }),
+  );
+  await waitFor(() => expect(text()).toBe("Still incomplete"));
+  expect(screen.getByTestId("gap").textContent).toBe("true");
+  expect(resumeOptions()?.position).toBe("1-2");
+  await act(async () =>
+    frames.push({ type: "gap", run_id: "run_one", position: "1-4" }),
+  );
+  expect(pathRequests("/items")).toHaveLength(3);
+
+  display = {
+    ...display,
+    items: [message("Repaired", "1-0", "1-5")],
+    position: "1-5",
+  };
+  fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+  await waitFor(() => expect(text()).toBe("Repaired"));
+  expect(screen.getByTestId("gap").textContent).toBe("false");
+  expect(screen.getByTestId("coverage").textContent).toBe("complete");
+});
+
+it("displays a degraded suffix across a hole until a covering checkpoint repairs it", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () =>
+    frames.push(
+      { type: "gap", run_id: "run_one", position: "1-3" },
+      delta(1, 4, "!"),
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("gap").textContent).toBe("true"),
+  );
+  await waitFor(() => expect(text()).toBe("Hello!"));
+  expect(resumeOptions()?.position).toBe("1-4");
+  expect(pathRequests("/items")).toHaveLength(2);
+  await act(async () => frames.push(boundary(1, 2), boundary(1, 2)));
+  await waitFor(() => expect(pathRequests("/items")).toHaveLength(3));
+  expect(screen.getByTestId("gap").textContent).toBe("true");
+  display = {
+    ...display,
+    items: [message("Hello world", "1-0", "1-3")],
+    position: "1-3",
+  };
+  await act(async () => frames.push(boundary(1, 3)));
+  await waitFor(() => expect(text()).toBe("Hello world!"));
+  expect(screen.getByTestId("gap").textContent).toBe("false");
+  expect(resumeOptions()?.position).toBe("1-4");
+});
+
+it("drops superseded provisional output before a new attempt's first checkpoint", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () => frames.push(delta(1, 2, " discarded")));
+  await waitFor(() => expect(text()).toBe("Hello discarded"));
+  attempts = [1, 2];
+  await act(async () => frames.push({ type: "reset", run_id: "run_one" }));
+  await waitFor(() => expect(text()).toBe("Hello"));
+  expect(resumeOptions()).toEqual({
+    run: "run_one",
+    position: "2-0",
+    after: undefined,
+  });
+  await act(async () =>
+    frames.push(delta(1, 3, " late"), delta(2, 1, "Retry", "item_2-1")),
+  );
+  await waitFor(() => expect(text()).toBe("Hello|Retry"));
+  expect(resumeOptions()?.position).toBe("2-1");
+});
+
+it("discards a terminal provisional suffix without falsely healing uncovered missing events", async () => {
+  render(<View />);
+  await waitFor(() => expect(text()).toBe("Hello"));
+  await act(async () =>
+    frames.push(
+      { type: "gap", run_id: "run_one", position: "1-3" },
+      delta(1, 4, "lost"),
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("gap").textContent).toBe("true"),
+  );
+  display = {
+    ...display,
+    run: run({ status: "cancelled", sealed_at: "2026-09-20T10:00:09Z" }),
+    items: [message("Saved", "1-0", "1-2", "interrupted")],
+    position: "1-2",
+    complete: true,
+  };
+  thread = { ...thread, current_run_id: null, version: 5 };
+  await act(async () => frames.push({ type: "changed", version: 5 }));
+  await waitFor(() => expect(text()).toBe("Saved"));
+  expect(screen.getByTestId("gap").textContent).toBe("true");
+  expect(screen.getByTestId("live").textContent).toBe("closed");
+});
+
+it.each([false, true])(
+  "repairs quiet durable progress without a final stream notification (sealed: %s)",
+  async (sealed) => {
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    render(<View />);
+    await waitFor(() => expect(text()).toBe("Hello"));
+    await waitFor(() =>
+      expect(intervals.mock.calls.some(([, ms]) => ms === 10000)).toBe(true),
+    );
+    display = {
+      ...display,
+      run: run({
+        display_position: "1-5",
+        ...(sealed
+          ? { status: "completed", sealed_at: "2026-09-20T10:00:09Z" }
+          : {}),
+      }),
+      items: [
+        message(
+          "Quiet progress",
+          "1-0",
+          "1-5",
+          sealed ? "completed" : "in_progress",
+        ),
+      ],
+      position: "1-5",
+      complete: sealed,
+    };
+    const check = intervals.mock.calls.find(([, ms]) => ms === 10000)![0];
+    await act(async () => {
+      if (typeof check === "function") check();
+    });
+    await waitFor(() => expect(text()).toBe("Quiet progress"));
+    expect(pathRequests("/items")).toHaveLength(2);
+    intervals.mockRestore();
+  },
+);
+
+it("catches up a moving newest window after an older page resolves without advancing the latest ordinal", async () => {
+  const item = (ordinal: number) =>
+    message(
+      `Item ${ordinal}`,
+      `1-${ordinal}`,
+      `1-${ordinal}`,
+      "completed",
+      ordinal,
+    );
+  let finishOlder!: (response: Response) => void;
+  const older = new Promise<Response>((resolve) => {
+    finishOlder = resolve;
+  });
+  read = async (request) => {
+    const query = new URL(request.url).searchParams;
+    if (query.get("before") === "3")
+      return Response.json({ ...display, baseline: false, items: [item(2)] });
+    if (query.get("before") === "2") return older;
+    if (query.get("after") === "2")
+      return Response.json({
+        ...display,
+        baseline: false,
+        items: [item(3), item(4), item(5)],
+      });
+    return response(request);
+  };
+  function Earlier({ first }: { first: number }) {
+    const history = useEarlierItems("run_one", first);
+    return (
+      <>
+        <output data-testid="history">
+          {history.items.map((entry) => entry.ordinal).join(",")}
+        </output>
+        <button onClick={history.load}>Load history</button>
+      </>
+    );
+  }
+  const view = render(
+    <QueryClientProvider client={cache}>
+      <Earlier first={3} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Load history" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("history").textContent).toBe("2"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Load history" }));
+  await waitFor(() => expect(pathRequests("/items")).toHaveLength(2));
+  fireEvent.click(screen.getByRole("button", { name: "Load history" }));
+  expect(pathRequests("/items")).toHaveLength(2);
+  view.rerender(
+    <QueryClientProvider client={cache}>
+      <Earlier first={6} />
+    </QueryClientProvider>,
+  );
+  await act(async () => {
+    finishOlder(
+      Response.json({ ...display, baseline: false, items: [item(1)] }),
+    );
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("history").textContent).toBe("1,2,3,4,5"),
+  );
+  expect(
+    pathRequests("/items").map((request) => new URL(request.url).search),
+  ).toEqual(["?before=3", "?before=2", "?after=2&limit=3"]);
+});

@@ -1,0 +1,1300 @@
+import type { InputGuardrail, OutputGuardrail } from './guardrail';
+import { AgentHooks } from './lifecycle';
+import {
+  getAllMcpTools,
+  type MCPServer,
+  type MCPToolErrorFunction,
+} from './mcp';
+import type { Model, ModelSettings, Prompt } from './model';
+import {
+  getDefaultModelSettings,
+  isGpt5OrNewerReasoningModel,
+  isGpt5OrNewerDefault,
+} from './defaultModel';
+import { RunContext } from './runContext';
+import {
+  type FunctionTool,
+  type FunctionToolResult,
+  tool,
+  type Tool,
+  type ToolApprovalFunction,
+  type ToolCallDetails,
+  type ToolExecuteArgument,
+  type ToolEnabledFunction,
+  type ToolInputParametersStrict,
+} from './tool';
+import type {
+  AgentInputItem,
+  ResolvedAgentOutput,
+  JsonSchemaDefinition,
+  JsonObjectSchema,
+  HandoffsOutput,
+  Expand,
+} from './types';
+import type { RunResult, StreamedRunResult } from './result';
+import { getHandoff, type Handoff } from './handoff';
+import { StreamRunOptions, RunConfig, Runner } from './run';
+import { RunState } from './runState';
+import { getPublicAgent } from './agentToolConfiguration';
+import { selectModel } from './runner/modelSettings';
+import { toFunctionToolName } from './utils/tools';
+import { getOutputText } from './utils/messages';
+import { isZodObject } from './utils/typeGuards';
+import { combineAbortSignals } from './utils/abortSignals';
+import { ModelBehaviorError, UserError } from './errors';
+import { RunToolApprovalItem } from './items';
+import logger from './logger';
+import { UnknownContext, TextOutput } from './types';
+import type * as protocol from './types/protocol';
+import type { RunStreamEvent } from './events';
+import {
+  AgentAsToolInputSchema,
+  buildStructuredInputSchemaInfo,
+  resolveAgentToolInput,
+  type StructuredToolInputBuilder,
+} from './agentToolInput';
+import {
+  getToolCallParentSpanFromDetails,
+  getAgentToolParentRunConfigFromDetails,
+  getInheritedAgentToolRunConfig,
+  mergeAgentToolRunConfig,
+} from './agentToolRunConfig';
+import type { StandardSchemaWithJSON } from './utils/standardSchema';
+import {
+  assertStandardSchemaObjectRoot,
+  hasStandardSchemaMarker,
+  isStandardSchemaWithJSON,
+  standardSchemaToJsonSchema,
+  validateStandardSchema,
+  unsupportedStandardSchemaError,
+} from './utils/standardSchema';
+import { prepareOpenAIStrictToolSchema } from './utils/strictToolSchema';
+import { saveAgentToolRunResult } from './agentToolRunResults';
+import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
+import type { AgentToolInvocation } from './agentToolInvocation';
+import {
+  getToolUsageRecorder,
+  setRunnerParentUsageRecorder,
+} from './runner/usageTracking';
+import { setRunnerInvocationSpanParent } from './runner/invocationContext';
+import {
+  createAgentToolStreamBuffer,
+  drainAgentToolStream,
+  setAgentToolStreamBuffer,
+} from './runner/agentToolStream';
+import type { Span } from './tracing';
+import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
+import type { ZodObjectLike } from './utils/zodCompat';
+
+type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
+  RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
+) & {
+  finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
+};
+export type CompletedAgentToolInvocationRunResult<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> = CompletedRunResult<TContext, TAgent> & {
+  agentToolInvocation: AgentToolInvocation;
+};
+
+type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
+  StreamRunOptions<TContext, TAgent>,
+  'stream'
+>;
+type AgentToolInputParameters = Exclude<ToolInputParametersStrict, undefined>;
+
+// Controls how nested tool resume reconciles context with serialized RunState.
+type AgentToolResumeContextStrategy = 'merge' | 'replace' | 'preferSerialized';
+
+type AgentToolResumeStateOptions = {
+  contextStrategy?: AgentToolResumeContextStrategy;
+};
+
+type AgentToolStreamEvent<TAgent extends Agent<any, any>> = {
+  // Raw stream event emitted by the nested agent run.
+  event: RunStreamEvent;
+  // The agent instance being executed as a tool.
+  agent: TAgent;
+  // The tool call item that triggered this nested run (when available).
+  toolCall?: protocol.FunctionCallItem;
+};
+type AgentToolEventName = RunStreamEvent['type'] | '*';
+type AgentToolEventHandler<TAgent extends Agent<any, any>> = (
+  event: AgentToolStreamEvent<TAgent>,
+) => void | Promise<void>;
+type AgentToolInputBuilder<TParameters extends AgentToolInputParameters> =
+  StructuredToolInputBuilder<ToolExecuteArgument<TParameters>>;
+export type AgentToolOptions<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = {
+  /**
+   * The name of the tool. If not provided, the name of the agent will be used.
+   */
+  toolName?: string;
+  /**
+   * The description of the tool, which should indicate what the tool does and when to use it.
+   */
+  toolDescription?: string;
+  /**
+   * A function that extracts the output text from the agent. By default, runs with output
+   * guardrail results or a handled error use the final output, including an empty string.
+   * Other runs prefer text from the latest model response, falling back to the final output.
+   */
+  customOutputExtractor?: (
+    output: CompletedAgentToolInvocationRunResult<TContext, TAgent>,
+  ) => string | Promise<string>;
+  /**
+   * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
+   * When provided as a function it receives the tool arguments and can implement custom approval
+   * logic.
+   */
+  needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+  /**
+   * The schema used to validate tool input. Defaults to `{ input: string }`.
+   */
+  parameters?: TParameters;
+  /**
+   * Builds the nested agent input from structured tool input data.
+   */
+  inputBuilder?: AgentToolInputBuilder<TParameters>;
+  /**
+   * Include the full JSON Schema for the structured tool input when invoking the agent.
+   */
+  includeInputSchema?: boolean;
+  /**
+   * Run configuration for initializing the internal agent runner.
+   * When the child uses an explicit Model object, parent transport overrides
+   * in providerData are not inherited. Supply child transport overrides here.
+   */
+  runConfig?: Partial<RunConfig>;
+  /**
+   * Additional run options for the agent (as tool) execution.
+   */
+  runOptions?: AgentToolRunOptions<TContext, TAgent>;
+  /**
+   * Controls how context is applied when resuming from serialized run state.
+   */
+  resumeState?: AgentToolResumeStateOptions;
+  /**
+   * Determines whether this tool should be exposed to the model for the current run.
+   */
+  isEnabled?:
+    | boolean
+    | ((args: {
+        runContext: RunContext<TContext>;
+        agent: Agent<any, any>;
+      }) => boolean | Promise<boolean>);
+  /**
+   * Optional hook to receive streamed events from the nested agent run.
+   */
+  onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
+  /**
+   * Maximum events waiting for onStream or on(...) handlers, excluding the event
+   * currently being handled. Defaults to 1024; null permits an unlimited backlog.
+   * Must be a positive safe integer when set. Overflow aborts the nested run and
+   * fails the tool through its normal error handling. Already started handler
+   * promises cannot be cancelled. This bounds event count, not event sizes or
+   * total memory, and has no effect without streaming handlers.
+   */
+  onStreamMaxPendingEvents?: number | null;
+};
+export type AgentToolOptionsWithDefault<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> = Omit<
+  AgentToolOptions<TContext, TAgent, typeof AgentAsToolInputSchema>,
+  'parameters'
+> & { parameters?: undefined };
+export type AgentToolOptionsWithParameters<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = AgentToolOptions<TContext, TAgent, TParameters> & {
+  parameters: TParameters;
+};
+export type AgentTool<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = FunctionTool<TContext, TParameters> & {
+  on: (
+    name: AgentToolEventName,
+    handler: AgentToolEventHandler<TAgent>,
+  ) => AgentTool<TContext, TAgent, TParameters>;
+};
+
+export type ToolUseBehaviorFlags = 'run_llm_again' | 'stop_on_first_tool';
+
+export type ToolsToFinalOutputResult =
+  | {
+      /**
+       * Whether this is the final output. If `false`, the LLM will run again and receive the tool call output
+       */
+      isFinalOutput: false;
+      /**
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       */
+      isInterrupted: undefined;
+    }
+  | {
+      isFinalOutput: false;
+      /**
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       */
+      isInterrupted: true;
+      interruptions: RunToolApprovalItem[];
+    }
+  | {
+      /**
+       * Whether this is the final output. If `false`, the LLM will run again and receive the tool call output
+       */
+      isFinalOutput: true;
+
+      /**
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       */
+      isInterrupted: undefined;
+
+      /**
+       * The final output. Can be undefined if `isFinalOutput` is `false`, otherwise it must be a string
+       * that will be processed based on the `outputType` of the agent.
+       */
+      finalOutput: string;
+    };
+
+/**
+ * The type of the output object. If not provided, the output will be a string.
+ * 'text' is a special type that indicates the output will be a string.
+ *
+ * @template HandoffOutputType The type of the output of the handoff.
+ */
+export type AgentOutputType<HandoffOutputType = UnknownContext> =
+  | TextOutput
+  | ZodObjectLike
+  | StandardSchemaWithJSON<any, any>
+  | JsonSchemaDefinition
+  | HandoffsOutput<HandoffOutputType>;
+
+/**
+ * A function that takes a run context and a list of tool results and returns a `ToolsToFinalOutputResult`.
+ */
+export type ToolToFinalOutputFunction = (
+  context: RunContext,
+  toolResults: FunctionToolResult[],
+) => ToolsToFinalOutputResult | Promise<ToolsToFinalOutputResult>;
+
+/**
+ * The behavior of the agent when a tool is called.
+ */
+export type ToolUseBehavior =
+  | ToolUseBehaviorFlags
+  | {
+      /**
+       * List of tool names that will stop the agent from running further. The final output will be
+       * the output of the first tool in the list that was called.
+       */
+      stopAtToolNames: string[];
+    }
+  | ToolToFinalOutputFunction;
+
+/**
+ * Configuration for an agent.
+ *
+ * @template TContext The type of the context object.
+ * @template TOutput The type of the output object.
+ */
+export interface AgentConfiguration<
+  TContext = UnknownContext,
+  TOutput extends AgentOutputType = TextOutput,
+> {
+  name: string;
+
+  /**
+   * The instructions for the agent. Will be used as the "system prompt" when this agent is
+   * invoked. Describes what the agent should do, and how it responds.
+   *
+   * Can either be a string, or a function that dynamically generates instructions for the agent.
+   * If you provide a function, it will be called with the context and the agent instance. It
+   * must return a string.
+   */
+  instructions:
+    | string
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<string> | string);
+
+  /**
+   * The prompt template to use for the agent (OpenAI Responses API only).
+   *
+   * Can either be a prompt template object, or a function that returns a prompt
+   * template object. If a function is provided, it will be called with the run
+   * context and the agent instance. It must return a prompt template object.
+   */
+  prompt?:
+    | Prompt
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<Prompt> | Prompt);
+
+  /**
+   * A description of the agent. This is used when the agent is used as a handoff, so that an LLM
+   * knows what it does and when to invoke it.
+   */
+  handoffDescription: string;
+
+  /**
+   * Handoffs are sub-agents that the agent can delegate to. You can provide a list of handoffs,
+   * and the agent can choose to delegate to them if relevant. Allows for separation of concerns
+   * and modularity.
+   */
+  handoffs: (Agent<any, any> | Handoff<any, TOutput>)[];
+
+  /**
+   * The warning log would be enabled when multiple output types by handoff agents are detected.
+   */
+  handoffOutputTypeWarningEnabled?: boolean;
+
+  /**
+   * The model implementation to use when invoking the LLM.
+   *
+   * By default, if not set, the agent will use the default model returned by
+   * getDefaultModel (currently "gpt-5.6-luna").
+   */
+  model: string | Model;
+
+  /**
+   * Configures model-specific tuning parameters (e.g. temperature, top_p, etc.)
+   */
+  modelSettings: ModelSettings;
+
+  /**
+   * A list of tools the agent can use.
+   */
+  tools: Tool<TContext>[];
+
+  /**
+   * A list of [Model Context Protocol](https://modelcontextprotocol.io/) servers the agent can use.
+   * Every time the agent runs, it will include tools from these servers in the list of available
+   * tools.
+   *
+   * NOTE: You are expected to manage the lifecycle of these servers. Specifically, you must call
+   * `server.connect()` before passing it to the agent, and `server.close()` when the server is
+   * no longer needed. Consider using `connectMcpServers` or `MCPServers` to keep open/close in
+   * the same place.
+   */
+  mcpServers: MCPServer[];
+
+  /**
+   * Configuration for MCP servers used by this agent.
+   */
+  mcpConfig: {
+    /**
+     * Try to convert MCP tool schemas to strict JSON schema.
+     */
+    convertSchemasToStrict?: boolean;
+    /**
+     * Optional function to convert MCP tool failures into model-visible messages.
+     * Set to null to rethrow errors instead of converting them.
+     * Server-level errorFunction values take precedence.
+     */
+    errorFunction?: MCPToolErrorFunction | null;
+    /**
+     * Prefix local MCP tool names with their server name before exposing them to the model.
+     * The SDK still invokes the original MCP tool name on the original server.
+     */
+    includeServerInToolNames?: boolean;
+  };
+
+  /**
+   * A list of checks that run in parallel to the agent by default; set `runInParallel` to false to
+   * block LLM/tool calls until the guardrail completes. Runs only if the agent is the first agent
+   * in the chain.
+   */
+  inputGuardrails: InputGuardrail[];
+
+  /**
+   * A list of checks that run on the final output of the agent, after generating a response. Runs
+   * only if the agent produces a final output.
+   */
+  outputGuardrails: OutputGuardrail<TOutput, TContext>[];
+
+  /**
+   * The type of the output object. If not provided, the output will be a string.
+   */
+  outputType: TOutput;
+
+  /**
+   * This lets you configure how tool use is handled.
+   * - run_llm_again: The default behavior. Tools are run, and then the LLM receives the results
+   *   and gets to respond.
+   * - stop_on_first_tool: The output of the first tool call is used as the final output. This means
+   *   that the LLM does not process the result of the tool call.
+   * - A list of tool names: The agent will stop running if any of the tools in the list are called.
+   *   The final output will be the output of the first matching tool call. The LLM does not process
+   *   the result of the tool call.
+   * - A function: if you pass a function, it will be called with the run context and the list of
+   *   tool results. It must return a `ToolsToFinalOutputResult`, which determines whether the tool
+   *   call resulted in a final output.
+   *
+   * NOTE: This configuration is specific to `FunctionTools`. Hosted tools, such as file search, web
+   * search, etc. are always processed by the LLM
+   */
+  toolUseBehavior: ToolUseBehavior;
+
+  /**
+   * Whether to reset the tool choice to the default value after a tool has been called. Defaults
+   * to `true`. This ensures that the agent doesn't enter an infinite loop of tool usage.
+   */
+  resetToolChoice: boolean;
+}
+
+export type AgentOptions<
+  TContext = UnknownContext,
+  TOutput extends AgentOutputType = TextOutput,
+> = Expand<
+  Pick<AgentConfiguration<TContext, TOutput>, 'name'> &
+    Partial<AgentConfiguration<TContext, TOutput>>
+>;
+
+function getInitialModelSettingsForAgentModel(
+  model: string | Model | undefined,
+): ModelSettings {
+  if (model === undefined || model === Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings();
+  }
+  if (typeof model === 'string' && model !== Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings(model);
+  }
+  return {};
+}
+
+/**
+ * An agent is an AI model configured with instructions, tools, guardrails, handoffs and more.
+ *
+ * We strongly recommend passing `instructions`, which is the "system prompt" for the agent. In
+ * addition, you can pass `handoffDescription`, which is a human-readable description of the
+ * agent, used when the agent is used inside tools/handoffs.
+ *
+ * Agents are generic on the context type. The context is a (mutable) object you create. It is
+ * passed to tool functions, handoffs, guardrails, etc.
+ */
+// --- Type utilities for inferring output type from handoffs ---
+type ExtractAgentOutput<T> = T extends Agent<any, infer O> ? O : never;
+type ExtractHandoffOutput<T> = T extends Handoff<any, infer O> ? O : never;
+export type HandoffsOutputUnion<
+  Handoffs extends readonly (Agent<any, any> | Handoff<any, any>)[],
+> =
+  ExtractAgentOutput<Handoffs[number]> | ExtractHandoffOutput<Handoffs[number]>;
+
+/**
+ * Helper type for config with handoffs
+ *
+ * @template TOutput The type of the output object.
+ * @template Handoffs The type of the handoffs.
+ */
+export type AgentConfigWithHandoffs<
+  TOutput extends AgentOutputType,
+  Handoffs extends readonly (Agent<any, any> | Handoff<any, any>)[],
+> = { name: string; handoffs?: Handoffs; outputType?: TOutput } & Partial<
+  Omit<
+    AgentConfiguration<UnknownContext, TOutput | HandoffsOutputUnion<Handoffs>>,
+    'name' | 'handoffs' | 'outputType'
+  >
+>;
+
+/**
+ * The class representing an AI agent configured with instructions, tools, guardrails, handoffs and more.
+ *
+ * We strongly recommend passing `instructions`, which is the "system prompt" for the agent. In
+ * addition, you can pass `handoffDescription`, which is a human-readable description of the
+ * agent, used when the agent is used inside tools/handoffs.
+ *
+ * Agents are generic on the context type. The context is a (mutable) object you create. It is
+ * passed to tool functions, handoffs, guardrails, etc.
+ */
+export class Agent<
+  TContext = UnknownContext,
+  TOutput extends AgentOutputType = TextOutput,
+>
+  extends AgentHooks<TContext, TOutput>
+  implements AgentConfiguration<TContext, TOutput>
+{
+  /**
+   * Create an Agent with handoffs and automatically infer the union type for TOutput from the handoff agents' output types.
+   */
+  static create<
+    TOutput extends AgentOutputType = TextOutput,
+    Handoffs extends readonly (Agent<any, any> | Handoff<any, any>)[] = [],
+  >(
+    config: AgentConfigWithHandoffs<TOutput, Handoffs>,
+  ): Agent<UnknownContext, TOutput | HandoffsOutputUnion<Handoffs>> {
+    return new Agent<UnknownContext, TOutput | HandoffsOutputUnion<Handoffs>>({
+      ...config,
+      handoffs: config.handoffs as any,
+      outputType: config.outputType,
+      handoffOutputTypeWarningEnabled: false,
+    });
+  }
+
+  static DEFAULT_MODEL_PLACEHOLDER = '';
+
+  name: string;
+  instructions:
+    | string
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<string> | string);
+  prompt?:
+    | Prompt
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<Prompt> | Prompt);
+  handoffDescription: string;
+  handoffs: (Agent<any, TOutput> | Handoff<any, TOutput>)[];
+  model: string | Model;
+  modelSettings: ModelSettings;
+  tools: Tool<TContext>[];
+  mcpServers: MCPServer[];
+  mcpConfig: AgentConfiguration<TContext, TOutput>['mcpConfig'];
+  inputGuardrails: InputGuardrail[];
+  outputGuardrails: OutputGuardrail<AgentOutputType, TContext>[];
+  outputType: TOutput = 'text' as TOutput;
+  toolUseBehavior: ToolUseBehavior;
+  resetToolChoice: boolean;
+  private readonly _toolsExplicitlyConfigured: boolean;
+  private readonly _modelSettingsExplicitlyConfigured: boolean;
+
+  constructor(config: AgentOptions<TContext, TOutput>) {
+    super();
+    if (typeof config.name !== 'string' || config.name.trim() === '') {
+      throw new UserError('Agent must have a name.');
+    }
+    this.name = config.name;
+    this.instructions = config.instructions ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
+    this.prompt = config.prompt;
+    this.handoffDescription = config.handoffDescription ?? '';
+    this.handoffs = config.handoffs ?? [];
+    this.model = config.model ?? '';
+    this._modelSettingsExplicitlyConfigured =
+      config.modelSettings !== undefined;
+    this.modelSettings =
+      config.modelSettings ??
+      getInitialModelSettingsForAgentModel(config.model);
+    this.tools = config.tools ?? [];
+    this._toolsExplicitlyConfigured = config.tools !== undefined;
+    this.mcpServers = config.mcpServers ?? [];
+    this.mcpConfig = config.mcpConfig ?? {};
+    this.inputGuardrails = config.inputGuardrails ?? [];
+    this.outputGuardrails = config.outputGuardrails ?? [];
+    if (config.outputType) {
+      if (
+        !isZodObject(config.outputType) &&
+        hasStandardSchemaMarker(config.outputType) &&
+        !isStandardSchemaWithJSON(config.outputType)
+      ) {
+        throw unsupportedStandardSchemaError();
+      }
+      if (
+        !isZodObject(config.outputType) &&
+        isStandardSchemaWithJSON(config.outputType)
+      ) {
+        const inputSchema = standardSchemaToJsonSchema(
+          config.outputType,
+          'input',
+        );
+        assertStandardSchemaObjectRoot(inputSchema, 'Agent output');
+        prepareOpenAIStrictToolSchema(inputSchema as JsonObjectSchema<any>);
+      }
+      this.outputType = config.outputType;
+    }
+    this.toolUseBehavior = config.toolUseBehavior ?? 'run_llm_again';
+    this.resetToolChoice = config.resetToolChoice ?? true;
+
+    if (
+      // The user sets a non-default model.
+      config.model !== undefined &&
+      config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER &&
+      // The default model uses GPT-5-and-newer settings.
+      isGpt5OrNewerDefault() &&
+      // The specified model is outside that settings family.
+      (typeof config.model !== 'string' ||
+        !isGpt5OrNewerReasoningModel(config.model)) &&
+      // The model settings are not customized for the specified model.
+      config.modelSettings === undefined
+    ) {
+      // Avoid applying reasoning-family defaults to an unrelated model.
+      this.modelSettings = {};
+    }
+
+    // --- Runtime warning for handoff output type compatibility ---
+    if (
+      config.handoffOutputTypeWarningEnabled === undefined ||
+      config.handoffOutputTypeWarningEnabled
+    ) {
+      if (this.handoffs && this.outputType) {
+        const outputTypes: unknown[] = [this.outputType];
+        for (const h of this.handoffs) {
+          if ('outputType' in h && h.outputType) {
+            outputTypes.push(h.outputType);
+          } else if ('agent' in h && h.agent.outputType) {
+            outputTypes.push(h.agent.outputType);
+          }
+        }
+
+        if (logger.dontLogModelData) {
+          if (hasDefinitelyDifferentOutputTypes(outputTypes)) {
+            logger.warn(
+              '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+            );
+          }
+        } else {
+          const serializedOutputTypes = outputTypes.map((type) =>
+            JSON.stringify(type),
+          );
+          if (new Set<string>(serializedOutputTypes).size > 1) {
+            logger.warn(
+              `[Agent] Warning: Handoff agents have different output types: ${serializedOutputTypes.join(', ')}. You can make it type-safe by using Agent.create({ ... }) method instead.`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** @internal */
+  hasExplicitModelSettings(): boolean {
+    return this._modelSettingsExplicitlyConfigured;
+  }
+
+  /**
+   * Output schema name.
+   */
+  get outputSchemaName(): string {
+    if (this.outputType === 'text') {
+      return 'text';
+    } else if (isZodObject(this.outputType)) {
+      return 'ZodOutput';
+    } else if (isStandardSchemaWithJSON(this.outputType)) {
+      return 'StandardSchemaOutput';
+    } else if (typeof this.outputType === 'object') {
+      return (this.outputType as JsonSchemaDefinition).name;
+    }
+
+    throw new Error(`Unknown output type: ${this.outputType}`);
+  }
+
+  /**
+   * Makes a copy of the agent, with the given arguments changed. For example, you could do:
+   *
+   * ```
+   * const newAgent = agent.clone({ instructions: 'New instructions' })
+   * ```
+   *
+   * This method never copies a list property such as `tools`, `handoffs`, `mcpServers`,
+   * `inputGuardrails`, or `outputGuardrails`. It merges `config` over this agent's current
+   * property values and constructs a new agent from the result, so each list is whatever that
+   * merged configuration holds. Two consequences follow:
+   *
+   * - A property `config` leaves out arrives as the original agent's own array, which both agents
+   *   then share, entries included.
+   * - A property `config` includes is taken exactly as given, so it shares an array or an entry
+   *   with the original agent only where you reused one. Including the property with the value
+   *   `undefined` still counts as including it, and the new agent starts that list empty instead
+   *   of inheriting it.
+   *
+   * Because two agents can hold one array, mutating it through either one also changes the other.
+   * After `const clonedAgent = agent.clone({ name: 'Clone' })`, calling
+   * `clonedAgent.tools.push(extraTool)` adds that tool to `agent` as well. To give the clone a
+   * list that no other agent holds, pass a new array:
+   *
+   * ```
+   * const newAgent = agent.clone({ tools: [...agent.tools, extraTool] })
+   * ```
+   *
+   * The entries copied into that new array, such as tool and handoff objects, remain the same
+   * objects the original agent holds.
+   *
+   * @param config - A partial configuration to change.
+   * @returns A new agent with the given changes.
+   */
+  clone(
+    config: Partial<AgentConfiguration<TContext, TOutput>>,
+  ): Agent<TContext, TOutput> {
+    const modelSettings =
+      'modelSettings' in config
+        ? config.modelSettings
+        : this.hasExplicitModelSettings()
+          ? this.modelSettings
+          : undefined;
+
+    const cloned = new Agent({
+      ...this,
+      ...config,
+      modelSettings,
+    });
+    if (
+      !('modelSettings' in config) &&
+      !this.hasExplicitModelSettings() &&
+      Object.prototype.hasOwnProperty.call(this.modelSettings, 'store')
+    ) {
+      // Preserve storage policy without making generated model defaults explicit.
+      cloned.modelSettings.store = this.modelSettings.store;
+    }
+    return cloned;
+  }
+
+  /**
+   * Transform this agent into a tool, callable by other agents.
+   *
+   * This is different from handoffs in two ways:
+   * 1. In handoffs, the new agent receives the conversation history. In this tool, the new agent
+   *    receives generated input.
+   * 2. In handoffs, the new agent takes over the conversation. In this tool, the new agent is
+   *    called as a tool, and the conversation is continued by the original agent.
+   *
+   * @param options - Options for the tool.
+   * @returns A tool that runs the agent and returns the output text.
+   */
+  asTool<TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>>(
+    this: TAgent,
+    options: AgentToolOptionsWithDefault<TContext, TAgent>,
+  ): AgentTool<TContext, TAgent, typeof AgentAsToolInputSchema>;
+  asTool<
+    TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>,
+    TParameters extends AgentToolInputParameters =
+      typeof AgentAsToolInputSchema,
+  >(
+    this: TAgent,
+    options: AgentToolOptionsWithParameters<TContext, TAgent, TParameters>,
+  ): AgentTool<TContext, TAgent, TParameters>;
+  asTool<
+    TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>,
+    TParameters extends AgentToolInputParameters =
+      typeof AgentAsToolInputSchema,
+  >(
+    this: TAgent,
+    options: AgentToolOptions<TContext, TAgent, TParameters>,
+  ): AgentTool<TContext, TAgent, TParameters> {
+    const {
+      toolName,
+      toolDescription,
+      customOutputExtractor,
+      needsApproval,
+      parameters,
+      inputBuilder,
+      includeInputSchema,
+      runConfig,
+      runOptions,
+      resumeState,
+      isEnabled,
+      onStream,
+      onStreamMaxPendingEvents = 1024,
+    } = options;
+    if (
+      onStreamMaxPendingEvents !== null &&
+      (!Number.isSafeInteger(onStreamMaxPendingEvents) ||
+        onStreamMaxPendingEvents <= 0)
+    ) {
+      throw new UserError(
+        'onStreamMaxPendingEvents must be a positive safe integer or null.',
+      );
+    }
+    // Event handlers are scoped to this agent tool instance and are not shared; we only support registration (no removal) to keep the API surface small.
+    const eventHandlers = new Map<
+      AgentToolEventName,
+      Set<AgentToolEventHandler<TAgent>>
+    >();
+    const emitEvent = async (event: AgentToolStreamEvent<TAgent>) => {
+      // We intentionally keep only add semantics (no off) to reduce surface area; handlers are scoped to this agent tool instance.
+      const specific = eventHandlers.get(event.event.type);
+      const wildcard = eventHandlers.get('*');
+      const candidates = [
+        ...(onStream ? [onStream] : []),
+        ...(specific ? Array.from(specific) : []),
+        ...(wildcard ? Array.from(wildcard) : []),
+      ];
+      // Run all handlers in parallel so a slow onStream callback does not block on(...) handlers (and vice versa).
+      await Promise.allSettled(
+        candidates.map((handler) =>
+          Promise.resolve().then(() => handler(event)),
+        ),
+      );
+    };
+    const resolvedToolName = toolName ?? toFunctionToolName(this.name);
+    const toolParameters = (parameters ??
+      AgentAsToolInputSchema) as ToolInputParametersStrict;
+    const hasCustomParameters = typeof parameters !== 'undefined';
+    const includeSchema = includeInputSchema === true && hasCustomParameters;
+    const shouldCaptureToolInput =
+      hasCustomParameters ||
+      includeSchema ||
+      typeof inputBuilder === 'function';
+    const schemaInfo = shouldCaptureToolInput
+      ? buildStructuredInputSchemaInfo(
+          toolParameters,
+          resolvedToolName,
+          includeSchema,
+        )
+      : undefined;
+    const baseTool = tool<ToolInputParametersStrict, TContext, string>({
+      name: resolvedToolName,
+      description: toolDescription ?? '',
+      parameters: toolParameters,
+      strict: true,
+      needsApproval: needsApproval as
+        boolean | ToolApprovalFunction<ToolInputParametersStrict>,
+      isEnabled,
+      execute: async (
+        params: ToolExecuteArgument<ToolInputParametersStrict>,
+        context?: RunContext<TContext>,
+        details?: ToolCallDetails,
+      ) => {
+        const typedParams = params as ToolExecuteArgument<TParameters>;
+        const runContextBase: RunContext<TContext> =
+          runOptions?.context instanceof RunContext
+            ? runOptions.context
+            : typeof runOptions?.context !== 'undefined'
+              ? new RunContext(runOptions.context)
+              : context instanceof RunContext
+                ? context
+                : typeof context !== 'undefined'
+                  ? new RunContext(context as TContext)
+                  : new RunContext<TContext>();
+        const agentToolInvocation: AgentToolInvocation = {
+          toolName: details?.toolCall?.name ?? baseTool.name,
+          toolCallId: details?.toolCall?.callId,
+          toolArguments: details?.toolCall?.arguments,
+        };
+        const shouldClearToolInput =
+          !shouldCaptureToolInput &&
+          typeof runContextBase.toolInput !== 'undefined';
+        const runContext: RunContext<TContext> =
+          shouldCaptureToolInput &&
+          typeof runContextBase._forkWithToolInput === 'function'
+            ? runContextBase._forkWithToolInput(typedParams)
+            : shouldClearToolInput &&
+                typeof runContextBase._forkWithoutToolInput === 'function'
+              ? runContextBase._forkWithoutToolInput()
+              : runContextBase;
+        const resolvedInput = await resolveAgentToolInput({
+          params: typedParams,
+          schemaInfo,
+          inputBuilder,
+        });
+        if (
+          typeof resolvedInput !== 'string' &&
+          !Array.isArray(resolvedInput)
+        ) {
+          throw new ModelBehaviorError('Agent tool called with invalid input');
+        }
+        const inheritedRunConfig = getInheritedAgentToolRunConfig(
+          getAgentToolParentRunConfigFromDetails(details),
+          runConfig,
+          selectModel(this.model, runConfig?.model),
+        );
+        const nestedRunConfig = mergeAgentToolRunConfig(
+          inheritedRunConfig,
+          runConfig,
+        );
+        const runner = new Runner(nestedRunConfig);
+        setRunnerParentUsageRecorder(runner, getToolUsageRecorder(details));
+        setRunnerInvocationSpanParent(
+          runner,
+          getToolCallParentSpanFromDetails(details),
+        );
+        const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
+        const resumeContext =
+          resumeContextStrategy === 'preferSerialized' ? undefined : runContext;
+        let runInput: string | AgentInputItem[] | RunState<TContext, TAgent> =
+          resolvedInput;
+        if (details?.resumeState) {
+          if (resumeContextStrategy === 'preferSerialized' || !resumeContext) {
+            runInput = await RunState.fromString<TContext, TAgent>(
+              this,
+              details.resumeState,
+            );
+          } else {
+            if (
+              resumeContextStrategy === 'merge' &&
+              context &&
+              resumeContext !== context
+            ) {
+              resumeContext._mergeApprovalState(context);
+            }
+            runInput = await RunState.fromStringWithContext<TContext, TAgent>(
+              this,
+              details.resumeState,
+              resumeContext,
+              {
+                contextStrategy:
+                  resumeContextStrategy === 'replace' ? 'replace' : 'merge',
+              },
+            );
+          }
+        }
+        // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
+        // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
+        const shouldStream =
+          typeof onStream === 'function' || eventHandlers.size > 0;
+        const configuredSignal = runOptions?.signal;
+        const toolCallSignal = details?.signal;
+        const streamController = shouldStream
+          ? new AbortController()
+          : undefined;
+        if (streamController && onStreamMaxPendingEvents !== null) {
+          setAgentToolStreamBuffer(
+            runner,
+            createAgentToolStreamBuffer(
+              onStreamMaxPendingEvents,
+              streamController,
+            ),
+          );
+        }
+        const { signal: combinedSignal, cleanup: cleanupSignalListeners } =
+          streamController || (configuredSignal && toolCallSignal)
+            ? combineAbortSignals(
+                configuredSignal,
+                toolCallSignal,
+                streamController?.signal,
+              )
+            : {
+                signal: toolCallSignal ?? configuredSignal,
+                cleanup: () => {},
+              };
+        const runOptionsWithContext = {
+          ...(runOptions ?? {}),
+          context: runContext,
+          ...(combinedSignal ? { signal: combinedSignal } : {}),
+        };
+        try {
+          const result = shouldStream
+            ? await runner.run(this, runInput, {
+                ...runOptionsWithContext,
+                stream: true,
+              })
+            : await runner.run(this, runInput, {
+                ...runOptionsWithContext,
+              });
+          const streamPayload = {
+            agent: this,
+            toolCall: details?.toolCall,
+          };
+
+          if (shouldStream) {
+            // Cast through unknown: the async iterator shape matches and we want to drain the stream for side effects while keeping the public API stable.
+            const streamResult = result as unknown as StreamedRunResult<
+              TContext,
+              Agent<TContext, AgentOutputType>
+            >;
+            // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
+            await drainAgentToolStream(
+              streamResult,
+              (event) => emitEvent({ event, ...streamPayload }),
+              combinedSignal!,
+              streamController!,
+            );
+            if (streamResult.cancelled) {
+              const currentStep = streamResult.state._currentStep;
+              const hasCommittedOutcome =
+                (currentStep?.type === 'next_step_final_output' &&
+                  streamResult.state._currentTurnInProgress === false) ||
+                (streamResult.interruptions?.length ?? 0) > 0;
+              if (!hasCommittedOutcome) {
+                combinedSignal?.throwIfAborted();
+                throw new Error('Nested agent run was cancelled.');
+              }
+            }
+          }
+
+          const completedResult = result as CompletedRunResult<
+            TContext,
+            TAgent
+          >;
+          if (completedResult.state instanceof RunState) {
+            completedResult.state._agentToolInvocation = agentToolInvocation;
+          }
+          const completedResultWithAgentToolInvocation =
+            completedResult as CompletedAgentToolInvocationRunResult<
+              TContext,
+              TAgent
+            >;
+
+          const usesStopAtToolNames =
+            typeof this.toolUseBehavior === 'object' &&
+            this.toolUseBehavior !== null &&
+            'stopAtToolNames' in this.toolUseBehavior;
+
+          if (
+            typeof customOutputExtractor !== 'function' &&
+            usesStopAtToolNames
+          ) {
+            logger.debug(
+              `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
+            );
+          }
+          let outputText: string;
+          if (typeof customOutputExtractor === 'function') {
+            outputText = await customOutputExtractor(
+              completedResultWithAgentToolInvocation,
+            );
+          } else if ((completedResult.interruptions?.length ?? 0) > 0) {
+            outputText = '';
+          } else {
+            const outputGuardrailResult =
+              completedResult.outputGuardrailResults?.at(-1);
+            // Reuse the checked value; reading finalOutput can rerun schema transforms.
+            const finalOutput = outputGuardrailResult
+              ? outputGuardrailResult.agentOutput
+              : completedResult.finalOutput;
+            const finalOutputType = outputGuardrailResult
+              ? outputGuardrailResult.agent.outputType
+              : this.outputType;
+            const finalOutputText =
+              typeof finalOutput !== 'undefined'
+                ? finalOutputType === 'text'
+                  ? String(finalOutput)
+                  : JSON.stringify(finalOutput)
+                : undefined;
+            const rawResponses = completedResult.rawResponses;
+            const rawOutputText =
+              rawResponses && rawResponses.length > 0
+                ? getOutputText(rawResponses[rawResponses.length - 1])
+                : undefined;
+            const normalizedRawOutputText =
+              typeof rawOutputText === 'string' && rawOutputText.trim() === ''
+                ? undefined
+                : rawOutputText;
+            const prefersFinalOutput =
+              completedResult.state?._finalOutputSource === 'error_handler' ||
+              outputGuardrailResult !== undefined;
+            outputText = prefersFinalOutput
+              ? (finalOutputText ?? normalizedRawOutputText ?? '')
+              : (normalizedRawOutputText ?? finalOutputText ?? '');
+          }
+
+          if (details?.toolCall) {
+            saveAgentToolRunResult(
+              details.toolCall,
+              completedResultWithAgentToolInvocation,
+            );
+          }
+          return outputText;
+        } finally {
+          cleanupSignalListeners();
+        }
+      },
+    });
+
+    const agentTool: AgentTool<TContext, TAgent, TParameters> = {
+      ...baseTool,
+      on: (name, handler) => {
+        const set =
+          eventHandlers.get(name) ?? new Set<AgentToolEventHandler<TAgent>>();
+        set.add(handler);
+        eventHandlers.set(name, set);
+        return agentTool;
+      },
+    };
+    registerAgentToolSourceAgent(agentTool, this);
+
+    return agentTool;
+  }
+
+  /**
+   * Returns the system prompt for the agent.
+   *
+   * If the agent has a function as its instructions, this function will be called with the
+   * runContext and the agent instance.
+   */
+  async getSystemPrompt(
+    runContext: RunContext<TContext>,
+  ): Promise<string | undefined> {
+    if (typeof this.instructions === 'function') {
+      return await this.instructions(runContext, this);
+    }
+
+    return this.instructions;
+  }
+
+  /**
+   * Returns the prompt template for the agent, if defined.
+   *
+   * If the agent has a function as its prompt, this function will be called with the
+   * runContext and the agent instance.
+   */
+  async getPrompt(
+    runContext: RunContext<TContext>,
+  ): Promise<Prompt | undefined> {
+    if (typeof this.prompt === 'function') {
+      return await this.prompt(runContext, this);
+    }
+    return this.prompt;
+  }
+
+  /**
+   * Fetches the available tools from the MCP servers.
+   * @returns the MCP powered tools
+   */
+  async getMcpTools(
+    runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
+  ): Promise<Tool<TContext>[]> {
+    if (this.mcpServers.length > 0) {
+      const includeServerInToolNames =
+        this.mcpConfig.includeServerInToolNames === true;
+      return getAllMcpTools({
+        mcpServers: this.mcpServers,
+        runContext,
+        agent: getPublicAgent(this),
+        convertSchemasToStrict: this.mcpConfig.convertSchemasToStrict === true,
+        errorFunction: this.mcpConfig.errorFunction,
+        includeServerInToolNames,
+        reservedToolNames: includeServerInToolNames
+          ? await this.getMcpToolReservedNames(runContext)
+          : undefined,
+        tracingParent,
+      });
+    }
+
+    return [];
+  }
+
+  private async getMcpToolReservedNames(
+    runContext: RunContext<TContext>,
+  ): Promise<Set<string>> {
+    const reservedToolNames = new Set(
+      this.tools
+        .filter(
+          (tool): tool is FunctionTool<TContext> => tool.type === 'function',
+        )
+        .map((tool) => tool.name),
+    );
+
+    const enabledHandoffs = await this.getEnabledHandoffs(runContext);
+    for (const handoff of enabledHandoffs) {
+      reservedToolNames.add(handoff.toolName);
+    }
+
+    return reservedToolNames;
+  }
+
+  /**
+   * All agent tools, including the MCP and function tools.
+   *
+   * @returns all configured tools
+   */
+  async getAllTools(
+    runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
+  ): Promise<Tool<TContext>[]> {
+    const mcpTools = await this.getMcpTools(runContext, tracingParent);
+    const enabledTools: Tool<TContext>[] = [];
+
+    for (const candidate of [...this.tools]) {
+      if (candidate.type === 'function') {
+        const maybeIsEnabled = (
+          candidate as { isEnabled?: ToolEnabledFunction<TContext> | boolean }
+        ).isEnabled;
+
+        const enabled =
+          typeof maybeIsEnabled === 'function'
+            ? await maybeIsEnabled(runContext, getPublicAgent(this))
+            : typeof maybeIsEnabled === 'boolean'
+              ? maybeIsEnabled
+              : true;
+        if (!enabled) {
+          continue;
+        }
+      }
+      enabledTools.push(candidate);
+    }
+
+    return [...mcpTools, ...enabledTools];
+  }
+
+  hasExplicitToolConfig(): boolean {
+    return this._toolsExplicitlyConfigured;
+  }
+
+  /**
+   * Returns the handoffs that should be exposed to the model for the current run.
+   *
+   * Handoffs that provide an `isEnabled` function returning `false` are omitted.
+   */
+  async getEnabledHandoffs(
+    runContext: RunContext<TContext>,
+  ): Promise<Handoff<any, any>[]> {
+    const handoffs = this.handoffs?.map((h) => getHandoff(h)) ?? [];
+    const enabled: Handoff<any, any>[] = [];
+    for (const handoff of handoffs) {
+      if (await handoff.isEnabled({ runContext, agent: this })) {
+        enabled.push(handoff);
+      }
+    }
+    return enabled;
+  }
+
+  /**
+   * Processes the final output of the agent.
+   *
+   * @param output - The output of the agent.
+   * @returns The parsed out.
+   */
+  processFinalOutput(output: string): ResolvedAgentOutput<TOutput> {
+    if (this.outputType === 'text') {
+      return output as ResolvedAgentOutput<TOutput>;
+    }
+
+    if (
+      typeof this.outputType === 'object' ||
+      typeof this.outputType === 'function'
+    ) {
+      const parsed = JSON.parse(output);
+
+      if (isZodObject(this.outputType)) {
+        return this.outputType.parse(parsed) as ResolvedAgentOutput<TOutput>;
+      }
+
+      if (isStandardSchemaWithJSON(this.outputType)) {
+        const inputSchema = standardSchemaToJsonSchema(
+          this.outputType,
+          'input',
+        );
+        assertStandardSchemaObjectRoot(inputSchema, 'Agent output');
+        const normalized = prepareOpenAIStrictToolSchema(
+          inputSchema as JsonObjectSchema<any>,
+        ).normalizeInput(parsed);
+        return validateStandardSchema(
+          this.outputType,
+          normalized,
+        ) as ResolvedAgentOutput<TOutput>;
+      }
+
+      if (hasStandardSchemaMarker(this.outputType)) {
+        throw unsupportedStandardSchemaError();
+      }
+
+      return parsed as ResolvedAgentOutput<TOutput>;
+    }
+
+    throw new Error(`Unknown output type: ${this.outputType}`);
+  }
+
+  /**
+   * Returns a JSON representation of the agent, which is serializable.
+   *
+   * @returns A JSON object containing the agent's name.
+   */
+  toJSON() {
+    return {
+      name: this.name,
+    };
+  }
+}

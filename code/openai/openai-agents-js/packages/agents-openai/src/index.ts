@@ -1,0 +1,60 @@
+export { OpenAIProvider, type OpenAIProviderOptions } from './openaiProvider';
+export type { OpenAIClient } from './openaiClient';
+export {
+  withResponsesWebSocketSession,
+  type ResponsesWebSocketSession,
+  type ResponsesWebSocketSessionOptions,
+} from './responsesWebSocketSession';
+export {
+  OpenAIResponsesModel,
+  OpenAIResponsesWSModel,
+  type OpenAIResponsesWebSocketOptions,
+} from './openaiResponsesModel';
+export {
+  OpenAIChatCompletionsModel,
+  type OpenAIChatCompletionsModelOptions,
+} from './openaiChatCompletionsModel';
+export {
+  isOpenAIResponsesRawModelStreamEvent,
+  isOpenAIChatCompletionsRawModelStreamEvent,
+  OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+  OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE,
+} from './rawModelEvents';
+export type {
+  OpenAIRawModelEventSource,
+  OpenAIResponsesRawModelStreamEvent,
+  OpenAIChatCompletionsRawModelStreamEvent,
+} from './rawModelEvents';
+export {
+  getDefaultOpenAIClient,
+  setDefaultOpenAIClient,
+  setOpenAIAPI,
+  setOpenAIResponsesTransport,
+  setDefaultOpenAIKey,
+  setTracingExportApiKey,
+} from './defaults';
+export {
+  setDefaultOpenAITracingExporter,
+  OpenAITracingExporter,
+  OpenAITracingExporterOptions,
+} from './openaiTracingExporter';
+export {
+  webSearchTool,
+  fileSearchTool,
+  codeInterpreterTool,
+  programmaticToolCallingTool,
+  toolSearchTool,
+  imageGenerationTool,
+} from './tools';
+export type { ProgrammaticToolCallingTool, ToolSearchTool } from './tools';
+export {
+  OpenAIConversationsSession,
+  startOpenAIConversationsSession,
+  type OpenAIConversationsSessionOptions,
+} from './memory/openaiConversationsSession';
+export {
+  OpenAIResponsesCompactionSession,
+  type OpenAIResponsesCompactionMode,
+  type OpenAIResponsesCompactionSessionOptions,
+  type OpenAIResponsesCompactionDecisionContext,
+} from './memory/openaiResponsesCompactionSession';

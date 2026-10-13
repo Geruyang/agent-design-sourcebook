@@ -1,0 +1,88 @@
+﻿[
+  {
+    "type": "RUN_STARTED",
+    "threadId": "thread_Id_1",
+    "runId": "run_Id_1",
+    "protocolVersion": "1.0"
+  },
+  {
+    "type": "TOOL_CALL_START",
+    "toolCallId": "call_Id_1",
+    "toolCallName": "GetUserLocation",
+    "parentMessageId": "",
+    "rawEvent": {
+      "role": "assistant",
+      "contents": [
+        {
+          "$type": "functionCall",
+          "name": "GetUserLocation",
+          "arguments": {},
+          "informationalOnly": false,
+          "callId": "call_Id_1"
+        }
+      ],
+      "responseId": "",
+      "messageId": "",
+      "finishReason": "tool_calls",
+      "modelId": ""
+    }
+  },
+  {
+    "type": "TOOL_CALL_ARGS",
+    "toolCallId": "call_Id_1",
+    "delta": "{}",
+    "rawEvent": {
+      "role": "assistant",
+      "contents": [
+        {
+          "$type": "functionCall",
+          "name": "GetUserLocation",
+          "arguments": {},
+          "informationalOnly": false,
+          "callId": "call_Id_1"
+        }
+      ],
+      "responseId": "",
+      "messageId": "",
+      "finishReason": "tool_calls",
+      "modelId": ""
+    }
+  },
+  {
+    "type": "TOOL_CALL_END",
+    "toolCallId": "call_Id_1",
+    "rawEvent": {
+      "role": "assistant",
+      "contents": [
+        {
+          "$type": "functionCall",
+          "name": "GetUserLocation",
+          "arguments": {},
+          "informationalOnly": false,
+          "callId": "call_Id_1"
+        }
+      ],
+      "responseId": "",
+      "messageId": "",
+      "finishReason": "tool_calls",
+      "modelId": ""
+    }
+  },
+  {
+    "type": "RUN_FINISHED",
+    "threadId": "thread_Id_1",
+    "runId": "run_Id_1",
+    "outcome": {
+      "type": "success"
+    },
+    "usage": [
+      {
+        "inputTokens": 131,
+        "outputTokens": 85,
+        "totalTokens": 216,
+        "reasoningTokens": 64,
+        "cachedInputTokens": 0
+      }
+    ]
+  }
+]

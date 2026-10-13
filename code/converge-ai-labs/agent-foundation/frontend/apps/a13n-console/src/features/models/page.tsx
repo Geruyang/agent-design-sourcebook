@@ -1,0 +1,1 @@
+export { ModelsPage } from "./list";

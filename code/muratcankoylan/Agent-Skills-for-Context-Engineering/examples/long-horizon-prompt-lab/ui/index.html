@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A practical, evidence-backed guide to specifying long-running autonomous agent work." />
+  <meta name="theme-color" content="#f5f3ee" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <link rel="canonical" href="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/" />
+  <meta property="og:title" content="Long-Horizon Prompting" />
+  <meta property="og:site_name" content="Long-Horizon Prompting" />
+  <meta property="og:description" content="Specification engineering for autonomous work that does not end in one turn." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/" />
+  <meta property="og:image" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/social-card.png" />
+  <meta property="og:image:alt" content="Long-Horizon Prompting: prompts for work that does not end in one turn" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <title>Long-Horizon Prompting — Specification engineering for autonomous work</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="site-brand" href="index.html">Long-Horizon Prompting</a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="index.html" aria-current="page">Overview</a>
+      <a href="guide.html">Guide</a>
+      <a href="lab.html">Prompt Lab</a>
+      <a href="references.html">References</a>
+    </nav>
+    <a class="site-github" href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+       target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <main id="main">
+    <section class="page-hero page-shell">
+      <p class="section-eyebrow">Long-Horizon Prompting / v1.0</p>
+      <h1>Prompts for work that does not end in one turn.</h1>
+      <p class="page-lede">
+        Long-horizon prompting treats the launch prompt as a specification surface:
+        define exact success, close the likely escape hatches, require evidence, and
+        return only when the artifact survives an adversarial check.
+      </p>
+      <p class="page-byline">
+        By
+        <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Muratcan Koylan</a>
+        ·
+        <a href="https://x.com/muratcan" target="_blank" rel="noreferrer">X</a>
+      </p>
+      <div class="release-actions" aria-label="Get started">
+        <a class="action action-primary" href="guide.html">Learn the method</a>
+        <a class="action" href="lab.html">Open the Prompt Lab</a>
+        <button class="action" type="button" data-copy-install aria-describedby="install-status">Copy Cursor install</button>
+        <span class="copy-status" id="install-status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="content-section page-shell" aria-labelledby="what-title">
+      <div class="section-heading">
+        <p class="section-eyebrow">What it is</p>
+        <h2 id="what-title">A pseudo-formal task brief, written in natural language.</h2>
+      </div>
+      <div class="prose-grid">
+        <p>
+          Formal verification starts with a machine-checkable specification. Many hard
+          research and engineering tasks do not have one. The transferable discipline is
+          to state the acceptance condition precisely enough that an adversarial reader
+          cannot satisfy its letter without satisfying its intent.
+        </p>
+        <p>
+          This is not a prompt for making a model “try harder.” It is a method for deciding
+          what the run is allowed to call complete, what evidence must exist, and which
+          constraints must move out of prompt text and into the runtime harness.
+        </p>
+      </div>
+    </section>
+
+    <section class="content-section page-shell" aria-labelledby="failure-title">
+      <div class="section-heading">
+        <p class="section-eyebrow">Why long runs fail</p>
+        <h2 id="failure-title">Additional compute amplifies the specification.</h2>
+      </div>
+      <div class="concept-grid">
+        <article>
+          <span class="concept-number">01</span>
+          <h3>Premature return</h3>
+          <p>Long trajectories drift toward uncertainty, status reporting, and early abandonment before the requested artifact exists.</p>
+        </article>
+        <article>
+          <span class="concept-number">02</span>
+          <h3>Answer-shaped near misses</h3>
+          <p>A narrowed scope, lucky benchmark run, unproved reduction, or scanner dump can resemble the requested result without being it.</p>
+        </article>
+        <article>
+          <span class="concept-number">03</span>
+          <h3>Verification bottlenecks</h3>
+          <p>Generating more candidates helps only when the system can identify which candidate is actually correct.</p>
+        </article>
+        <article>
+          <span class="concept-number">04</span>
+          <h3>Diversity collapse</h3>
+          <p>Parallel workers share priors and converge quickly unless early independence and blocked-route bookkeeping are designed in.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="content-section page-shell" aria-labelledby="anatomy-title">
+      <div class="section-heading">
+        <p class="section-eyebrow">Brief anatomy</p>
+        <h2 id="anatomy-title">Ten blocks with distinct jobs.</h2>
+      </div>
+      <ol class="anatomy-list">
+        <li><strong>Definitions</strong><span>Fix load-bearing terms and boundary cases.</span></li>
+        <li><strong>Success predicate</strong><span>State exactly what must be true at return.</span></li>
+        <li><strong>Non-counting outcomes</strong><span>Name the plausible near misses.</span></li>
+        <li><strong>Solvability framing</strong><span>Use only where a complete solution plausibly exists.</span></li>
+        <li><strong>Orchestration policy</strong><span>Preserve independent approaches in parallel search.</span></li>
+        <li><strong>Verification policy</strong><span>Give fresh reviewers a domain-specific attack list.</span></li>
+        <li><strong>Reporting contract</strong><span>Require artifacts and evidence, not status.</span></li>
+        <li><strong>Return condition</strong><span>Gate completion on the artifact, not confidence.</span></li>
+        <li><strong>Effort framing</strong><span>Remove permission to quit after the first failed wave.</span></li>
+        <li><strong>Contamination guards</strong><span>Define what external retrieval may contribute.</span></li>
+      </ol>
+    </section>
+
+    <section class="content-section page-shell" aria-labelledby="layers-title">
+      <div class="section-heading">
+        <p class="section-eyebrow">System boundary</p>
+        <h2 id="layers-title">The prompt is one layer, not the whole system.</h2>
+      </div>
+      <div class="layer-table" role="list">
+        <div role="listitem"><strong>Prompt</strong><span>Semantic success, named near misses, evidence contract, return rule.</span></div>
+        <div role="listitem"><strong>Harness</strong><span>Budgets, permissions, sandboxing, locked evaluators, rollback.</span></div>
+        <div role="listitem"><strong>Evaluator</strong><span>Independent acceptance checks, held-out data, fresh-context review.</span></div>
+        <div role="listitem"><strong>Durable state</strong><span>Progress ledger, approach registry, blocked routes, rejected candidates.</span></div>
+        <div role="listitem"><strong>Governance</strong><span>Human control of evaluator changes, deployment, and promotion.</span></div>
+      </div>
+    </section>
+
+    <aside class="case-note page-shell" aria-labelledby="case-title">
+      <div>
+        <p class="section-eyebrow">Case study, not foundation</p>
+        <h2 id="case-title">The Cycle Double Cover run is one exemplar.</h2>
+      </div>
+      <p>
+        Its published prompt demonstrates the method clearly, but the candidate proof
+        was unreviewed and unformalized at publication, and no public ablation isolates
+        which prompt blocks mattered. The skill is grounded in a broader evidence base
+        covering persistence, verification, diversity, orchestration, and harness design.
+      </p>
+      <a href="references.html#cdc">Read the case notes and caveats →</a>
+    </aside>
+
+    <section class="next-grid page-shell" aria-label="Continue">
+      <a href="guide.html"><span>01 / Guide</span><strong>Write and audit a task brief</strong><em>Method, template, checklist, and gotchas.</em></a>
+      <a href="lab.html"><span>02 / Prompt Lab</span><strong>Compare complete prompts</strong><em>Four copy-ready before-and-after examples.</em></a>
+      <a href="references.html"><span>03 / References</span><strong>Inspect the evidence</strong><em>Research, vendor guidance, claims, and caveats.</em></a>
+    </section>
+  </main>
+
+  <footer class="site-footer page-shell">
+    <p>
+      By
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Muratcan Koylan</a>.
+      Project site for the long-horizon-prompting skill.
+    </p>
+    <div>
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Website ↗</a>
+      <a href="https://x.com/muratcan" target="_blank" rel="noreferrer">X ↗</a>
+      <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting" target="_blank" rel="noreferrer">Skill source ↗</a>
+      <a href="references.html">Evidence policy</a>
+    </div>
+  </footer>
+  <script src="site.js"></script>
+</body>
+</html>

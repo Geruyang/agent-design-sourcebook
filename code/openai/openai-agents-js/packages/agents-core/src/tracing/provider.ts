@@ -1,0 +1,501 @@
+import { getCurrentSpan, getCurrentTrace } from './context';
+import { supportsProcessLifecycleEvents } from '@openai/agents-core/_shims';
+import { tracing } from '../config';
+import logger, { logModelAndToolActionError } from '../logger';
+import { MultiTracingProcessor, TracingProcessor } from './processor';
+import { NoopSpan, Span, SpanData, SpanOptions } from './spans';
+import { NoopTrace, Trace, TraceOptions } from './traces';
+import {
+  defaultTracingIdGenerator,
+  NOOP_TRACE_OR_SPAN_ID,
+  type TracingIdGenerator,
+} from './utils';
+
+export type CreateSpanOptions<TData extends SpanData> = Omit<
+  SpanOptions<TData>,
+  'traceId'
+> & { traceId?: string; disabled?: boolean };
+
+export type TraceProviderOptions = {
+  idGenerator?: Partial<TracingIdGenerator>;
+};
+
+function resolveTracingIdGenerator(
+  idGenerator?: Partial<TracingIdGenerator>,
+): TracingIdGenerator {
+  return {
+    generateTraceId:
+      idGenerator?.generateTraceId ?? defaultTracingIdGenerator.generateTraceId,
+    generateSpanId:
+      idGenerator?.generateSpanId ?? defaultTracingIdGenerator.generateSpanId,
+  };
+}
+
+export class TraceProvider {
+  #multiProcessor: MultiTracingProcessor;
+  #disabled: boolean;
+  #shutdownPromise: Promise<void> | null;
+  #idGenerator: TracingIdGenerator;
+
+  constructor(options: TraceProviderOptions = {}) {
+    this.#multiProcessor = new MultiTracingProcessor();
+    this.#disabled = tracing.disabled;
+    this.#shutdownPromise = null;
+    this.#idGenerator = resolveTracingIdGenerator(options.idGenerator);
+
+    this.#addCleanupListeners();
+  }
+
+  /**
+   * Add a processor to the list of processors. Each processor will receive all traces/spans.
+   *
+   * @param processor - The processor to add.
+   */
+  registerProcessor(processor: TracingProcessor): void {
+    this.#shutdownPromise = null;
+    this.#multiProcessor.addTraceProcessor(processor);
+  }
+
+  /**
+   * Set the list of processors. This will replace any existing processors.
+   *
+   * @param processors - The list of processors to set.
+   */
+  setProcessors(processors: TracingProcessor[]): void {
+    this.#shutdownPromise = null;
+    this.#multiProcessor.setProcessors(processors);
+  }
+
+  /**
+   * Get the current trace.
+   *
+   * @returns The current trace.
+   */
+  getCurrentTrace(): Trace | null {
+    return getCurrentTrace();
+  }
+
+  getCurrentSpan(): Span<any> | null {
+    return getCurrentSpan();
+  }
+
+  setDisabled(disabled: boolean): void {
+    this.#disabled = disabled;
+  }
+
+  setIdGenerator(idGenerator?: Partial<TracingIdGenerator>): void {
+    this.#idGenerator = resolveTracingIdGenerator(idGenerator);
+  }
+
+  /**
+   * Generate a new trace ID.
+   *
+   * Override this in custom providers to take precedence over configured ID generators.
+   */
+  generateTraceId(): string {
+    return this.#idGenerator.generateTraceId();
+  }
+
+  /**
+   * Generate a new span ID.
+   *
+   * Override this in custom providers to take precedence over configured ID generators.
+   */
+  generateSpanId(): string {
+    return this.#idGenerator.generateSpanId();
+  }
+
+  startExportLoop(): void {
+    this.#multiProcessor.start();
+  }
+
+  /**
+   * Dispatches a completed trace lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a trace that was started and
+   * ended outside this process and needs to fan out the lifecycle without
+   * mutating the trace state.
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    if (this.#disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching trace.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching trace %o', trace);
+      }
+      return;
+    }
+
+    await this.#multiProcessor.dispatchTrace(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a span that already has
+   * lifecycle timestamps and needs to fan out the lifecycle without mutating
+   * those timestamps.
+   */
+  async dispatchSpan<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching span %o', span);
+      }
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpan(span);
+  }
+
+  /**
+   * Dispatches a span start event to all registered processors.
+   *
+   * This is useful when an integration receives a span start outside this
+   * process and needs to fan out the start without mutating the span state.
+   */
+  async dispatchSpanStart<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span start.');
+      } else {
+        logger.debug(
+          'Tracing is disabled, Not dispatching span start %o',
+          span,
+        );
+      }
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpanStart(span);
+  }
+
+  /**
+   * Dispatches a span end event to all registered processors.
+   *
+   * This is useful when an integration receives a span end outside this process
+   * and needs to fan out the end without mutating the span state.
+   */
+  async dispatchSpanEnd<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span end.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching span end %o', span);
+      }
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpanEnd(span);
+  }
+
+  createTrace(traceOptions: TraceOptions): Trace {
+    if (this.#disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not creating trace.');
+      } else {
+        logger.debug(
+          'Tracing is disabled, Not creating trace %o',
+          traceOptions,
+        );
+      }
+      return new NoopTrace();
+    }
+
+    const traceId = traceOptions.traceId ?? this.generateTraceId();
+    const name = traceOptions.name ?? 'Agent workflow';
+
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.debug('Creating trace. Trace data is redacted.');
+    } else {
+      logger.debug('Creating trace %s with name %s', traceId, name);
+    }
+
+    return new Trace({ ...traceOptions, name, traceId }, this.#multiProcessor);
+  }
+
+  createSpan<TSpanData extends SpanData>(
+    spanOptions: CreateSpanOptions<TSpanData>,
+    parent?: Span<any> | Trace,
+  ): Span<TSpanData> {
+    if (this.#disabled || spanOptions.disabled) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not creating span.');
+      } else {
+        logger.debug('Tracing is disabled, Not creating span %o', spanOptions);
+      }
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
+    if (spanOptions.spanId === NOOP_TRACE_OR_SPAN_ID) {
+      logger.debug('Span id is no-op, returning NoopSpan');
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
+    let parentId;
+    let traceId;
+    let tracingApiKey: string | undefined;
+    let traceMetadata: Record<string, any> | undefined;
+
+    if (!parent) {
+      const currentTrace = getCurrentTrace();
+      const currentSpan = getCurrentSpan();
+
+      if (!currentTrace) {
+        logger.debug(
+          'No active trace. Make sure to start a trace with `withTrace()` first. Returning NoopSpan.',
+        );
+        return new NoopSpan(spanOptions.data, this.#multiProcessor);
+      }
+
+      if (
+        currentSpan instanceof NoopSpan ||
+        currentSpan?.spanId === NOOP_TRACE_OR_SPAN_ID ||
+        currentTrace instanceof NoopTrace ||
+        currentTrace.traceId === NOOP_TRACE_OR_SPAN_ID
+      ) {
+        logger.debug(
+          `Parent ${currentSpan} or ${currentTrace} is no-op, returning NoopSpan`,
+        );
+        return new NoopSpan(spanOptions.data, this.#multiProcessor);
+      }
+
+      traceId = currentTrace.traceId;
+      tracingApiKey = currentTrace.tracingApiKey;
+      traceMetadata = currentTrace.metadata;
+      if (currentSpan) {
+        logger.debug('Using parent span %s', currentSpan.spanId);
+        parentId = currentSpan.spanId;
+      } else {
+        logger.debug(
+          'No parent span, using current trace %s',
+          currentTrace.traceId,
+        );
+      }
+    } else if (parent instanceof Trace) {
+      if (
+        parent instanceof NoopTrace ||
+        parent.traceId === NOOP_TRACE_OR_SPAN_ID
+      ) {
+        logger.debug('Parent trace is no-op, returning NoopSpan');
+        return new NoopSpan(spanOptions.data, this.#multiProcessor);
+      }
+
+      traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
+      traceMetadata = parent.metadata;
+    } else if (parent instanceof Span) {
+      if (
+        parent instanceof NoopSpan ||
+        parent.spanId === NOOP_TRACE_OR_SPAN_ID ||
+        parent.traceId === NOOP_TRACE_OR_SPAN_ID
+      ) {
+        logger.debug('Parent span is no-op, returning NoopSpan');
+        return new NoopSpan(spanOptions.data, this.#multiProcessor);
+      }
+
+      parentId = parent.spanId;
+      traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
+      traceMetadata = parent.traceMetadata;
+    }
+
+    if (!traceId || traceId === NOOP_TRACE_OR_SPAN_ID) {
+      logger.error(
+        'No traceId found. Make sure to start a trace with `withTrace()` first. Returning NoopSpan.',
+      );
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
+    const spanId = spanOptions.spanId ?? this.generateSpanId();
+    if (spanId === NOOP_TRACE_OR_SPAN_ID) {
+      logger.debug('Span id is no-op, returning NoopSpan');
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.debug('Creating span. Span data is redacted.');
+    } else {
+      logger.debug(
+        `Creating span ${JSON.stringify(spanOptions.data)} with id ${spanId}`,
+      );
+    }
+
+    return new Span(
+      {
+        ...spanOptions,
+        spanId,
+        traceId,
+        parentId,
+        traceMetadata: traceMetadata ?? spanOptions.traceMetadata,
+        tracingApiKey: tracingApiKey ?? spanOptions.tracingApiKey,
+      },
+      this.#multiProcessor,
+    );
+  }
+
+  async shutdown(timeout?: number): Promise<void> {
+    if (!this.#shutdownPromise) {
+      this.#shutdownPromise = (async () => {
+        try {
+          logger.debug('Shutting down tracing provider');
+          await this.#multiProcessor.shutdown(timeout);
+        } catch (error) {
+          logModelAndToolActionError(
+            logger,
+            'Error shutting down tracing provider',
+            error,
+          );
+        }
+      })();
+    }
+    await this.#shutdownPromise;
+  }
+
+  /** Adds listeners to `process` to ensure `shutdown` occurs before exit. */
+  #addCleanupListeners(): void {
+    if (
+      supportsProcessLifecycleEvents() &&
+      typeof process !== 'undefined' &&
+      typeof process.on === 'function'
+    ) {
+      // handling Node.js process termination
+      const cleanup = async () => {
+        const timeoutMs = 5000;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        try {
+          await Promise.race([
+            this.shutdown(timeoutMs),
+            new Promise<void>((resolve) => {
+              timeout = setTimeout(() => {
+                console.warn('Tracing cleanup timed out; continuing exit');
+                resolve();
+              }, timeoutMs);
+            }),
+          ]);
+        } finally {
+          if (timeout) {
+            clearTimeout(timeout);
+          }
+        }
+      };
+
+      // Handle normal termination
+      process.once('beforeExit', cleanup);
+
+      // Handle CTRL+C (SIGINT)
+      process.on('SIGINT', async () => {
+        await cleanup();
+        if (!hasOtherListenersForSignals('SIGINT')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(130);
+        }
+      });
+
+      // Handle termination (SIGTERM)
+      process.on('SIGTERM', async () => {
+        await cleanup();
+        if (!hasOtherListenersForSignals('SIGTERM')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(0);
+        }
+      });
+
+      process.on('unhandledRejection', async (reason, promise) => {
+        logModelAndToolActionError(
+          logger,
+          'Unhandled rejection',
+          reason,
+          promise,
+        );
+        await cleanup();
+        if (!hasOtherListenersForEvents('unhandledRejection')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(1);
+        }
+      });
+    }
+  }
+
+  async forceFlush(): Promise<void> {
+    await this.#multiProcessor.forceFlush();
+  }
+}
+
+let moduleTraceProvider: TraceProvider | undefined;
+
+function hasOtherListenersForSignals(event: 'SIGINT' | 'SIGTERM'): boolean {
+  return process.listeners(event).length > 1;
+}
+
+function hasOtherListenersForEvents(event: 'unhandledRejection'): boolean {
+  return process.listeners(event).length > 1;
+}
+
+export function getGlobalTraceProvider(): TraceProvider {
+  const symbol = Symbol.for('openai.agents.core.traceProvider');
+
+  try {
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+
+    // Avoid constructing extra providers when globalThis is frozen/sealed. We
+    // first short-circuit on existing instances, then check writability before
+    // instantiation so hardened runtimes do not leak constructors or listeners.
+    const existing = globalHolder[symbol];
+    if (existing) {
+      return existing;
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(globalHolder, symbol);
+    if (
+      descriptor &&
+      descriptor.writable === false &&
+      descriptor.configurable === false &&
+      !descriptor.set
+    ) {
+      return getModuleTraceProvider();
+    }
+
+    if (!descriptor) {
+      try {
+        Object.defineProperty(globalHolder, symbol, {
+          value: undefined,
+          writable: true,
+          configurable: true,
+        });
+      } catch {
+        return getModuleTraceProvider();
+      }
+    }
+
+    try {
+      const provider = new TraceProvider();
+      globalHolder[symbol] = provider;
+      return provider;
+    } catch {
+      return getModuleTraceProvider();
+    }
+  } catch {
+    // Hardened runtimes can freeze or seal globalThis; fall back to a
+    // module-local singleton instead of throwing so tracing still works.
+    return getModuleTraceProvider();
+  }
+}
+
+function getModuleTraceProvider() {
+  if (!moduleTraceProvider) {
+    moduleTraceProvider = new TraceProvider();
+  }
+  return moduleTraceProvider;
+}

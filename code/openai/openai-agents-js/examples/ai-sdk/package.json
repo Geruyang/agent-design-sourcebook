@@ -1,0 +1,27 @@
+{
+  "private": true,
+  "name": "ai-sdk",
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.116",
+    "@ai-sdk/google": "^4.0.87",
+    "@ai-sdk/openai": "^4.0.83",
+    "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
+    "zod": "4.3.5"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "tsx index.ts",
+    "start:gpt-5": "node gpt-5.ts",
+    "start:retry": "node retry.ts",
+    "start:stream": "node stream.ts",
+    "start:image-tool-output": "node image-tool-output.ts"
+  },
+  "devDependencies": {
+    "ai": "^6.0.277"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
+  }
+}

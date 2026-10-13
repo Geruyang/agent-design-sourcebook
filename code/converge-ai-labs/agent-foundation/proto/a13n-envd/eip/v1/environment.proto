@@ -1,0 +1,251 @@
+syntax = "proto3";
+
+package a13n.agent_envd.eip.v1;
+
+import "a13n-envd/eip/v1/common.proto";
+import "a13n-envd/eip/v1/options.proto";
+import "a13n-envd/eip/v1/process.proto";
+
+message EIPClientInfo {
+  string name = 1;
+  string version = 2;
+}
+
+message InitializeParams {
+  repeated string supported_protocol_versions = 1 [(eip_field).min_length = 1];
+  EIPClientInfo client = 2;
+  optional string expected_device_id = 3 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+}
+
+message EIPServerInfo {
+  string name = 1 [(eip_field).const_string = "a13n-envd"];
+  string version = 2;
+}
+
+message EIPLimits {
+  uint64 max_request_bytes = 1 [(eip_field).minimum = 1];
+  uint64 max_response_bytes = 2 [(eip_field).minimum = 1];
+  uint64 max_concurrent_operations = 3 [(eip_field).minimum = 1];
+  uint64 max_processes = 4 [(eip_field).minimum = 1];
+  uint64 max_operation_duration_ms = 5 [(eip_field).minimum = 1];
+  uint64 max_output_preview_bytes = 6 [(eip_field).minimum = 1];
+  uint64 max_output_bytes_per_stream = 7 [(eip_field).minimum = 1];
+  uint64 max_transfer_frame_bytes = 17 [(eip_field).minimum = 26];
+  uint64 max_concurrent_file_transfers = 18 [(eip_field).minimum = 1];
+  uint64 max_file_transfer_bytes = 25 [(eip_field).minimum = 1];
+  uint64 max_file_bytes = 26 [(eip_field).minimum = 1];
+}
+
+message ExecutionFeatures {
+  bool process_count_limit = 1;
+  bool memory_bytes_limit = 2;
+  bool cpu_time_limit = 3;
+  bool signal_interrupt = 5;
+  bool signal_terminate = 6;
+}
+
+message SessionLifecyclePolicy {
+  uint64 idle_timeout_ms = 1 [(eip_field).minimum = 1];
+  uint64 disconnect_grace_ms = 2 [(eip_field).minimum = 1];
+}
+
+enum PathStyle {
+  PATH_STYLE_UNSPECIFIED = 0;
+  PATH_STYLE_POSIX = 1 [(eip_enum_value).json_name = "posix"];
+  PATH_STYLE_WINDOWS = 2 [(eip_enum_value).json_name = "windows"];
+}
+
+message ExecutionIdentity {
+  uint32 uid = 1;
+  uint32 gid = 2;
+}
+
+enum GrantAccess {
+  GRANT_ACCESS_UNSPECIFIED = 0;
+  GRANT_ACCESS_READ_ONLY = 1 [(eip_enum_value).json_name = "read_only"];
+  GRANT_ACCESS_READ_WRITE = 2 [(eip_enum_value).json_name = "read_write"];
+}
+
+message SandboxGrant {
+  string path = 1 [(eip_field).string_format = EIP_STRING_FORMAT_PATH];
+  GrantAccess access = 2;
+}
+
+message DisabledSandbox {
+  string mode = 1 [(eip_field).const_string = "disabled"];
+}
+
+message RestrictedSandbox {
+  string mode = 1 [(eip_field).const_string = "restricted"];
+  repeated SandboxGrant grants = 2;
+}
+
+message SandboxPolicy {
+  option (eip_message).discriminated_union = true;
+  oneof sandbox {
+    DisabledSandbox disabled = 1;
+    RestrictedSandbox restricted = 2;
+  }
+}
+
+enum EgressMode {
+  EGRESS_MODE_UNSPECIFIED = 0;
+  EGRESS_MODE_INHERIT = 1 [(eip_enum_value).json_name = "inherit"];
+  EGRESS_MODE_DENY = 2 [(eip_enum_value).json_name = "deny"];
+  EGRESS_MODE_CONTROLLED = 3 [(eip_enum_value).json_name = "controlled"];
+}
+
+enum ExecutionBackend {
+  EXECUTION_BACKEND_UNSPECIFIED = 0;
+  EXECUTION_BACKEND_NATIVE = 1 [(eip_enum_value).json_name = "native"];
+  EXECUTION_BACKEND_LINUX_MANAGED = 2 [(eip_enum_value).json_name = "linux_managed"];
+  EXECUTION_BACKEND_LINUX_BUBBLEWRAP = 3 [(eip_enum_value).json_name = "linux_bubblewrap"];
+  EXECUTION_BACKEND_MACOS_SEATBELT = 4 [(eip_enum_value).json_name = "macos_seatbelt"];
+}
+
+message ExecutionBoundary {
+  optional ExecutionIdentity identity = 1;
+  SandboxPolicy sandbox = 2;
+  EgressMode egress = 3;
+  bool privilege_gain_blocked = 4;
+  ExecutionBackend backend = 5;
+  string policy_digest = 6 [(eip_field).string_format = EIP_STRING_FORMAT_SHA256];
+}
+
+message DeviceDescriptor {
+  string device_id = 1 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+  uint64 generation = 2 [(eip_field).minimum = 1];
+  optional string display_name = 3 [(eip_field).max_length = 256];
+  optional string description = 4 [(eip_field).max_length = 4096];
+  PathStyle path_style = 5;
+  string default_working_directory = 6 [(eip_field).string_format = EIP_STRING_FORMAT_PATH];
+  bool directory_discovery = 7;
+  repeated string available_methods = 8;
+  EIPLimits limits = 9;
+  SessionLifecyclePolicy lifecycle = 10;
+  ExecutionBoundary boundary = 11;
+}
+
+message SessionDescriptor {
+  string device_id = 1 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+  uint64 generation = 2 [(eip_field).minimum = 1];
+  string session_id = 3 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+  string working_directory = 4 [(eip_field).string_format = EIP_STRING_FORMAT_PATH];
+  repeated string available_methods = 5;
+  EIPLimits limits = 6;
+  repeated ShellProfileDescriptor shell_profiles = 7;
+  ExecutionFeatures execution_features = 8;
+  SessionLifecyclePolicy lifecycle = 9;
+  optional EgressStatus egress = 10;
+  ExecutionBoundary boundary = 11;
+}
+
+message InitializeResult {
+  string protocol_version = 1 [(eip_field).string_format = EIP_STRING_FORMAT_PROTOCOL_VERSION];
+  EIPServerInfo server = 2;
+  DeviceDescriptor descriptor = 3;
+}
+
+message DeviceDescribeParams {}
+
+message DeviceDescribeResult {
+  DeviceDescriptor descriptor = 1;
+}
+
+message SessionOpenParams {
+  string expected_device_id = 1 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+  uint64 expected_generation = 2 [(eip_field).minimum = 1];
+  string protocol_version = 3 [(eip_field).string_format = EIP_STRING_FORMAT_PROTOCOL_VERSION];
+  optional string working_directory = 4 [(eip_field).string_format = EIP_STRING_FORMAT_PATH];
+  repeated string required_methods = 5;
+  optional EgressPolicy egress = 6;
+}
+
+message SessionOpenResult {
+  SessionDescriptor descriptor = 1;
+}
+
+message SessionAttachParams {}
+
+message SessionKeepaliveParams {}
+
+message SessionKeepaliveResult {
+  bool alive = 1 [(eip_field).const_bool = true];
+}
+
+message EnvironmentReadinessParams {
+  EIPCallContext context = 1;
+}
+
+message EnvironmentReadinessResult {
+  bool ready = 1;
+  string device_id = 2 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+  uint64 generation = 3 [(eip_field).minimum = 1];
+  string session_id = 4 [(eip_field).string_format = EIP_STRING_FORMAT_IDENTIFIER];
+}
+
+message EnvironmentDescribeParams {
+  EIPCallContext context = 1;
+}
+
+message EnvironmentDescribeResult {
+  SessionDescriptor descriptor = 1;
+}
+
+message SessionCloseParams {}
+
+message SessionCloseResult {
+  bool closed = 1 [(eip_field).const_bool = true];
+}
+
+message PublicDestinations {
+  string mode = 1 [(eip_field).const_string = "public"];
+}
+
+message AllowlistDestinations {
+  string mode = 1 [(eip_field).const_string = "allowlist"];
+  repeated string hosts = 2 [(eip_field).max_length = 256];
+}
+
+message EgressDestinations {
+  option (eip_message).discriminated_union = true;
+  oneof destinations {
+    PublicDestinations public = 1;
+    AllowlistDestinations allowlist = 2;
+  }
+}
+
+message EgressSecret {
+  option (eip_message).redacted_debug = true;
+  string env = 1 [(eip_field).min_length = 1, (eip_field).max_length = 128];
+  string value = 2 [(eip_field).min_length = 1, (eip_field).max_length = 8192];
+  repeated string inject_hosts = 3 [(eip_field).min_length = 1, (eip_field).max_length = 256];
+}
+
+message EgressPolicy {
+  EgressDestinations destinations = 1;
+  repeated EgressSecret secrets = 2 [(eip_field).max_length = 64];
+}
+
+message EgressSecretStatus {
+  string env = 1;
+  string sentinel = 2;
+  repeated string inject_hosts = 3;
+}
+
+message EgressStatus {
+  uint64 revision = 1 [(eip_field).minimum = 1];
+  EgressDestinations destinations = 2;
+  repeated EgressSecretStatus secrets = 3;
+}
+
+message EgressUpdateParams {
+  uint64 expected_revision = 1 [(eip_field).minimum = 1];
+  optional EgressDestinations destinations = 2;
+  repeated EgressSecret set_secrets = 4 [(eip_field).max_length = 64];
+  repeated string remove_secrets = 5 [(eip_field).max_length = 64];
+}
+
+message EgressUpdateResult {
+  EgressStatus egress = 1;
+}

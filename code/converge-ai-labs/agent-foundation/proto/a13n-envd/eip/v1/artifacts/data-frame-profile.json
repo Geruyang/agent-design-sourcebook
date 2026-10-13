@@ -1,0 +1,74 @@
+{
+  "byte_order": "network",
+  "fields": [
+    {
+      "name": "magic",
+      "offset": 0,
+      "width": 4
+    },
+    {
+      "name": "profile_version",
+      "offset": 4,
+      "width": 1
+    },
+    {
+      "name": "frame_kind",
+      "offset": 5,
+      "width": 1
+    },
+    {
+      "name": "terminal_status",
+      "offset": 6,
+      "width": 2
+    },
+    {
+      "name": "session_byte_length",
+      "offset": 8,
+      "width": 2
+    },
+    {
+      "name": "handle_byte_length",
+      "offset": 10,
+      "width": 2
+    },
+    {
+      "name": "stream_offset",
+      "offset": 12,
+      "width": 8
+    },
+    {
+      "name": "payload_byte_length",
+      "offset": 20,
+      "width": 4
+    }
+  ],
+  "generated": true,
+  "header_bytes": 24,
+  "kinds": {
+    "attach": 1,
+    "attached": 2,
+    "chunk": 3,
+    "credit": 7,
+    "end": 4,
+    "end_ack": 5,
+    "reset": 6
+  },
+  "magic_ascii": "EIPD",
+  "maximum_handle_bytes": 65535,
+  "maximum_payload_bytes": 4294967295,
+  "profile_version": 1,
+  "protocol": {
+    "eip_major": 1,
+    "package": "a13n.agent_envd.eip.v1"
+  },
+  "reset_statuses": {
+    "cancelled": 6,
+    "denied": 2,
+    "expired": 3,
+    "internal": 7,
+    "limit": 5,
+    "protocol": 1,
+    "source": 4
+  },
+  "transfer_window_chunks": 8
+}

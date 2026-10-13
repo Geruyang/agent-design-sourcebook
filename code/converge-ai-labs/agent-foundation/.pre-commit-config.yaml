@@ -1,0 +1,51 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+        exclude: ^proto/a13n-service/openapi\.json$
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff
+        args: [--exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mdformat
+        name: mdformat
+        entry: uv run --locked mdformat
+        language: system
+        types: [markdown]
+        args: [--number]
+
+      - id: service-contract-generate
+        name: Regenerate the Service contract and Console types
+        entry: make service-contract-generate
+        exclude: ^packages/[^/]+/tests/
+        language: system
+        files: ^(packages/|scripts/export-a13n-service-openapi\.py$|proto/a13n-service/|frontend/apps/a13n-console/(generate-service-client\.mjs|package\.json)$|frontend/pnpm-lock\.yaml$|uv\.lock$)
+        pass_filenames: false
+
+      - id: root-rustfmt
+        name: rustfmt (root workspace)
+        entry: cargo fmt --all
+        language: system
+        files: ^crates/.*\.rs$
+        pass_filenames: false
+
+      - id: frontend-prettier
+        name: Prettier (frontend workspace)
+        entry: frontend/node_modules/.bin/prettier --write --ignore-path frontend/.prettierignore
+        language: system
+        files: ^frontend/.*\.(css|html|js|json|jsx|mjs|ts|tsx|yaml|yml)$

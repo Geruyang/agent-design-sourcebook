@@ -1,0 +1,95 @@
+---
+title: "Cline Enterprise"
+sidebarTitle: "Overview"
+description: "Enterprise security, governance, and observability for the coding agent millions of developers trust"
+---
+
+Cline Enterprise brings centralized governance to the same open-source architecture that millions of developers already use. Cline runs in the environment you choose, you use your own inference at your negotiated rates, and you get the security and observability capabilities that platform teams need for org-wide deployment.
+
+<Card title="Learn More About Enterprise" icon="building" href="https://cline.bot/enterprise">
+  Visit our website for detailed information about enterprise features, pricing, and deployment options.
+</Card>
+
+## What You Get
+
+It delivers five core capabilities that platform teams need for production deployment. Each addresses a specific requirement for scaling AI coding across your organization.
+
+### Security by Design
+
+Cline runs in the environment you choose: on developers' computers, or on remote hosts they connect it to. Prompts go to the inference provider you configure.
+
+<CardGroup cols={2}>
+  <Card title="Runs where you choose" icon="computer">
+    The agent and its tools run on the developer's computer or a remote host they choose
+  </Card>
+
+  <Card title="Your inference provider" icon="shield-check">
+    Prompts and code context go to the model provider you configure
+  </Card>
+
+  <Card title="No codebase indexing" icon="database">
+    Cline reads files when a task needs them and doesn't index or embed the contents of your repositories
+  </Card>
+
+  <Card title="Scoped telemetry" icon="chart-simple" href="/enterprise-solutions/monitoring/telemetry">
+    Cline's telemetry doesn't include your code, file contents or prompts, except for requests to the Cline and ClinePass providers
+  </Card>
+</CardGroup>
+
+### Bring Your Own Inference
+
+Use your existing cloud contracts and negotiated rates. Most AI tools force you to buy inference through them with markup. Cline connects directly to your providers.
+
+Connect to any inference provider:
+- AWS Bedrock
+- Google Vertex AI
+- Azure OpenAI
+- Anthropic direct
+- OpenAI direct
+- Cerebras
+- Any OpenAI-compatible endpoint
+
+Switch models instantly as new ones release. Use one model as your daily driver, a stronger one for complex refactoring, and open-source models for simple tasks. Your existing cloud credits and startup program contracts now cover AI coding. We handle the agent loop. You handle the inference. No markup, no vendor lock-in.
+
+### Governance at Scale
+
+Platform teams need central control when thousands of developers use AI. Individual API keys scattered across laptops create security risks and cost overruns.
+
+Enterprise governance provides:
+- **SSO authentication**: Corporate credentials instead of personal API keys
+- **Role-based access control**: Three-tier hierarchy (Member/Admin/Owner) with organization-scoped permissions
+- **Model and tool controls**: Govern which models and tools each team accesses
+- **Remote configuration**: Manage settings for all developers from one dashboard
+- **Usage tracking and observability**: OpenTelemetry integration for monitoring usage, costs, and performance with selective audit logging for administrative operations
+
+Configure once, deploy everywhere. Developers work how they prefer while you maintain control.
+
+### Complete Observability
+
+Export logs to your existing observability stack. Track usage, costs, and performance across all teams.
+
+- **OpenTelemetry export**: Direct integration with Datadog, Grafana, Splunk
+- **Real-time analytics**: Track adoption, performance, and patterns
+- **Cost breakdown**: See exactly what each team spends on which models
+- **JSON output**: Build custom dashboards in your existing tools
+
+The same observability standards you require for production systems.
+
+## Deployment
+
+Cline Enterprise connects securely to your infrastructure. Deploy in cloud environments. Configure to work with your existing security policies and compliance requirements.
+
+Rolling out to your organization:
+1. Configure Cline Core to connect to your infrastructure
+2. Set SSO, RBAC, and governance policies
+3. Deploy to developers via your existing software distribution
+4. Monitor usage through your observability tools
+
+## Next Steps
+
+- Review security architecture
+- Configure [cloud provider setup](/provider-config/aws-bedrock/api-key) (AWS Bedrock, Vertex AI, Azure)
+- Set up [MCP servers](/mcp/mcp-overview) for custom tooling
+- Add [custom instructions](/customization/cline-rules) for your codebase
+
+Schedule a walkthrough to see how Cline Enterprise fits your infrastructure. We'll work with your security and compliance requirements to deploy in your environment.

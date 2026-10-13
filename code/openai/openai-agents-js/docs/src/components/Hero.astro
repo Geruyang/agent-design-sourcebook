@@ -1,0 +1,103 @@
+---
+import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import helloWorldSandboxExample from '../../../examples/docs/toppage/sandboxAgent.ts?raw';
+import helloWorldExample from '../../../examples/docs/toppage/textAgent.ts?raw';
+import helloWorldRealtimeExample from '../../../examples/docs/toppage/voiceAgent.ts?raw';
+const path = Astro.url.pathname;
+const pathPrefix =
+  path !== '/' ? (!path.endsWith('/') ? path + '/' : path) : '';
+const quickstartLinks = {
+  text: `${pathPrefix}guides/quickstart`,
+  sandbox: `${pathPrefix}guides/sandbox-agents`,
+  realtime: `${pathPrefix}guides/voice-agents/quickstart`,
+};
+---
+
+<div class="openai-hero">
+  <div class="openai-hero-container flex gap-4">
+    <div class="openai-quickstart flex-1 flex items-center">
+      <div>
+        <h2 class="title"><slot name="title" /></h2>
+        <p>
+          <slot name="description" />
+        </p>
+        <a
+          href={quickstartLinks.text}
+          class="openai-hero-cta"
+          data-text-href={quickstartLinks.text}
+          data-sandbox-href={quickstartLinks.sandbox}
+          data-realtime-href={quickstartLinks.realtime}
+        >
+          <slot name="cta" />
+        </a>
+      </div>
+    </div>
+    <div class="openai-hero-code flex-1 overflow-x-scroll">
+      <Tabs>
+        <TabItem label="Text Agent">
+          <Code lang="typescript" code={helloWorldExample} />
+        </TabItem>
+        <TabItem label="Sandbox Agent">
+          <Code lang="typescript" code={helloWorldSandboxExample} />
+        </TabItem>
+        <TabItem label="Realtime Agent">
+          <Code
+            lang="typescript"
+            code={helloWorldRealtimeExample}
+            class="flex-1"
+          />
+        </TabItem>
+      </Tabs>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>('.openai-hero').forEach((hero) => {
+    const cta = hero.querySelector<HTMLAnchorElement>('.openai-hero-cta');
+    const tabs = hero.querySelector('starlight-tabs');
+
+    const linkForLabel = (label: string) => {
+      const normalizedLabel = label.trim().toLowerCase();
+      if (normalizedLabel.includes('sandbox')) {
+        return cta?.dataset.sandboxHref;
+      }
+      if (normalizedLabel.includes('realtime')) {
+        return cta?.dataset.realtimeHref;
+      }
+      return cta?.dataset.textHref;
+    };
+
+    const updateCta = (tab?: Element | null) => {
+      if (!cta) {
+        return;
+      }
+      const selectedTab =
+        tab ?? hero.querySelector('[role="tab"][aria-selected="true"]');
+      const nextHref = linkForLabel(selectedTab?.textContent ?? '');
+      if (nextHref) {
+        cta.href = nextHref;
+      }
+    };
+
+    const queueCtaUpdate = () => {
+      window.setTimeout(() => updateCta(), 0);
+    };
+
+    updateCta();
+
+    tabs?.addEventListener('click', (event) => {
+      const tab = (event.target as Element | null)?.closest('[role="tab"]');
+      updateCta(tab);
+    });
+    tabs?.addEventListener('keydown', queueCtaUpdate);
+
+    const tablist = tabs?.querySelector('[role="tablist"]');
+    if (tablist) {
+      new MutationObserver(queueCtaUpdate).observe(tablist, {
+        attributeFilter: ['aria-selected'],
+        subtree: true,
+      });
+    }
+  });
+</script>

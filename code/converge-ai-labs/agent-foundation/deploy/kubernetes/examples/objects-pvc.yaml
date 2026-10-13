@@ -1,0 +1,13 @@
+# Local objects on a multi-node cluster: use an installed ReadWriteMany StorageClass (for example EFS or Filestore)
+# that UID/GID 10001 can write. Apply in the release namespace and set persistence.existingClaim to its name.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: a13n-objects
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: REPLACE_RWX_STORAGE_CLASS
+  resources:
+    requests:
+      # Adjust to the provider's minimum size and expected workload.
+      storage: 1Ti

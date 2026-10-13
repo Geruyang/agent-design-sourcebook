@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "es2017",
+    "module": "esnext",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "strict": true,
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      // Dedupe @ag-ui/client type identity: @copilotkit/runtime pins its own
+      // copy (0.0.57), whose AbstractAgent is nominally different from the
+      // workspace package (private members). Point every import at the
+      // workspace build so agents typecheck against a single declaration.
+      "@ag-ui/client": ["./node_modules/@ag-ui/client/dist/index.d.ts"]
+    },
+    "stripInternal": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,164 @@
+.rail {
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  max-height: 65%;
+  width: 34px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding-block: 6px;
+  overscroll-behavior: contain;
+}
+.tick {
+  flex: 0 0 16px;
+  padding: 0 4px;
+  width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.tick span {
+  width: max(var(--tick-width, 8px), var(--current-width, 8px));
+  height: 2px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: var(--a13n-secondary);
+  opacity: var(--tick-opacity, 0.4);
+  transition:
+    width 100ms ease-out,
+    opacity 100ms ease-out;
+}
+.tick[data-proximity="3"] {
+  --tick-width: 10px;
+  --tick-opacity: 0.5;
+}
+.tick[data-proximity="2"] {
+  --tick-width: 14px;
+  --tick-opacity: 0.6;
+}
+.tick[data-proximity="1"] {
+  --tick-width: 20px;
+  --tick-opacity: 0.75;
+}
+.tick[data-proximity="0"] {
+  --tick-width: 26px;
+  --tick-opacity: 0.9;
+}
+.tick[aria-current] span {
+  --current-width: 18px;
+  opacity: 1;
+  background: var(--a13n-text);
+}
+.tick:focus-visible {
+  outline: 2px solid var(--a13n-text);
+  outline-offset: -2px;
+}
+.preview {
+  width: min(360px, calc(100vw - 64px));
+  padding: 8px;
+  line-height: 1.5;
+  text-align: start;
+  text-wrap: pretty;
+  transition-duration: 80ms;
+}
+.preview small {
+  color: var(--a13n-secondary);
+}
+.preview p {
+  margin: 4px 0 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.output {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--a13n-border);
+}
+.output p {
+  -webkit-line-clamp: 4;
+}
+.emptyOutput {
+  color: var(--a13n-secondary);
+}
+.mobile {
+  display: none;
+}
+.mobileTrigger {
+  color: var(--a13n-secondary);
+  background: var(--a13n-canvas);
+  border-color: var(--a13n-border);
+}
+.mobileTrigger:hover,
+.mobileTrigger[data-popup-open] {
+  color: var(--a13n-text);
+  background: color-mix(in srgb, var(--a13n-text) 6%, var(--a13n-canvas));
+}
+.menu {
+  width: min(340px, calc(100vw - 32px));
+}
+.menu nav {
+  max-height: 50dvh;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+.menu nav button {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  text-align: start;
+  cursor: pointer;
+}
+.menu nav button:hover,
+.menu nav button[aria-current] {
+  background: var(--a13n-hover);
+}
+.menu nav small {
+  color: var(--a13n-secondary);
+}
+.menuPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.menuPreview > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.menuOutput {
+  color: var(--a13n-secondary);
+  font-size: 12px;
+}
+@container conversation-reader (max-width: 600px) {
+  .rail {
+    display: none;
+  }
+  .mobile {
+    display: block;
+    position: absolute;
+    inset: 0 auto auto 0;
+    z-index: 2;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tick span,
+  .preview {
+    transition: none;
+  }
+}

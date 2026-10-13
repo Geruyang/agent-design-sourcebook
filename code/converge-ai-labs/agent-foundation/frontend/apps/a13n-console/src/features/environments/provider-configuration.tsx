@@ -1,0 +1,153 @@
+import { Button, DisclosureSection, SegmentedControl } from "a13n-ui";
+import { Fragment, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  FormSection,
+  jsonObject,
+  SchemaFields,
+  TextAreaField,
+} from "../../shared/forms";
+
+/**
+ * The provider-specific part of a template. Ordinary fields lead;
+ * the JSON escape hatch is one toggle away; mounts and rare settings stay in
+ * disclosures.
+ */
+export function ProviderConfiguration({
+  schema,
+  text,
+  onChange,
+  readOnly = false,
+  error,
+  note,
+  variant = "default",
+}: {
+  schema?: Record<string, unknown>;
+  text: string;
+  onChange: (value: string) => void;
+  readOnly?: boolean;
+  error?: string;
+  /** Provider-specific guidance, read as the group's description. */
+  note?: string;
+  variant?: "default" | "docker";
+}) {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState("fields");
+  const [reset, setReset] = useState(0);
+  let value: Record<string, unknown> | undefined;
+  try {
+    value = jsonObject(text);
+  } catch {
+    // An unfinished JSON draft remains editable without losing its text.
+  }
+  const properties =
+    schema?.properties && typeof schema.properties === "object"
+      ? Object.entries(schema.properties)
+      : [];
+  const primary = schema?.["x-primary-fields"];
+  const mounts: typeof properties = [];
+  const common: typeof properties = [];
+  const advanced: typeof properties = [];
+  for (const property of properties) {
+    const key = property[0];
+    if (variant === "docker" && key === "mounts") mounts.push(property);
+    else if (!Array.isArray(primary) || primary.includes(key))
+      common.push(property);
+    else advanced.push(property);
+  }
+  const change = (next: Record<string, unknown>) =>
+    onChange(JSON.stringify(next, null, 2));
+  const fieldsAvailable = !!schema && !!value;
+  const jsonMode = mode === "json" || !fieldsAvailable;
+  return (
+    <FormSection
+      title={t("Configuration")}
+      description={note}
+      actions={
+        <>
+          <SegmentedControl
+            label={t("Configuration editor")}
+            value={jsonMode ? "json" : "fields"}
+            onValueChange={setMode}
+            options={[
+              {
+                value: "fields",
+                label: t("Fields"),
+                disabled: !fieldsAvailable,
+              },
+              { value: "json", label: "JSON" },
+            ]}
+          />
+          {!readOnly && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                onChange("{}");
+                setReset((value) => value + 1);
+              }}
+            >
+              {t("Reset to defaults")}
+            </Button>
+          )}
+        </>
+      }
+    >
+      {jsonMode || !value ? (
+        <TextAreaField
+          readOnly={readOnly}
+          label={t("Template configuration (JSON)")}
+          value={text}
+          onChange={onChange}
+          error={error}
+          code
+          rows={8}
+        />
+      ) : (
+        <Fragment key={reset}>
+          <fieldset disabled={readOnly}>
+            <SchemaFields
+              schema={{ ...schema, properties: Object.fromEntries(common) }}
+              value={value}
+              onChange={change}
+            />
+          </fieldset>
+          {mounts.length > 0 && (
+            <DisclosureSection title={t("Mounts")}>
+              <fieldset disabled={readOnly}>
+                <SchemaFields
+                  schema={{ ...schema, properties: Object.fromEntries(mounts) }}
+                  value={value}
+                  onChange={change}
+                />
+              </fieldset>
+            </DisclosureSection>
+          )}
+          {advanced.length > 0 && (
+            <DisclosureSection
+              title={t("Advanced environment configuration")}
+              {...(error ? { open: true } : {})}
+            >
+              <fieldset disabled={readOnly}>
+                <SchemaFields
+                  schema={{
+                    ...schema,
+                    properties: Object.fromEntries(advanced),
+                  }}
+                  value={value}
+                  onChange={change}
+                />
+              </fieldset>
+            </DisclosureSection>
+          )}
+          {error && (
+            <p role="alert" className="text-destructive-foreground text-xs">
+              {error}
+            </p>
+          )}
+        </Fragment>
+      )}
+    </FormSection>
+  );
+}

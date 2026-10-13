@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A practical guide to writing, auditing, and operating long-horizon agent task briefs." />
+  <meta name="theme-color" content="#f5f3ee" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <link rel="canonical" href="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/guide.html" />
+  <meta property="og:title" content="Guide — Long-Horizon Prompting" />
+  <meta property="og:site_name" content="Long-Horizon Prompting" />
+  <meta property="og:description" content="Write a pseudo-formal task brief for autonomous work." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/guide.html" />
+  <meta property="og:image" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/social-card.png" />
+  <meta property="og:image:alt" content="Long-Horizon Prompting guide" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <title>Guide — Long-Horizon Prompting</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="site-brand" href="index.html">Long-Horizon Prompting</a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="index.html">Overview</a>
+      <a href="guide.html" aria-current="page">Guide</a>
+      <a href="lab.html">Prompt Lab</a>
+      <a href="references.html">References</a>
+    </nav>
+    <a class="site-github" href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+       target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <main id="main" class="article-shell">
+    <header class="article-hero">
+      <p class="section-eyebrow">Practical guide</p>
+      <h1>Write a long-horizon task brief.</h1>
+      <p>
+        Start with the acceptance condition, predict the near misses, and build the
+        verification policy before committing expensive agent time.
+      </p>
+    </header>
+
+    <div class="article-layout">
+      <nav class="toc" aria-label="On this page">
+        <strong>On this page</strong>
+        <a href="#activate">When to use it</a>
+        <a href="#predicate">Success predicate</a>
+        <a href="#non-solutions">Non-solutions</a>
+        <a href="#verification">Verification</a>
+        <a href="#parallel">Parallel search</a>
+        <a href="#boundaries">Prompt vs harness</a>
+        <a href="#workflow">Writing workflow</a>
+        <a href="#template">Copyable template</a>
+        <a href="#checklist">Pre-launch checklist</a>
+        <a href="#gotchas">Gotchas</a>
+      </nav>
+
+      <article class="article-body">
+        <section id="activate">
+          <h2>When to use this method</h2>
+          <p>Use a long-horizon brief when an agent will work unattended for an extended period, coordinate parallel workers, or search through a problem where a plausible partial answer is easy to mistake for completion.</p>
+          <p>Do not use it to solve topology, runtime, or evaluator design. Those belong to multi-agent architecture, harness engineering, and evaluation. The brief owns the words that steer the run.</p>
+        </section>
+
+        <section id="predicate">
+          <h2>1. Write the success predicate first</h2>
+          <p>State one condition over the returned artifact that an adversarial reader can evaluate. Include scope, quantifiers, units, populations, and boundary cases.</p>
+          <div class="example-pair">
+            <div><span>Weak</span><p>Improve the model and report what worked.</p></div>
+            <div><span>Specified</span><p>Produce one precommitted candidate whose paired five-seed confidence interval is strictly above the frozen baseline, with the evaluator unchanged and an independent leakage audit passed.</p></div>
+          </div>
+          <p>If the predicate cannot be stated without words such as “good,” “thorough,” or “convincing,” the task needs a scoping run before it needs a long autonomous run.</p>
+        </section>
+
+        <section id="non-solutions">
+          <h2>2. Name the results that do not count</h2>
+          <p>The highest-leverage question is: what would a capable agent return under pressure instead of the requested result?</p>
+          <ul>
+            <li>A special case when the task requires the general case.</li>
+            <li>A reduction to an assumption as hard as the original goal.</li>
+            <li>A lucky benchmark run without repeated evaluation.</li>
+            <li>A hypothesis, survey, plan, or status report instead of an artifact.</li>
+            <li>A candidate counterexample without a complete certificate.</li>
+            <li>An approximate result where exact satisfaction was requested.</li>
+          </ul>
+          <p>Write the domain-specific refusal list, not a generic “partial progress does not count.” Every unnamed near miss remains an escape hatch.</p>
+        </section>
+
+        <section id="verification">
+          <h2>3. Pair persistence with verification</h2>
+          <p>Persistence pressure against a loose acceptance condition increases the reward-hacking surface. Every instruction to continue must be paired with a gate that checks the resulting artifact.</p>
+          <ul>
+            <li>Use fresh-context reviewers who did not build the candidate.</li>
+            <li>Give reviewers concrete attack categories, not “check the work.”</li>
+            <li>Require modular outputs with local premises and conclusions.</li>
+            <li>Trace every completion claim to a file, run, log span, diff, or proof step.</li>
+            <li>Treat inter-agent agreement as weak evidence when workers share priors.</li>
+          </ul>
+        </section>
+
+        <section id="parallel">
+          <h2>4. Preserve diversity in parallel search</h2>
+          <p>Role labels do not create independent reasoning. Workers converge unless the orchestration policy preserves different mechanisms.</p>
+          <ol>
+            <li>Keep early workers blind to the favored route.</li>
+            <li>Maintain an approach registry grouped by underlying idea, not wording.</li>
+            <li>Mark a route blocked when its remaining gap is as hard as the target.</li>
+            <li>Reopen blocked routes only for a materially new mechanism.</li>
+            <li>Cross-pollinate after independent routes expose their real premises and gaps.</li>
+          </ol>
+          <p>Every worker assignment needs an objective, output format, tool/source guidance, and explicit boundaries.</p>
+        </section>
+
+        <section id="boundaries">
+          <h2>5. Move hard constraints into the harness</h2>
+          <div class="boundary-table">
+            <div><strong>Prompt owns</strong><span>Definitions, scope, non-solutions, evidence contract, orchestration policy, return rule.</span></div>
+            <div><strong>Harness owns</strong><span>Budgets, permissions, network allowlists, evaluator immutability, state reinjection, sandboxing, rollback.</span></div>
+            <div><strong>Evaluator owns</strong><span>Held-out checks, deterministic gates, fresh review, acceptance evidence.</span></div>
+            <div><strong>Human owns</strong><span>Changing the evaluator, expanding editable surfaces, production promotion, destructive actions.</span></div>
+          </div>
+          <p>Prompt-stated constraints are advisory under optimization pressure. If a rule must survive, enforce it outside every surface the agent can change.</p>
+        </section>
+
+        <section id="workflow">
+          <h2>6. The writing workflow</h2>
+          <ol class="workflow-list">
+            <li><strong>Predicate</strong><span>Write one exact completion condition.</span></li>
+            <li><strong>Refusal list</strong><span>Enumerate the likely answer-shaped near misses.</span></li>
+            <li><strong>Definitions</strong><span>Close ambiguities and degenerate cases.</span></li>
+            <li><strong>Audit</strong><span>List how a candidate can look correct while being wrong.</span></li>
+            <li><strong>Search policy</strong><span>Preserve independent routes and blocked-route state.</span></li>
+            <li><strong>Evidence</strong><span>Specify concrete artifacts and claim traceability.</span></li>
+            <li><strong>Return rule</strong><span>Gate return on the artifact, with fallback only on external budget exhaustion.</span></li>
+            <li><strong>Red-team</strong><span>Ask how the letter can be satisfied without the intent; patch every credible answer.</span></li>
+          </ol>
+        </section>
+
+        <section id="template">
+          <div class="copy-heading">
+            <div>
+              <h2>Copyable task-brief skeleton</h2>
+              <p>Delete blocks that do not apply. Replace every bracketed field before launch.</p>
+            </div>
+            <button class="copy-button copy-button-large" type="button" data-copy-target="brief-template" aria-describedby="template-status">Copy template</button>
+          </div>
+          <span class="copy-status" id="template-status" aria-live="polite"></span>
+          <pre class="template-block" id="brief-template">DEFINITIONS
+
+[Define every load-bearing term, unit, scope boundary, and degenerate case.]
+
+TASK
+
+[State one exact success predicate over the returned artifact.]
+
+SOLVABILITY
+
+[If a complete solution plausibly exists, state that assumption. If existence is
+uncertain, allow either a complete solution or a complete impossibility certificate.]
+
+RESULTS THAT DO NOT COUNT
+
+- [Narrowed scope or special case]
+- [Reduction to an unvalidated assumption]
+- [Bounded or anecdotal verification]
+- [Plan, survey, or status report instead of the artifact]
+- [Domain-specific near misses]
+
+ORCHESTRATION (only for parallel runs)
+
+Preserve early independence. Maintain an approach registry grouped by mechanism.
+Mark goal-strength gaps blocked; reopen only for a materially new mechanism.
+Cross-pollinate after surviving routes have exposed their premises and exact gaps.
+
+VERIFICATION
+
+Use fresh-context reviewers. Check every candidate for:
+- [Domain-specific confounder]
+- [Boundary or degenerate case]
+- [Circularity or equivalent-assumption failure]
+- [Leakage, metric gaming, or too-good-to-be-true signature]
+
+REPORTING CONTRACT
+
+Require [concrete artifacts]. Every completion claim must trace to session evidence.
+
+RETURN CONDITION
+
+Return only when the artifact satisfies TASK and survives VERIFICATION.
+If the external budget ends first, label the result INCOMPLETE and state the exact gap.
+
+EFFORT
+
+[State the evidence or materially distinct approaches required before declaring the
+search blocked. The runtime, not this prompt, enforces the actual time/cost budget.]
+
+CONTAMINATION
+
+[Define which external sources are permitted and what target answers, labels, hidden
+tests, or benchmark solutions must not be retrieved.]
+
+HARNESS BOUNDARIES
+
+The runtime, not this prompt, enforces [budgets, permissions, evaluator locks, sandbox].</pre>
+        </section>
+
+        <section id="checklist">
+          <h2>Pre-launch checklist</h2>
+          <ol class="checklist">
+            <li><strong>Success predicate</strong><span>Can an adversarial reader decide unambiguously whether an artifact passes?</span></li>
+            <li><strong>Definitions</strong><span>Are load-bearing terms and boundary cases settled?</span></li>
+            <li><strong>Non-counting outcomes</strong><span>Are the likely near misses excluded by name?</span></li>
+            <li><strong>Auditor checklist</strong><span>Does it contain domain-specific failure modes and circularity?</span></li>
+            <li><strong>Persistence pairing</strong><span>Does every continue instruction have a verification gate?</span></li>
+            <li><strong>Return condition</strong><span>Is return a predicate over the artifact rather than confidence?</span></li>
+            <li><strong>Diversity policy</strong><span>For parallel runs: independence, registry, blocked routes, late exchange?</span></li>
+            <li><strong>Evidence contract</strong><span>Are concrete artifacts required and claims traceable?</span></li>
+            <li><strong>Contamination</strong><span>Is the allowed retrieval scope explicit?</span></li>
+            <li><strong>Harness separation</strong><span>Are hard budgets and permissions enforced outside the prompt?</span></li>
+          </ol>
+          <p class="callout">This is a structural self-assessment, not an outcome predictor. Passing it does not prove that the agent can solve the task.</p>
+        </section>
+
+        <section id="gotchas">
+          <h2>Common gotchas</h2>
+          <dl class="gotcha-list">
+            <div><dt>Persistence without verification</dt><dd>The agent optimizes the leniency in the acceptance condition.</dd></div>
+            <div><dt>Unanimity as corroboration</dt><dd>Shared priors can make agreement a diversity-collapse signal.</dd></div>
+            <div><dt>Fallback at agent discretion</dt><dd>“Return the best partial result” becomes the main escape hatch. Scope it to an external stop only.</dd></div>
+            <div><dt>Assume-solvable on an ill-posed task</dt><dd>The agent is discouraged from reaching the truthful conclusion that the premise is wrong.</dd></div>
+            <div><dt>Prompt-stated budgets</dt><dd>One-time reminders decay across a long trajectory; enforce and reinject budget state from the harness.</dd></div>
+            <div><dt>Over-prescription</dt><dd>Current models often perform worse under accumulated step-by-step instruction stacks. Specify outcomes and gates; leave the path open.</dd></div>
+          </dl>
+        </section>
+
+        <nav class="article-next" aria-label="Next">
+          <a href="lab.html"><span>Next</span><strong>Apply the method in the Prompt Lab →</strong></a>
+          <a href="references.html"><span>Evidence</span><strong>Read the research and caveats →</strong></a>
+        </nav>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer page-shell">
+    <p>
+      By
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Muratcan Koylan</a>.
+      Project site for the long-horizon-prompting skill.
+    </p>
+    <div>
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Website ↗</a>
+      <a href="https://x.com/muratcan" target="_blank" rel="noreferrer">X ↗</a>
+      <a href="index.html">Overview</a>
+      <a href="references.html">References</a>
+    </div>
+  </footer>
+  <script src="site.js"></script>
+</body>
+</html>

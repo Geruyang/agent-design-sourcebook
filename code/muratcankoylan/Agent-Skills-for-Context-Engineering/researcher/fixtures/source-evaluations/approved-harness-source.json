@@ -1,0 +1,77 @@
+{
+  "evaluation_id": "fixture-approved-harness-source",
+  "timestamp": "2026-05-14T00:00:00+00:00",
+  "source": {
+    "url": "https://github.com/karpathy/autoresearch/blob/master/program.md",
+    "title": "Karpathy autoresearch program",
+    "author_or_org": "Andrej Karpathy",
+    "published_at": "2026-03",
+    "source_type": "code",
+    "retrieval_status": "retrieved",
+    "primary_or_secondary": "primary"
+  },
+  "gatekeeper": {
+    "G1_mechanism_specificity": {
+      "pass": true,
+      "evidence": "Defines a concrete autonomous experiment loop with editable and locked files."
+    },
+    "G2_implementable_artifacts": {
+      "pass": true,
+      "evidence": "Provides program.md instructions, command loop, result logging, and rollback policy."
+    },
+    "G3_beyond_basics": {
+      "pass": true,
+      "evidence": "Covers long-running autonomous experimentation, metric integrity, and failure handling."
+    },
+    "G4_source_verifiability": {
+      "pass": true,
+      "evidence": "Public repository from a verifiable researcher."
+    },
+    "verdict": "PASS",
+    "rejection_reason": null
+  },
+  "scoring": {
+    "D1_technical_depth_actionability": {
+      "reasoning": "The loop can be directly implemented with git, a training command, and result parsing.",
+      "score": 2
+    },
+    "D2_repo_relevance": {
+      "reasoning": "Directly informs harness engineering for autonomous research loops.",
+      "score": 2
+    },
+    "D3_evidence_rigor": {
+      "reasoning": "The source provides runnable code and a locked metric, but not broad comparative evidence.",
+      "score": 1
+    },
+    "D4_novelty_insight": {
+      "reasoning": "The constrained editable-surface framing is a useful operating model for this repo.",
+      "score": 2
+    },
+    "weighted_total": 1.8,
+    "calculation_shown": "(2*0.35) + (2*0.30) + (1*0.20) + (2*0.15) = 1.8"
+  },
+  "decision": {
+    "verdict": "HUMAN_REVIEW",
+    "override_triggered": "O3",
+    "confidence": "high",
+    "justification": "High-value source with concrete harness mechanics. Human review is required because evidence rigor is a 1."
+  },
+  "extraction": {
+    "mechanism": "Constrain autonomy with locked evaluation, narrow editable surfaces, durable result logs, and rollback.",
+    "implementable_artifacts": [
+      "program.md loop",
+      "results.tsv",
+      "git rollback policy"
+    ],
+    "failure_modes": [
+      "metric gaming",
+      "unbounded loop without logging",
+      "ambiguous keep/discard decision"
+    ],
+    "candidate_skill_target": "existing skill",
+    "candidate_skill_name": "harness-engineering",
+    "taxonomy_category": "harness_engineering",
+    "estimated_complexity": "medium"
+  },
+  "human_review_notes": "Use as a fixture for sources that pass gates but still require human review through O3."
+}

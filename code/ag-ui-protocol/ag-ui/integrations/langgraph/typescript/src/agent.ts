@@ -1,0 +1,2633 @@
+import { recoverA2UIHistory, preserveCompletedA2UIResults } from "./a2ui-history";
+import { Observable, Subscriber } from "rxjs";
+import {
+  Client as LangGraphClient,
+  EventsStreamEvent,
+  StreamMode,
+  Config as LangGraphConfig,
+  ThreadState,
+  Assistant,
+  Message as LangGraphMessage,
+  Config,
+  Interrupt as LangGraphInterrupt,
+  Thread,
+} from "@langchain/langgraph-sdk";
+import { randomUUID } from "@ag-ui/client";
+import {
+  LangGraphPlatformMessage,
+  CustomEventNames,
+  LangGraphEventTypes,
+  State,
+  MessagesInProgressRecord,
+  ReasoningInProgress,
+  SchemaKeys,
+  MessageInProgress,
+  RunMetadata,
+  PredictStateTool,
+  LangGraphReasoning,
+  StateEnrichment,
+  LangGraphToolWithName,
+} from "./types";
+import {
+  AbstractAgent,
+  AgentCapabilities,
+  AgentConfig,
+  AgentSubscriber,
+  CustomEvent,
+  EventType,
+  Interrupt as AGUIInterrupt,
+  MessagesSnapshotEvent,
+  RawEvent,
+  ResumeEntry,
+  RunAgentInput,
+  RunErrorEvent,
+  RunFinishedEvent,
+  TokenUsage,
+  aggregateTokenUsage,
+  tokenUsageFromLangChainMetadata,
+  RunFinishedInterruptOutcome,
+  RunStartedEvent,
+  StateDeltaEvent,
+  StateSnapshotEvent,
+  StepFinishedEvent,
+  StepStartedEvent,
+  TextMessageContentEvent,
+  TextMessageEndEvent,
+  TextMessageStartEvent,
+  ToolCallArgsEvent,
+  ToolCallEndEvent,
+  ToolCallStartEvent,
+  ToolCallResultEvent,
+  ReasoningStartEvent,
+  ReasoningMessageStartEvent,
+  ReasoningMessageContentEvent,
+  ReasoningMessageEndEvent,
+  ReasoningEndEvent,
+  ReasoningEncryptedValueEvent,
+  PROTOCOL_VERSION,
+} from "@ag-ui/client";
+import {
+  langGraphInterruptsToAGUI,
+  buildLgCommandResumeFromAgui,
+  reconcileLegacyResumeInterrupts,
+} from "./interrupts";
+import type {
+  Durability,
+  RunsStreamPayload,
+} from "@langchain/langgraph-sdk/dist/types";
+import {
+  aguiMessagesToLangChain,
+  DEFAULT_SCHEMA_KEYS,
+  filterObjectBySchemaKeys,
+  getStreamPayloadInput,
+  langchainMessagesToAgui,
+  resolveMessageContent,
+  resolveReasoningContent,
+  resolveEncryptedReasoningContent,
+} from "@/utils";
+import { ToolMessage } from "@langchain/core/messages";
+
+type ToolMessageFieldsWithToolCallId = {
+  type?: string;
+  tool_call_id: string;
+  name?: string;
+  content: unknown;
+  id?: string;
+};
+
+export type ProcessedEvents =
+  | TextMessageStartEvent
+  | TextMessageContentEvent
+  | TextMessageEndEvent
+  | ReasoningStartEvent
+  | ReasoningMessageStartEvent
+  | ReasoningMessageContentEvent
+  | ReasoningMessageEndEvent
+  | ReasoningEndEvent
+  | ReasoningEncryptedValueEvent
+  | ToolCallStartEvent
+  | ToolCallArgsEvent
+  | ToolCallEndEvent
+  | ToolCallResultEvent
+  | StateSnapshotEvent
+  | StateDeltaEvent
+  | MessagesSnapshotEvent
+  | RawEvent
+  | CustomEvent
+  | RunStartedEvent
+  | RunFinishedEvent
+  | RunErrorEvent
+  | StepStartedEvent
+  | StepFinishedEvent;
+
+type RunAgentExtendedInput<
+  TStreamMode extends StreamMode | StreamMode[] = StreamMode,
+  TSubgraphs extends boolean = false,
+> = Omit<RunAgentInput, "forwardedProps"> & {
+  forwardedProps?: Omit<RunsStreamPayload<TStreamMode, TSubgraphs>, "input"> & {
+    nodeName?: string;
+    threadMetadata?: Record<string, any>;
+    // A2UI tool-injection flag set by the A2UI middleware. Surfaced into
+    // ag-ui state so graphs/tools can read it directly.
+    injectA2UITool?: boolean | string;
+  };
+};
+
+interface RegenerateInput extends RunAgentExtendedInput {
+  messageCheckpoint: LangGraphMessage;
+}
+
+export interface LangGraphAgentConfig extends AgentConfig {
+  /**
+   * Optional pre-constructed LangGraphClient. When provided, the agent uses
+   * this client directly and does NOT install its own `onRequest` hook.
+   *
+   * WARNING: Custom-client users do NOT get per-request header forwarding via
+   * `headers` / `headerFactory`. The runtime's `agent.headers` writes will be
+   * inert — the custom client is responsible for any header injection.
+   * If you need per-request header forwarding, omit this field and let the
+   * adapter construct its own client.
+   */
+  client?: LangGraphClient;
+  deploymentUrl: string;
+  langsmithApiKey?: string;
+  propertyHeaders?: Record<string, string>;
+  assistantConfig?: LangGraphConfig;
+  agentName?: string;
+  graphId: string;
+  /**
+   * Optional factory that returns per-request headers.
+   * Called on every HTTP request to langgraph-api.
+   * Use this for dynamic headers that change between requests (e.g., trace IDs).
+   * For static headers, use propertyHeaders instead.
+   *
+   * WARNING: Custom factories must not capture mutable agent state across clones.
+   * Each clone gets its own `onRequest` closure; the factory should read from the
+   * specific agent instance (e.g., `() => myAgent.headers`), not from a shared
+   * variable that could be mutated by a different clone or request.
+   */
+  headerFactory?: () => Record<string, string>;
+  /** Emit legacy CUSTOM(name="on_interrupt") events alongside the terminating
+   *  RUN_FINISHED. Default true during the migration window. (The RUN_FINISHED
+   *  carries outcome={type:"interrupt"} only when `emitInterruptOutcome` is
+   *  enabled — or when this flag is false, which forces the outcome on to avoid
+   *  surfacing the interrupt via neither channel.) */
+  enableLegacyOnInterruptEvent?: boolean;
+  /**
+   * Terminate interrupted runs with the AG-UI structured outcome
+   * `RUN_FINISHED.outcome={type:"interrupt", interrupts:[...]}`.
+   *
+   * Default **false**. Opt-in: released clients that drive interrupts through
+   * the legacy `forwardedProps.command.resume` channel (e.g. CopilotKit's
+   * `useLangGraphInterrupt`, as of v1.60.x) stop sending any resume directive
+   * once they observe the structured outcome, which silently strands the run.
+   * Until those clients adopt `RunAgentInput.resume[]`, emitting the outcome by
+   * default would break them — so it must be explicitly enabled by clients that
+   * understand the canonical resume protocol. When false, interrupted runs end
+   * with a plain `RUN_FINISHED` (plus the legacy on_interrupt event), exactly as
+   * before structured interrupts existed.
+   */
+  emitInterruptOutcome?: boolean;
+  /**
+   * Emit the underlying LangGraph events on the AG-UI event stream.
+   *
+   * When disabled, RAW events are suppressed and `rawEvent` is removed from
+   * typed AG-UI events. AG-UI event metadata is preserved. Defaults to true.
+   */
+  emitRawEvents?: boolean;
+}
+
+const ROOT_SUBGRAPH_NAME = "root";
+const ASYNC_BOUNDARY_CHECKPOINT_ATTEMPTS = 3;
+const ASYNC_BOUNDARY_CHECKPOINT_RETRY_DELAY_MS = 25;
+
+export class LangGraphAgent extends AbstractAgent {
+  client: LangGraphClient;
+  assistantConfig?: LangGraphConfig;
+  agentName?: string;
+  graphId: string;
+  /** Per-request headers set by the runtime (e.g., CopilotKit).
+   *  Read by the default headerFactory on every outgoing request. */
+  public headers: Record<string, string> = {};
+  assistant?: Assistant;
+  messagesInProcess: MessagesInProgressRecord;
+  emittedToolCallStartIds: Set<string> = new Set();
+  // The assistant message that made each tool call, recorded at OnChatModelEnd
+  // and keyed tool_call_id -> message id. OnToolEnd names it as the parent when
+  // it announces a call that never streamed. Reset per run, like the Set above.
+  toolCallOwners: Map<string, string> = new Map();
+  reasoningProcess: null | ReasoningInProgress;
+  // Canonical reasoning id (e.g. OpenAI `rs_…`) stashed from a text-less id
+  // carrier chunk, consumed when the first text delta opens the reasoning
+  // message. See handleReasoningEvent.
+  private pendingReasoningId?: string;
+  activeRun?: RunMetadata;
+  // Subgraph node names discovered dynamically from langgraph_checkpoint_ns
+  private subgraphs: Set<string> = new Set();
+  private currentSubgraph: string = ROOT_SUBGRAPH_NAME;
+  // Stop control flags
+  private cancelRequested: boolean = false;
+  private cancelSent: boolean = false;
+  // A stop that arrived after the run began but before runAgentStream opened
+  // the LangGraph stream. runAgentStream clears the per-run flags on entry, so
+  // without this the stop would be thrown away and the run would complete.
+  private abortBeforeStreamOpen: boolean = false;
+  // Guards against double-streaming in the messages-tuple fallback path.
+  // Set to true when events-mode (on_chat_model_stream) begins; thereafter
+  // handleMessagesTupleEvent is skipped. Appears unused because it is only
+  // read inside the fallback branch — removing it would cause duplicate messages
+  // on LangGraph Platform deployments that emit both stream modes simultaneously.
+  private eventsStreamActive: boolean = false;
+  // @ts-expect-error no need to initialize subscriber right now
+  subscriber: Subscriber<ProcessedEvents>;
+  constantSchemaKeys: string[] = DEFAULT_SCHEMA_KEYS;
+  config: LangGraphAgentConfig;
+  enableLegacyOnInterruptEvent: boolean;
+  emitInterruptOutcome: boolean;
+  emitRawEvents: boolean;
+
+  constructor(config: LangGraphAgentConfig) {
+    super(config);
+    this.config = config;
+    this.enableLegacyOnInterruptEvent =
+      config.enableLegacyOnInterruptEvent ?? true;
+    this.emitInterruptOutcome = config.emitInterruptOutcome ?? false;
+    this.emitRawEvents = config.emitRawEvents ?? true;
+    this.messagesInProcess = {};
+    this.agentName = config.agentName;
+    this.graphId = config.graphId;
+    this.assistantConfig = config.assistantConfig;
+    this.reasoningProcess = null;
+
+    // Default factory reads this.headers (set per-clone by CopilotKit Runtime)
+    const agent = this;
+    const headerFactory = config.headerFactory ?? (() => agent.headers);
+
+    if (config?.client && config.headerFactory) {
+      console.debug(
+        "[@ag-ui/langgraph] Both `config.client` and `config.headerFactory` were set. " +
+          "Custom clients bypass the adapter's onRequest hook — `headerFactory` will not " +
+          "be invoked. Either omit `client` to enable adapter-managed header forwarding, " +
+          "or wire headers into your custom client directly.",
+      );
+    }
+
+    this.client =
+      config?.client ??
+      new LangGraphClient({
+        apiUrl: config.deploymentUrl,
+        apiKey: config.langsmithApiKey,
+        defaultHeaders: { ...(config.propertyHeaders ?? {}) },
+        onRequest: (url: URL, init: RequestInit): RequestInit => {
+          const dynamicHeaders = headerFactory();
+          if (!dynamicHeaders || Object.keys(dynamicHeaders).length === 0) {
+            return init;
+          }
+          return {
+            ...init,
+            headers: {
+              ...(init.headers as Record<string, string>),
+              ...dynamicHeaders,
+            },
+          };
+        },
+      });
+  }
+
+  public clone() {
+    const cloned = Object.assign(super.clone(), {
+      config: this.config,
+      messagesInProcess: structuredClone(this.messagesInProcess),
+      agentName: this.agentName,
+      graphId: this.graphId,
+      assistantConfig: this.assistantConfig,
+      reasoningProcess: this.reasoningProcess
+        ? structuredClone(this.reasoningProcess)
+        : null,
+      constantSchemaKeys: [...this.constantSchemaKeys],
+      headers: { ...this.headers },
+      client: this.client,
+      enableLegacyOnInterruptEvent: this.enableLegacyOnInterruptEvent,
+      emitInterruptOutcome: this.emitInterruptOutcome,
+      emitRawEvents: this.emitRawEvents,
+
+      assistant: this.assistant,
+      activeRun: this.activeRun ? structuredClone(this.activeRun) : undefined,
+      cancelRequested: this.cancelRequested,
+      cancelSent: this.cancelSent,
+      // Deliberately not copied. A pending pre-stream stop belongs to the run
+      // the original agent is in the middle of. runAgentStream turns it into
+      // cancelRequested on entry, so carrying it over would make the clone's
+      // first run cancel itself even though nobody stopped that run.
+      abortBeforeStreamOpen: false,
+      subgraphs: this.subgraphs ? new Set(this.subgraphs) : new Set(),
+      currentSubgraph: ROOT_SUBGRAPH_NAME,
+    });
+
+    // Rebuild client so onRequest captures the cloned agent's headers
+    if (!this.config.client) {
+      const headerFactory = this.config.headerFactory ?? (() => cloned.headers);
+      cloned.client = new LangGraphClient({
+        apiUrl: this.config.deploymentUrl,
+        apiKey: this.config.langsmithApiKey,
+        defaultHeaders: { ...(this.config.propertyHeaders ?? {}) },
+        onRequest: (url: URL, init: RequestInit): RequestInit => {
+          const dynamicHeaders = headerFactory();
+          if (!dynamicHeaders || Object.keys(dynamicHeaders).length === 0) {
+            return init;
+          }
+          return {
+            ...init,
+            headers: {
+              ...(init.headers as Record<string, string>),
+              ...dynamicHeaders,
+            },
+          };
+        },
+      });
+    }
+
+    return cloned;
+  }
+
+  dispatchEvent(event: ProcessedEvents) {
+    if (!this.emitRawEvents) {
+      if (event.type === EventType.RAW) {
+        return false;
+      }
+
+      const eventWithoutRawEvent = { ...event };
+      delete eventWithoutRawEvent.rawEvent;
+      this.subscriber.next(eventWithoutRawEvent);
+      return true;
+    }
+
+    this.subscriber.next(event);
+    return true;
+  }
+
+  private dispatchInterruptFinish(args: {
+    threadId: string;
+    runId: string;
+    lgInterrupts: LangGraphInterrupt[];
+  }) {
+    const { threadId, runId, lgInterrupts } = args;
+    const aguiInterrupts: AGUIInterrupt[] = this.interruptsToAGUI(lgInterrupts);
+
+    if (this.enableLegacyOnInterruptEvent) {
+      for (const lg of lgInterrupts) {
+        this.dispatchEvent({
+          type: EventType.CUSTOM,
+          name: LangGraphEventTypes.OnInterrupt,
+          value:
+            typeof lg.value === "string" ? lg.value : JSON.stringify(lg.value),
+          rawEvent: lg,
+        });
+      }
+    }
+
+    // Emit the structured outcome when opted in, OR whenever the legacy
+    // on_interrupt event is disabled — otherwise the interrupt would be
+    // surfaced by neither channel and silently swallowed. By default
+    // (legacy on, emitInterruptOutcome off) this is a plain RUN_FINISHED:
+    // released clients that resume via forwardedProps.command.resume stop
+    // sending a resume directive when they see the structured outcome, so it
+    // stays opt-in until they adopt RunAgentInput.resume[]. See
+    // LangGraphAgentConfig.emitInterruptOutcome.
+    const includeOutcome =
+      this.emitInterruptOutcome || !this.enableLegacyOnInterruptEvent;
+    const usage = this.collectRunUsage();
+    this.dispatchEvent({
+      type: EventType.RUN_FINISHED,
+      threadId,
+      runId,
+      ...(includeOutcome
+        ? {
+            outcome: {
+              type: "interrupt",
+              interrupts: aguiInterrupts,
+            } satisfies RunFinishedInterruptOutcome,
+          }
+        : {}),
+      ...(usage ? { usage } : {}),
+    });
+  }
+
+  /**
+   * Aggregate accumulated per-call usage for the terminal event. Returns
+   * `undefined` (omitted field) when no provider usage was reported, so
+   * consumers can treat missing usage as "not measured" rather than zero.
+   */
+  protected collectRunUsage(): TokenUsage[] | undefined {
+    const aggregated = aggregateTokenUsage(this.activeRun?.usage ?? []);
+    return aggregated.length > 0 ? aggregated : undefined;
+  }
+
+  protected async onInitialize(
+    input: RunAgentInput,
+    subscribers: AgentSubscriber[],
+  ) {
+    // Back-compat: when emitInterruptOutcome is enabled, an interrupted run sets
+    // AbstractAgent.pendingInterrupts. A client still resuming via the legacy
+    // forwardedProps.command.resume channel never populates RunAgentInput.resume[],
+    // so the base lifecycle would reject the resume run. Drop the tracked
+    // interrupts for that case — runAgentStream resolves the legacy resume itself.
+    reconcileLegacyResumeInterrupts(this, input);
+    return super.onInitialize(input, subscribers);
+  }
+
+  run(input: RunAgentInput) {
+    return new Observable<ProcessedEvents>((subscriber) => {
+      let started = false;
+      let terminal = false;
+      const start = () => {
+        if (!started) {
+          started = true;
+          subscriber.next({
+            type: EventType.RUN_STARTED,
+            threadId: input.threadId,
+            runId: input.runId,
+            protocolVersion: PROTOCOL_VERSION,
+          });
+        }
+      };
+      // Keep transport/provider errors in the public event stream. A separate
+      // subscriber preserves RxJS teardown and leaves consumer errors to RxJS.
+      const boundary = new Subscriber<ProcessedEvents>({
+        next: (event: ProcessedEvents) => {
+          if (subscriber.closed || terminal) return;
+          if (event.type === EventType.RUN_ERROR) start();
+          started ||= event.type === EventType.RUN_STARTED;
+          terminal =
+            event.type === EventType.RUN_ERROR ||
+            event.type === EventType.RUN_FINISHED;
+          subscriber.next(event);
+        },
+        error: (err: unknown) => {
+          if (subscriber.closed) return;
+          if (!terminal) {
+            console.error(`[LangGraph] runAgentStream error:`, err);
+            start();
+            subscriber.next({
+              type: EventType.RUN_ERROR,
+              message:
+                err instanceof Error ? err.message || err.name : String(err),
+            });
+          }
+          subscriber.complete();
+        },
+        complete: () => subscriber.complete(),
+      });
+      subscriber.add(boundary);
+      this.runAgentStream(input, boundary).catch((err) => boundary.error(err));
+      return () => boundary.unsubscribe();
+    });
+  }
+
+  async runAgentStream(
+    input: RunAgentExtendedInput,
+    subscriber: Subscriber<ProcessedEvents>,
+  ) {
+    this.activeRun = {
+      id: input.runId,
+      threadId: input.threadId,
+      hasFunctionStreaming: false,
+      modelMadeToolCall: false,
+      usage: [],
+    };
+    this.pendingReasoningId = undefined;
+    // Reset per-run flags. A stop that landed between runAgent() and this
+    // point belongs to this run, so it survives the reset.
+    this.cancelRequested = this.abortBeforeStreamOpen;
+    this.abortBeforeStreamOpen = false;
+    this.cancelSent = false;
+    this.eventsStreamActive = false;
+    this.subscriber = subscriber;
+    if (!this.assistant) {
+      this.assistant = await this.getAssistant();
+    }
+    const threadId = input.threadId ?? randomUUID();
+    const streamMode =
+      input.forwardedProps?.streamMode ??
+      ([
+        "events",
+        "values",
+        "updates",
+        "messages-tuple",
+      ] satisfies StreamMode[]);
+    const preparedStream = await this.prepareStream(
+      { ...input, threadId },
+      streamMode,
+    );
+
+    if (!preparedStream) {
+      return subscriber.error("No stream to regenerate");
+    }
+
+    await this.handleStreamEvents(
+      preparedStream,
+      threadId,
+      subscriber,
+      input,
+      Array.isArray(streamMode) ? streamMode : [streamMode],
+    );
+  }
+
+  private shapePayloadConfig(payloadConfig: LangGraphConfig | undefined) {
+    const contextSchemaKeys = new Set(
+      this.activeRun!.schemaKeys?.context ?? [],
+    );
+    const configurable = payloadConfig?.configurable ?? {};
+    const contextFromConfigurable: Record<string, unknown> = {};
+    const remainingConfigurable: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(configurable)) {
+      if (contextSchemaKeys.has(key)) {
+        contextFromConfigurable[key] = value;
+      } else {
+        remainingConfigurable[key] = value;
+      }
+    }
+
+    const finalConfig = payloadConfig
+      ? {
+          ...payloadConfig,
+          configurable:
+            Object.keys(remainingConfigurable).length > 0
+              ? remainingConfigurable
+              : undefined,
+        }
+      : undefined;
+    const hasContext = Object.keys(contextFromConfigurable).length > 0;
+    const hasConfigurable =
+      finalConfig?.configurable != null &&
+      Object.keys(finalConfig.configurable).length > 0;
+
+    if (hasContext && hasConfigurable) {
+      console.warn(
+        `[@ag-ui/langgraph] Dropping configurable keys not in context_schema: [${Object.keys(remainingConfigurable).join(", ")}]. Use context instead.`,
+      );
+    }
+
+    const configForPayloadBase = (() => {
+      if (!finalConfig) return undefined;
+      if (hasConfigurable && !hasContext) return finalConfig;
+      const { configurable: _stripped, ...configSansConfigurable } =
+        finalConfig;
+      return Object.keys(configSansConfigurable).length > 0
+        ? configSansConfigurable
+        : undefined;
+    })();
+
+    const forwardedHeaders = Object.fromEntries(
+      Object.entries(this.headers ?? {}).filter(([key]) =>
+        key.toLowerCase().startsWith("x-"),
+      ),
+    );
+    const configForPayload =
+      Object.keys(forwardedHeaders).length > 0
+        ? {
+            ...(configForPayloadBase ?? {}),
+            configurable: {
+              ...((
+                configForPayloadBase as {
+                  configurable?: Record<string, unknown>;
+                }
+              )?.configurable ?? {}),
+              copilotkit_forwarded_headers: forwardedHeaders,
+            },
+          }
+        : configForPayloadBase;
+
+    return {
+      config: configForPayload,
+      context: hasContext ? contextFromConfigurable : undefined,
+    };
+  }
+
+  async prepareRegenerateStream(
+    input: RegenerateInput,
+    streamMode: StreamMode | StreamMode[],
+  ) {
+    const { threadId, messageCheckpoint, forwardedProps } = input;
+
+    const timeTravelCheckpoint = await this.getCheckpointByMessage(
+      messageCheckpoint!.id!,
+      threadId,
+    );
+    if (!this.assistant) {
+      this.assistant = await this.getAssistant();
+    }
+
+    if (!timeTravelCheckpoint) {
+      return this.subscriber.error("No checkpoint found for message");
+    }
+
+    const fork = await this.client.threads.updateState(threadId, {
+      values: this.langGraphDefaultMergeState(
+        timeTravelCheckpoint.values,
+        [],
+        input,
+      ),
+      checkpointId: timeTravelCheckpoint.checkpoint.checkpoint_id!,
+      asNode: timeTravelCheckpoint.next?.[0] ?? "__start__",
+    });
+
+    let payloadConfig: LangGraphConfig | undefined;
+    const configsToMerge = [
+      this.assistantConfig,
+      forwardedProps?.config,
+    ].filter(Boolean) as LangGraphConfig[];
+    if (configsToMerge.length) {
+      payloadConfig = await this.mergeConfigs({
+        configs: configsToMerge,
+        assistant: this.assistant,
+        schemaKeys: this.activeRun!.schemaKeys ?? null,
+      });
+    }
+
+    const { config: configForPayload, context: payloadContext } =
+      this.shapePayloadConfig(payloadConfig);
+
+    const payload = {
+      ...(input.forwardedProps ?? {}),
+      input: this.langGraphDefaultMergeState(
+        timeTravelCheckpoint.values,
+        [messageCheckpoint],
+        input,
+      ),
+      // @ts-ignore
+      checkpointId: fork.checkpoint.checkpoint_id!,
+      streamMode,
+      config: configForPayload,
+      ...(payloadContext ? { context: payloadContext } : {}),
+    };
+    return {
+      streamResponse: this.client.runs.stream(
+        threadId,
+        this.assistant.assistant_id,
+        payload,
+      ),
+      state: timeTravelCheckpoint as ThreadState<State>,
+      streamMode,
+    };
+  }
+
+  async prepareStream(
+    input: RunAgentExtendedInput,
+    streamMode: StreamMode | StreamMode[],
+  ) {
+    let {
+      threadId: inputThreadId,
+      state: inputState,
+      messages,
+      tools,
+      context,
+      forwardedProps,
+    } = input;
+    // If a manual emittance happens, it is the ultimate source of truth of state, unless a node has exited.
+    // Therefore, this value should either hold null, or the only edition of state that should be used.
+    this.activeRun!.manuallyEmittedState = null;
+
+    const nodeNameInput = forwardedProps?.nodeName;
+    const threadId = inputThreadId ?? randomUUID();
+
+    const aguiResume: ResumeEntry[] | undefined =
+      input.resume && input.resume.length ? input.resume : undefined;
+    const legacyResume = forwardedProps?.command?.resume;
+
+    if (aguiResume && legacyResume !== undefined) {
+      console.warn(
+        "[@ag-ui/langgraph] both input.resume and forwardedProps.command.resume were provided; input.resume wins.",
+      );
+    } else if (!aguiResume && legacyResume !== undefined) {
+      console.warn(
+        "[@ag-ui/langgraph] forwardedProps.command.resume is deprecated; send RunAgentInput.resume[] instead.",
+      );
+    }
+
+    const hasResume = aguiResume !== undefined || legacyResume !== undefined;
+
+    if (!this.assistant) {
+      this.assistant = await this.getAssistant();
+    }
+
+    const thread = await this.getOrCreateThread(
+      threadId,
+      forwardedProps?.threadMetadata,
+    );
+    this.activeRun!.threadId = thread.thread_id;
+
+    const agentState: ThreadState<State> =
+      (await this.client.threads.getState(thread.thread_id)) ??
+      ({ values: {} } as ThreadState<State>);
+    const agentStateMessages = agentState.values.messages ?? [];
+    const a2uiToolName = typeof forwardedProps?.injectA2UITool === "string" ? forwardedProps.injectA2UITool : "render_a2ui";
+    const inputMessagesToLangchain = preserveCompletedA2UIResults(
+      agentStateMessages, aguiMessagesToLangChain(messages), a2uiToolName,
+    );
+    const stateValuesDiff = this.langGraphDefaultMergeState(
+      { ...inputState, messages: agentStateMessages },
+      inputMessagesToLangchain,
+      input,
+    );
+    // Messages are a combination of existing messages in state + everything that was newly sent
+    let threadState = {
+      ...agentState,
+      values: {
+        ...stateValuesDiff,
+        messages: [...agentStateMessages, ...(stateValuesDiff.messages ?? [])],
+      },
+    };
+    let stateValues = threadState.values;
+    this.activeRun!.schemaKeys = await this.getSchemaKeys();
+
+    // Compare non-system message counts to detect regeneration.
+    // Both sides must filter system messages for an accurate comparison,
+    // since the LangGraph state may contain system messages injected by
+    // the connector (e.g. CopilotKit context) that the frontend doesn't track.
+    const stateNonSystemCount = agentStateMessages.filter(
+      (m: LangGraphPlatformMessage) => m.type !== "system",
+    ).length;
+    const inputNonSystemCount = messages.filter(
+      (m) => m.role !== "system",
+    ).length;
+
+    // Skip regeneration detection when a resume is set — a resume from
+    // interrupt is explicitly NOT a regeneration. On the second interrupt-resume
+    // cycle the LangGraph thread state has accumulated tool/AI messages from the
+    // first interrupt while the frontend's input.messages hasn't, which would
+    // otherwise trigger the regeneration path and ignore the resume.
+    if (!hasResume && stateNonSystemCount > inputNonSystemCount) {
+      // A higher checkpoint count than the frontend sent does NOT always mean a
+      // regeneration. If an SSE stream dropped before MESSAGES_SNAPSHOT, the
+      // client never learned the persisted message IDs and resends the new user
+      // turn with a freshly generated UUID, making the checkpoint legitimately
+      // longer than the input even though this is a continuation. Routing that
+      // into regeneration calls getCheckpointByMessage with an ID that was never
+      // persisted, which throws "Message not found" and breaks the thread on
+      // every subsequent turn (#1278).
+      //
+      // Only treat the count mismatch as a regeneration when the incoming IDs are
+      // NOT already a subset of the checkpoint (a genuine edit) AND the last user
+      // message's ID actually exists in the checkpoint. Otherwise fall through to
+      // a normal continuation stream so the end-of-run MESSAGES_SNAPSHOT re-syncs
+      // the client. This continuation/regeneration decision mirrors the Python
+      // guard in prepare_stream. The outer count pre-filter differs only in which
+      // inputs enter this block (this side excludes system messages from both
+      // counts, Python only from the incoming side); both reach the same
+      // continuation-vs-regenerate decision for the recovery case.
+      const checkpointIds = new Set(
+        (agentStateMessages as LangGraphPlatformMessage[])
+          .map((m) => m.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+      // Tool results are excluded from the comparison: connectors (e.g.
+      // CopilotKit) reassign tool-message IDs that won't match the checkpoint's
+      // placeholders. Human/AI IDs are stable and sufficient to distinguish a
+      // continuation from a genuine regeneration.
+      const incomingNonToolIds = messages
+        .filter((m) => m.role !== "tool" && Boolean(m.id))
+        .map((m) => m.id as string);
+      const isContinuation =
+        incomingNonToolIds.length > 0 &&
+        incomingNonToolIds.every((id) => checkpointIds.has(id));
+
+      if (!isContinuation) {
+        let lastUserMessage: LangGraphMessage | null = null;
+        let lastUserMessageId: string | undefined;
+        // Find the last user message by working backwards from the end.
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === "user") {
+            lastUserMessageId = messages[i].id;
+            lastUserMessage = aguiMessagesToLangChain([messages[i]])[0];
+            break;
+          }
+        }
+
+        if (
+          lastUserMessage &&
+          lastUserMessageId &&
+          checkpointIds.has(lastUserMessageId)
+        ) {
+          return this.prepareRegenerateStream(
+            { ...input, messageCheckpoint: lastUserMessage },
+            streamMode,
+          );
+        }
+      }
+    }
+    this.activeRun!.graphInfo = await this.client.assistants.getGraph(
+      this.assistant.assistant_id,
+    );
+
+    const mode =
+      !hasResume &&
+      threadId &&
+      this.activeRun!.nodeName != "__end__" &&
+      this.activeRun!.nodeName
+        ? "continue"
+        : "start";
+
+    if (mode === "continue") {
+      const nodeBefore = this.activeRun!.graphInfo.edges.find(
+        (e) => e.target === this.activeRun!.nodeName,
+      );
+      await this.client.threads.updateState(threadId, {
+        values: inputState,
+        asNode: nodeBefore?.source,
+      });
+    }
+
+    const payloadInput = getStreamPayloadInput({
+      mode,
+      state: stateValues,
+      schemaKeys: this.activeRun!.schemaKeys,
+    });
+
+    // A late A2UI result must precede already-persisted user turns. Appending
+    // it through the messages reducer leaves the checkpoint invalid forever.
+    // Overwrite is atomic and retains every saved message, ID and result.
+    if (payloadInput && !hasResume && !(agentState.tasks ?? []).some((task) => task.interrupts?.length)) {
+      const repaired = recoverA2UIHistory(
+        agentStateMessages,
+        inputMessagesToLangchain,
+        a2uiToolName,
+      );
+      if (repaired) payloadInput.messages = { __overwrite__: repaired };
+    }
+
+    let payloadConfig: LangGraphConfig | undefined;
+    const configsToMerge = [
+      this.assistantConfig,
+      forwardedProps?.config,
+    ].filter(Boolean) as LangGraphConfig[];
+    if (configsToMerge.length) {
+      payloadConfig = await this.mergeConfigs({
+        configs: configsToMerge,
+        assistant: this.assistant,
+        schemaKeys: this.activeRun!.schemaKeys,
+      });
+    }
+    // forwardedProps is optional on the input; the SSE-drop recovery now reaches
+    // this continuation path (instead of returning early via regenerate), so guard
+    // against an undefined value here rather than throwing on destructure.
+    const { command, ...restProps } = forwardedProps ?? {};
+
+    // Collect interrupts from ALL tasks, not just tasks[0] (fixes #1409).
+    // The SDK doesn't export a Task type, so we use `any` here.
+    const interrupts = (agentState.tasks ?? []).flatMap(
+      (t: any) => t.interrupts ?? [],
+    ) as LangGraphInterrupt[];
+
+    let effectiveCommand = command;
+
+    if (aguiResume) {
+      effectiveCommand = {
+        ...(command ?? {}),
+        resume: this.buildCommandResumeFromAgui(aguiResume, {
+          openInterrupts: this.interruptsToAGUI(interrupts),
+        }),
+      };
+    } else if (
+      effectiveCommand?.resume &&
+      typeof effectiveCommand.resume === "string"
+    ) {
+      try {
+        effectiveCommand.resume = JSON.parse(effectiveCommand.resume);
+      } catch {
+        // Keep as string if not valid JSON
+      }
+    }
+
+    const { config: configForPayload, context: payloadContext } =
+      this.shapePayloadConfig(payloadConfig);
+
+    const payload: Record<string, unknown> = {
+      ...restProps,
+      command: effectiveCommand,
+      streamMode,
+      input: payloadInput,
+      config: configForPayload,
+      ...(payloadContext ? { context: payloadContext } : {}),
+    };
+
+    // If there are still outstanding unresolved interrupts, we must force resolution of them before moving forward
+    if (interrupts?.length && !hasResume) {
+      this.dispatchEvent({
+        type: EventType.RUN_STARTED,
+        threadId,
+        runId: input.runId,
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      this.handleNodeChange(nodeNameInput);
+
+      this.dispatchInterruptFinish({
+        threadId,
+        runId: input.runId,
+        lgInterrupts: interrupts,
+      });
+
+      return this.subscriber.complete();
+    }
+
+    return {
+      // @ts-ignore
+      streamResponse: this.client.runs.stream(
+        threadId,
+        this.assistant.assistant_id,
+        payload,
+      ),
+      state: threadState as ThreadState<State>,
+    };
+  }
+
+  async handleStreamEvents(
+    stream: Awaited<
+      | ReturnType<typeof this.prepareStream>
+      | ReturnType<typeof this.prepareRegenerateStream>
+    >,
+    threadId: string,
+    subscriber: Subscriber<ProcessedEvents>,
+    input: RunAgentExtendedInput,
+    streamModes: StreamMode | StreamMode[],
+  ) {
+    const { forwardedProps } = input;
+    const nodeNameInput = forwardedProps?.nodeName;
+    this.subscriber = subscriber;
+    let shouldExit = false;
+    if (!stream) return;
+    // Reset per-run tracking of emitted tool call IDs
+    this.emittedToolCallStartIds = new Set<string>();
+    this.toolCallOwners = new Map<string, string>();
+
+    let { streamResponse, state } = stream;
+
+    this.activeRun!.prevNodeName = null;
+    let latestStateValues = {} as ThreadState<State>["values"];
+    // prepareStream's state is the ordered root boundary before any streamed
+    // chunk, including a first subgraph event that arrives before values mode.
+    let latestRootStateValues = state.values;
+    let hasOrderedRootStateValues = true;
+    let rootValuesCanAdvanceBoundary = false;
+    let hasReturnedFromSubgraph = false;
+    const pendingSubgraphBoundarySteps = new Map<string, number>();
+    let updatedState = state;
+
+    try {
+      this.dispatchEvent({
+        type: EventType.RUN_STARTED,
+        threadId,
+        runId: this.activeRun!.id,
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      this.handleNodeChange(nodeNameInput);
+
+      for await (let streamResponseChunk of streamResponse) {
+        // If a cancel was requested and we haven't sent it yet, try now.
+        if (this.cancelRequested) {
+          // Only retry once LangGraph's own run id is in hand. Until the stream
+          // reports metadata.run_id, activeRun.id is the client-generated id,
+          // which LangGraph does not know: retrying it here would fire one
+          // guaranteed-404 request per chunk. The cancel for this run is sent
+          // at the metadata.run_id site below; this is its retry.
+          if (
+            !this.cancelSent &&
+            this.activeRun?.serverRunIdKnown &&
+            this.activeRun?.threadId &&
+            this.activeRun?.id
+          ) {
+            try {
+              await this.client.runs.cancel(
+                this.activeRun.threadId,
+                this.activeRun.id,
+              );
+              this.cancelSent = true;
+            } catch (_) {
+              // Leave cancelSent false rather than reporting a stop that never
+              // reached LangGraph. The next chunk retries.
+            }
+          }
+          if (this.cancelSent) {
+            // Best-effort: ask iterator to close early
+            try {
+              // Many async iterables used for streaming implement return()
+              await (streamResponse as any)?.return?.();
+            } catch (_) {}
+            break;
+          }
+        }
+
+        const subgraphsStreamEnabled =
+          input.forwardedProps?.streamSubgraphs ?? true;
+        const isSubgraphStream =
+          subgraphsStreamEnabled &&
+          (streamResponseChunk.event.startsWith("events") ||
+            streamResponseChunk.event.startsWith("values"));
+
+        // "messages-tuple" stream mode produces SSE events with type "messages",
+        // so we need to check for that mapping in addition to the direct mode name.
+        const isMessagesTupleEvent =
+          streamResponseChunk.event === "messages" &&
+          (Array.isArray(streamModes) ? streamModes : [streamModes]).includes(
+            "messages-tuple" as StreamMode,
+          );
+
+        // @ts-ignore
+        if (
+          !streamModes.includes(streamResponseChunk.event as StreamMode) &&
+          !isSubgraphStream &&
+          !isMessagesTupleEvent &&
+          streamResponseChunk.event !== "error"
+        ) {
+          continue;
+        }
+
+        // Force event type, as data is not properly defined on the LG side.
+        type EventsChunkData = {
+          __interrupt__?: any;
+          metadata: Record<string, any>;
+          event: string;
+          data: any;
+          [key: string]: unknown;
+        };
+        const chunk = streamResponseChunk as EventsStreamEvent & {
+          data: EventsChunkData;
+        };
+
+        if (streamResponseChunk.event === "error") {
+          this.dispatchEvent({
+            type: EventType.RUN_ERROR,
+            message: streamResponseChunk.data.message,
+            rawEvent: streamResponseChunk,
+          });
+          this.activeRun = undefined;
+          return subscriber.complete();
+        }
+
+        if (streamResponseChunk.event === "updates") {
+          continue;
+        }
+
+        if (streamResponseChunk.event === "values") {
+          latestStateValues = {
+            ...latestStateValues,
+            ...chunk.data,
+          };
+          const preservesRootBoundaryShape = Object.keys(
+            latestRootStateValues ?? {},
+          ).every((key) =>
+            Object.prototype.hasOwnProperty.call(chunk.data, key),
+          );
+          // Before events-mode model streaming begins, `values` is the only
+          // ordered root boundary available. Once events-mode is active,
+          // multiplexed `values` can race ahead of the event currently being
+          // processed. A chain completion makes the next root `values` pulse a
+          // candidate, but subgraph multiplexing can still surface an empty or
+          // partial pulse. Only let a candidate replace the ordered boundary
+          // when it preserves every state channel already present there.
+          if (
+            !this.eventsStreamActive ||
+            (rootValuesCanAdvanceBoundary && preservesRootBoundaryShape)
+          ) {
+            latestRootStateValues = chunk.data;
+            hasOrderedRootStateValues = true;
+          }
+          rootValuesCanAdvanceBoundary = false;
+          continue;
+        } else if (
+          subgraphsStreamEnabled &&
+          chunk.event.startsWith("values|")
+        ) {
+          latestStateValues = {
+            ...latestStateValues,
+            ...chunk.data,
+          };
+          continue;
+        }
+
+        const chunkData = chunk.data;
+        // Once events-mode streaming is active, messages-tuple is a legacy
+        // fallback only. Skip it before the shared state-snapshot logic so an
+        // ignored late tuple cannot become a snapshot timing pulse.
+        if (isMessagesTupleEvent && this.eventsStreamActive) {
+          continue;
+        }
+        // messages-tuple chunks arrive as [AIMessageChunk, metadata] arrays;
+        // events-mode chunks are objects with metadata/event properties. Read
+        // metadata from the right slot so langgraph_node is extracted in both
+        // cases (otherwise messages-tuple-only flows never call
+        // handleNodeChange and node-scoped behavior degrades to no-op).
+        const metadata = Array.isArray(chunkData)
+          ? (chunkData[1] ?? {})
+          : (chunkData.metadata ?? {});
+        const currentNodeName = metadata.langgraph_node;
+        const eventType = Array.isArray(chunkData)
+          ? undefined
+          : chunkData.event;
+
+        // Subgraph detection via langgraph_checkpoint_ns
+        // ns format: "" | "node:uuid" | "node:uuid|inner:uuid"
+        const ns: string = metadata.langgraph_checkpoint_ns ?? "";
+        const nsRoot = ns.split("|")[0].split(":")[0];
+        if (
+          nsRoot &&
+          !ns.includes("|") &&
+          typeof metadata.langgraph_step === "number"
+        ) {
+          pendingSubgraphBoundarySteps.set(nsRoot, metadata.langgraph_step - 1);
+        }
+        if (ns.includes("|") && nsRoot) this.subgraphs.add(nsRoot);
+        const currentSubgraph =
+          nsRoot && this.subgraphs.has(nsRoot) ? nsRoot : ROOT_SUBGRAPH_NAME;
+
+        if (currentSubgraph !== this.currentSubgraph) {
+          this.currentSubgraph = currentSubgraph;
+          const enteringSubgraph = currentSubgraph !== ROOT_SUBGRAPH_NAME;
+          const boundaryCheckpointStep = enteringSubgraph
+            ? pendingSubgraphBoundarySteps.get(currentSubgraph)
+            : typeof metadata.langgraph_step === "number"
+              ? metadata.langgraph_step - 1
+              : undefined;
+          const durability = input.forwardedProps?.durability ?? "async";
+          // Root values and event callbacks are multiplexed independently. A
+          // future values pulse can therefore arrive before the first nested
+          // callback reveals that an outer node is a subgraph. When the outer
+          // root step is known, its checkpoint is the causal pre-entry state;
+          // prefer it over an arrival-ordered values cache. Exit durability has
+          // no mid-run checkpoint, so it keeps using the ordered cache.
+          const shouldReadEntryCheckpoint =
+            enteringSubgraph &&
+            boundaryCheckpointStep !== undefined &&
+            durability !== "exit";
+          latestStateValues = await this.getStateAndMessagesSnapshots(
+            threadId,
+            latestRootStateValues,
+            shouldReadEntryCheckpoint ? false : hasOrderedRootStateValues,
+            boundaryCheckpointStep,
+            durability,
+          );
+          if (enteringSubgraph) {
+            pendingSubgraphBoundarySteps.delete(currentSubgraph);
+          }
+          if (currentSubgraph === ROOT_SUBGRAPH_NAME) {
+            // A checkpoint-selected root boundary is ordered by construction
+            // and can seed the next subgraph even when no root node runs in
+            // between.
+            latestRootStateValues = latestStateValues;
+            hasOrderedRootStateValues = true;
+            hasReturnedFromSubgraph = true;
+          } else {
+            // Do not reuse a root boundary after entering a subgraph. The next
+            // root boundary or root on_chain_end output will advance it.
+            hasOrderedRootStateValues = false;
+          }
+        }
+
+        // Set server-assigned run id as soon as available
+        if (metadata.run_id) {
+          this.activeRun!.id = metadata.run_id;
+          this.activeRun!.serverRunIdKnown = true;
+          // If cancel was requested earlier (before server id was known), send it now.
+          if (
+            this.cancelRequested &&
+            !this.cancelSent &&
+            this.activeRun?.threadId
+          ) {
+            try {
+              await this.client.runs.cancel(
+                this.activeRun.threadId!,
+                this.activeRun.id,
+              );
+              this.cancelSent = true;
+            } catch (_) {
+              // Leave cancelSent false so the check at the top of the stream
+              // loop retries on the next chunk rather than reporting a stop
+              // that never reached LangGraph.
+            }
+          }
+        }
+
+        if (currentNodeName && currentNodeName !== this.activeRun!.nodeName) {
+          this.handleNodeChange(currentNodeName);
+        }
+
+        shouldExit =
+          shouldExit ||
+          (eventType === LangGraphEventTypes.OnCustomEvent &&
+            chunkData.name === CustomEventNames.Exit);
+
+        // Parity with Python reader (langgraph_agent.py:447): update local state
+        // cache from on_chain_end outputs so state stays fresh across node boundaries
+        // without relying on a `values` stream chunk after every step.
+        // LangGraph JS doesn't emit `values` chunks with the latest state between
+        // tool execution and run end, so without this update, intermediate
+        // STATE_SNAPSHOTs go stale after a tool Command updates state.
+        // Preserve legacy first-entry seeding before model streaming begins.
+        // After a subgraph returns, only reduced values or a checkpoint may
+        // advance its root boundary; callback outputs remain provisional even
+        // when the graph never emits a model-stream callback.
+        if (
+          eventType === LangGraphEventTypes.OnChainEnd &&
+          chunkData.data?.output != null
+        ) {
+          const output: any = chunkData.data.output;
+          let outputUpdate: Record<string, any> | undefined;
+          if (typeof output === "object" && !Array.isArray(output)) {
+            outputUpdate = output;
+          } else if (Array.isArray(output)) {
+            for (const item of output) {
+              if (
+                item &&
+                typeof item === "object" &&
+                (item as any).lg_name === "Command" &&
+                (item as any).update &&
+                typeof (item as any).update === "object"
+              ) {
+                outputUpdate = { ...outputUpdate, ...(item as any).update };
+              }
+            }
+          }
+          if (outputUpdate) {
+            latestStateValues = { ...latestStateValues, ...outputUpdate };
+            if (
+              currentSubgraph === ROOT_SUBGRAPH_NAME &&
+              !this.eventsStreamActive &&
+              !hasReturnedFromSubgraph
+            ) {
+              latestRootStateValues = {
+                ...latestRootStateValues,
+                ...outputUpdate,
+              };
+              hasOrderedRootStateValues = true;
+            }
+          }
+        }
+        if (eventType === LangGraphEventTypes.OnChainEnd) {
+          if (
+            currentSubgraph === ROOT_SUBGRAPH_NAME &&
+            (this.eventsStreamActive || hasReturnedFromSubgraph)
+          ) {
+            // The root step has advanced, but after model streaming or a prior
+            // subgraph return its callback output is only an update. Until
+            // reduced values arrive, force the next subgraph boundary to read
+            // committed state instead of treating that update as a snapshot.
+            hasOrderedRootStateValues = false;
+          }
+          // `values` carries the fully reduced root state for a completed graph
+          // step. Before a chain completes it may race ahead of events-mode,
+          // but after completion it is the authoritative boundary and must
+          // replace provisional node-output updates.
+          rootValuesCanAdvanceBoundary = true;
+        }
+
+        if (
+          eventType === LangGraphEventTypes.OnChainEnd &&
+          this.activeRun!.nodeName === currentNodeName
+        ) {
+          this.activeRun!.exitingNode = true;
+        }
+        if (this.activeRun!.exitingNode) {
+          // Persist manually-emitted keys into latestStateValues before clearing,
+          // so the next STATE_SNAPSHOT (which falls back to latestStateValues)
+          // doesn't lose the streamed-in fields if the graph's own values/Command
+          // chunk for those fields hasn't landed yet.
+          if (
+            this.activeRun!.manuallyEmittedState &&
+            typeof this.activeRun!.manuallyEmittedState === "object"
+          ) {
+            latestStateValues = {
+              ...latestStateValues,
+              ...this.activeRun!.manuallyEmittedState,
+            };
+          }
+          this.activeRun!.manuallyEmittedState = null;
+        }
+
+        // we only want to update the node name under certain conditions
+        // since we don't need any internal node names to be sent to the frontend
+        if (
+          this.activeRun!.graphInfo?.["nodes"].some(
+            (node) => node.id === currentNodeName,
+          )
+        ) {
+          this.handleNodeChange(currentNodeName);
+        }
+
+        updatedState.values =
+          this.activeRun!.manuallyEmittedState ?? latestStateValues;
+
+        if (!this.activeRun!.nodeName) {
+          continue;
+        }
+
+        const hasStateDiff =
+          JSON.stringify(updatedState) !== JSON.stringify(state);
+        // Suppress STATE_SNAPSHOT while a message is in progress, or while a
+        // predict_state tool call is streaming args (modelMadeToolCall=true).
+        // During tool arg streaming the graph state does not yet reflect the
+        // forthcoming update, so emitting a snapshot would clobber optimistic
+        // UI state. Flag is cleared in OnToolEnd/OnToolError.
+        //
+        // Diverges from Python: TS blocks ALL snapshot kinds (state-diff,
+        // node change, node exit) while the flag is set; Python only
+        // suppresses on node exit. A post-run snapshot runs the safety net.
+        if (
+          !this.activeRun!.modelMadeToolCall &&
+          (hasStateDiff ||
+            this.activeRun!.prevNodeName != this.activeRun!.nodeName ||
+            this.activeRun!.exitingNode) &&
+          !Boolean(this.getMessageInProgress(this.activeRun!.id))
+        ) {
+          state = updatedState;
+          this.activeRun!.prevNodeName = this.activeRun!.nodeName;
+
+          this.dispatchEvent({
+            type: EventType.STATE_SNAPSHOT,
+            snapshot: this.getStateSnapshot(state),
+            rawEvent: chunk,
+          });
+        }
+
+        this.dispatchEvent({
+          type: EventType.RAW,
+          event: chunkData,
+        });
+
+        this.handleSingleEvent(chunkData);
+      }
+
+      state = await this.client.threads.getState(threadId);
+      const tasks = state.tasks;
+      // Collect interrupts from ALL tasks, not just tasks[0] (fixes #1409)
+      const interrupts = (tasks ?? []).flatMap(
+        (t: any) => t.interrupts ?? [],
+      ) as LangGraphInterrupt[];
+      const isEndNode = state.next.length === 0;
+      const writes = state.metadata?.writes ?? {};
+
+      // Initialize a new node name to use in the next if block
+      let newNodeName = this.activeRun!.nodeName!;
+
+      if (!interrupts?.length) {
+        newNodeName = isEndNode
+          ? "__end__"
+          : (state.next[0] ?? Object.keys(writes)[0]);
+      }
+
+      this.handleNodeChange(newNodeName);
+      // Immediately turn off new step
+      this.handleNodeChange(undefined);
+
+      await this.getStateAndMessagesSnapshots(threadId);
+
+      if (interrupts.length) {
+        this.dispatchInterruptFinish({
+          threadId,
+          runId: this.activeRun!.id,
+          lgInterrupts: interrupts,
+        });
+      } else {
+        const usage = this.collectRunUsage();
+        this.dispatchEvent({
+          type: EventType.RUN_FINISHED,
+          threadId,
+          runId: this.activeRun!.id,
+          ...(usage ? { usage } : {}),
+        });
+      }
+
+      // Reset cancel flags when run completes
+      this.cancelRequested = false;
+      this.cancelSent = false;
+      this.activeRun = undefined;
+      return subscriber.complete();
+    } catch (e) {
+      return subscriber.error(e);
+    }
+  }
+
+  private async getStateAndMessagesSnapshots(
+    threadId: string,
+    orderedStateValues?: ThreadState<State>["values"],
+    hasOrderedStateValues = false,
+    boundaryCheckpointStep?: number,
+    durability: Durability = "async",
+  ): Promise<ThreadState<State>["values"]> {
+    let state: ThreadState<State>;
+    if (hasOrderedStateValues) {
+      state = { values: orderedStateValues ?? {} } as ThreadState<State>;
+    } else if (boundaryCheckpointStep !== undefined) {
+      if (durability === "exit") {
+        throw new Error(
+          `Cannot snapshot LangGraph boundary step ${boundaryCheckpointStep} with durability "exit": the checkpoint is not persisted until the run exits`,
+        );
+      }
+
+      const attempts =
+        durability === "async" ? ASYNC_BOUNDARY_CHECKPOINT_ATTEMPTS : 1;
+      let boundaryState: ThreadState<State> | undefined;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        [boundaryState] = await this.client.threads.getHistory(threadId, {
+          limit: 1,
+          metadata: { step: boundaryCheckpointStep },
+        });
+        if (boundaryState) break;
+        if (attempt < attempts - 1) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, ASYNC_BOUNDARY_CHECKPOINT_RETRY_DELAY_MS),
+          );
+        }
+      }
+      if (!boundaryState) {
+        throw new Error(
+          `No LangGraph checkpoint found for boundary step ${boundaryCheckpointStep}`,
+        );
+      }
+      state = boundaryState;
+    } else {
+      state = await this.client.threads.getState(threadId);
+    }
+    this.dispatchEvent({
+      type: EventType.STATE_SNAPSHOT,
+      snapshot: this.getStateSnapshot(state),
+    });
+    const checkpointMessages: LangGraphMessage[] =
+      (state.values as State).messages ?? [];
+    this.dispatchEvent({
+      type: EventType.MESSAGES_SNAPSHOT,
+      messages: langchainMessagesToAgui(checkpointMessages),
+    });
+    return state.values;
+  }
+
+  /**
+   * True when a tool call's originating assistant message is already present in
+   * the durable thread history (`this.messages`). On a HITL resume the client
+   * replays the full conversation, so the TOOL_CALL_START/ARGS/END triple for
+   * this tool call was already delivered in the prior run and must not be
+   * re-emitted by `OnToolEnd` (whose per-run `emittedToolCallStartIds` Set is
+   * reset on every run). `TOOL_CALL_RESULT` still fires normally. See #2014.
+   */
+  private toolCallAnnouncedInPriorRun(toolCallId: string | undefined): boolean {
+    if (!toolCallId) {
+      return false;
+    }
+    return (this.messages ?? []).some(
+      (message: any) =>
+        message?.role === "assistant" &&
+        Array.isArray(message.toolCalls) &&
+        message.toolCalls.some((toolCall: any) => toolCall?.id === toolCallId),
+    );
+  }
+
+  /**
+   * Remember which assistant message made each of `output`'s tool calls.
+   *
+   * OnChatModelEnd is the one point every model call passes through, whether or
+   * not it streamed. OnToolEnd reads the owner back to name the parent of a
+   * call it has to announce itself; before this it named the tool result's id,
+   * which a ToolMessage usually lacks, so clients hung the call on a stand-in
+   * message no snapshot recognises. The output arrives either as a plain
+   * message dict or LangChain-serialized (`{ lc, kwargs }`). A call id seen
+   * twice in a run belongs to the later message.
+   */
+  private recordToolCallOwners(output: any): void {
+    const message = output?.lc && output?.kwargs ? output.kwargs : output;
+    const messageId = message?.id;
+    const toolCalls = message?.tool_calls;
+    if (
+      typeof messageId !== "string" ||
+      !messageId ||
+      !Array.isArray(toolCalls)
+    ) {
+      return;
+    }
+    for (const toolCall of toolCalls) {
+      if (toolCall?.id) {
+        this.toolCallOwners.set(toolCall.id, messageId);
+      }
+    }
+  }
+
+  handleSingleEvent(event: any): void {
+    // messages-tuple data arrives as [AIMessageChunk, metadata] arrays,
+    // not objects with an .event property like events-mode data.
+    if (Array.isArray(event)) {
+      if (!this.eventsStreamActive) {
+        this.handleMessagesTupleEvent(event);
+      }
+      return;
+    }
+
+    // Track if events-mode streaming is producing data — when it does,
+    // messages-tuple events are skipped to avoid duplicate streaming.
+    if (event.event === LangGraphEventTypes.OnChatModelStream) {
+      this.eventsStreamActive = true;
+    }
+
+    switch (event.event) {
+      case LangGraphEventTypes.OnChatModelStream:
+        let shouldEmitMessages = event.metadata["emit-messages"] ?? true;
+        let shouldEmitToolCalls = event.metadata["emit-tool-calls"] ?? true;
+
+        // Capture provider-reported token usage. LangChain attaches
+        // `usage_metadata` to the final streamed chunk (the one that also
+        // carries `finish_reason`), so this must run *before* the finish-reason
+        // early return below or usage would be dropped.
+        const usageMetadata = (event.data.chunk as any).usage_metadata;
+        if (usageMetadata) {
+          const usageEntry = tokenUsageFromLangChainMetadata(usageMetadata, {
+            provider: event.metadata?.["ls_provider"],
+            model: event.metadata?.["ls_model_name"],
+          });
+          if (usageEntry) {
+            (this.activeRun!.usage ??= []).push(usageEntry);
+          }
+        }
+
+        if (event.data.chunk.response_metadata.finish_reason) return;
+        let currentStream = this.getMessageInProgress(this.activeRun!.id);
+        const hasCurrentStream = Boolean(currentStream?.id);
+        const toolCallData = event.data.chunk.tool_call_chunks?.[0];
+        const toolCallUsedToPredictState = event.metadata[
+          "predict_state"
+        ]?.some(
+          (predictStateTool: PredictStateTool) =>
+            predictStateTool.tool === toolCallData?.name,
+        );
+
+        let isToolCallStartEvent =
+          toolCallData?.name &&
+          (!hasCurrentStream ||
+            (currentStream?.toolCallId &&
+              toolCallData.id &&
+              toolCallData.id !== currentStream.toolCallId));
+        const isToolCallArgsEvent =
+          hasCurrentStream && currentStream?.toolCallId && toolCallData?.args;
+        const isToolCallEndEvent =
+          hasCurrentStream && currentStream?.toolCallId && !toolCallData;
+
+        if (isToolCallEndEvent || isToolCallArgsEvent || isToolCallStartEvent) {
+          this.activeRun!.hasFunctionStreaming = true;
+        }
+
+        const reasoningData = resolveReasoningContent(event.data);
+        const encryptedReasoningData = resolveEncryptedReasoningContent(
+          event.data,
+        );
+        const messageContent = resolveMessageContent(event.data.chunk.content);
+        const isMessageContentEvent = Boolean(!toolCallData && messageContent);
+
+        const isMessageEndEvent =
+          hasCurrentStream &&
+          !currentStream?.toolCallId &&
+          !isMessageContentEvent;
+
+        if (reasoningData) {
+          this.handleReasoningEvent(reasoningData);
+          break;
+        }
+
+        // Handle redacted_thinking blocks (encrypted reasoning content)
+        if (encryptedReasoningData && this.reasoningProcess) {
+          this.dispatchEvent({
+            type: EventType.REASONING_ENCRYPTED_VALUE,
+            subtype: "message",
+            entityId: this.reasoningProcess.messageId,
+            encryptedValue: encryptedReasoningData,
+          });
+          break;
+        }
+
+        if (!reasoningData && this.reasoningProcess) {
+          // Emit signature as encrypted value if accumulated during reasoning
+          if (this.reasoningProcess.signature) {
+            this.dispatchEvent({
+              type: EventType.REASONING_ENCRYPTED_VALUE,
+              subtype: "message",
+              entityId: this.reasoningProcess.messageId,
+              encryptedValue: this.reasoningProcess.signature,
+            });
+          }
+          this.dispatchEvent({
+            type: EventType.REASONING_MESSAGE_END,
+            messageId: this.reasoningProcess.messageId,
+          });
+          this.dispatchEvent({
+            type: EventType.REASONING_END,
+            messageId: this.reasoningProcess.messageId,
+          });
+          this.reasoningProcess = null;
+        }
+
+        if (toolCallUsedToPredictState) {
+          this.activeRun!.modelMadeToolCall = true;
+          this.dispatchEvent({
+            type: EventType.CUSTOM,
+            name: "PredictState",
+            value: event.metadata["predict_state"],
+          });
+        }
+
+        if (isToolCallEndEvent) {
+          const resolved = this.dispatchEvent({
+            type: EventType.TOOL_CALL_END,
+            toolCallId: currentStream?.toolCallId!,
+            rawEvent: event,
+          });
+          if (resolved) {
+            this.messagesInProcess[this.activeRun!.id] = null;
+          }
+          break;
+        }
+
+        if (isMessageEndEvent) {
+          const resolved = this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_END,
+            messageId: currentStream!.id,
+            rawEvent: event,
+          });
+          if (resolved) {
+            this.messagesInProcess[this.activeRun!.id] = null;
+          }
+          // The chunk that ends streamed text can also open a tool call: Anthropic
+          // streams the `tool_use` block of a message right after its text block.
+          // Fall through to the tool-call start below instead of dropping the call
+          // and every argument chunk that follows it (the Python adapter already
+          // handles this transition).
+          if (!toolCallData?.name) break;
+          isToolCallStartEvent = true;
+          this.activeRun!.hasFunctionStreaming = true;
+        }
+
+        if (isToolCallStartEvent && shouldEmitToolCalls) {
+          if (currentStream?.toolCallId) {
+            const resolved = this.dispatchEvent({
+              type: EventType.TOOL_CALL_END,
+              toolCallId: currentStream.toolCallId,
+              rawEvent: event,
+            });
+            if (resolved) {
+              this.messagesInProcess[this.activeRun!.id] = null;
+            }
+          }
+          const resolved = this.dispatchEvent({
+            type: EventType.TOOL_CALL_START,
+            toolCallId: toolCallData.id,
+            toolCallName: toolCallData.name,
+            parentMessageId: event.data.chunk.id,
+            rawEvent: event,
+          });
+          if (resolved) {
+            this.emittedToolCallStartIds.add(toolCallData.id);
+            this.setMessageInProgress(this.activeRun!.id, {
+              id: event.data.chunk.id,
+              toolCallId: toolCallData.id,
+              toolCallName: toolCallData.name,
+            });
+            if (toolCallData.args) {
+              this.dispatchEvent({
+                type: EventType.TOOL_CALL_ARGS,
+                toolCallId: toolCallData.id,
+                delta: toolCallData.args,
+                rawEvent: event,
+              });
+            }
+          }
+          break;
+        }
+
+        // Tool call args: emit ActionExecutionArgs
+        if (isToolCallArgsEvent && shouldEmitToolCalls) {
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_ARGS,
+            toolCallId: currentStream?.toolCallId!,
+            delta: toolCallData.args,
+            rawEvent: event,
+          });
+          break;
+        }
+
+        // Message content: emit TextMessageContent
+        if (isMessageContentEvent && shouldEmitMessages) {
+          // No existing message yet, also init the message
+          if (!currentStream) {
+            const messageId = this.getOrPinTextMessageId(event.data.chunk.id);
+            this.dispatchEvent({
+              type: EventType.TEXT_MESSAGE_START,
+              role: "assistant",
+              messageId,
+              rawEvent: event,
+            });
+            this.setMessageInProgress(this.activeRun!.id, {
+              id: messageId,
+              toolCallId: null,
+              toolCallName: null,
+            });
+            currentStream = this.getMessageInProgress(this.activeRun!.id);
+          }
+
+          this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId: currentStream!.id,
+            delta: messageContent!,
+            rawEvent: event,
+          });
+          break;
+        }
+
+        break;
+      case LangGraphEventTypes.OnChatModelEnd:
+        this.recordToolCallOwners(event.data?.output);
+        if (this.getMessageInProgress(this.activeRun!.id)?.toolCallId) {
+          const resolved = this.dispatchEvent({
+            type: EventType.TOOL_CALL_END,
+            toolCallId: this.getMessageInProgress(this.activeRun!.id)!
+              .toolCallId!,
+            rawEvent: event,
+          });
+          if (resolved) {
+            this.messagesInProcess[this.activeRun!.id] = null;
+          }
+          break;
+        }
+        if (this.getMessageInProgress(this.activeRun!.id)?.id) {
+          const resolved = this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_END,
+            messageId: this.getMessageInProgress(this.activeRun!.id)!.id,
+            rawEvent: event,
+          });
+          if (resolved) {
+            this.messagesInProcess[this.activeRun!.id] = null;
+          }
+          break;
+        }
+        break;
+      case LangGraphEventTypes.OnCustomEvent:
+        if (event.name === CustomEventNames.ManuallyEmitMessage) {
+          this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_START,
+            role: "assistant",
+            messageId: event.data.message_id,
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId: event.data.message_id,
+            delta: event.data.message,
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_END,
+            messageId: event.data.message_id,
+            rawEvent: event,
+          });
+          break;
+        }
+
+        if (event.name === CustomEventNames.ManuallyEmitToolCall) {
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_START,
+            toolCallId: event.data.id,
+            toolCallName: event.data.name,
+            parentMessageId: event.data.id,
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_ARGS,
+            toolCallId: event.data.id,
+            delta: event.data.args,
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_END,
+            toolCallId: event.data.id,
+            rawEvent: event,
+          });
+          break;
+        }
+
+        if (event.name === CustomEventNames.ManuallyEmitState) {
+          this.activeRun!.manuallyEmittedState = event.data;
+          this.dispatchEvent({
+            type: EventType.STATE_SNAPSHOT,
+            snapshot: this.getStateSnapshot({
+              values: this.activeRun!.manuallyEmittedState!,
+            } as ThreadState<State>),
+            rawEvent: event,
+          });
+        }
+
+        this.dispatchEvent({
+          type: EventType.CUSTOM,
+          name: event.name,
+          value: event.data,
+          rawEvent: event,
+        });
+        break;
+      case LangGraphEventTypes.OnToolEnd:
+        let toolCallOutput = event.data?.output;
+
+        // Command from within a tool. We need to grab result from the tool result message
+        if (
+          toolCallOutput &&
+          !toolCallOutput.tool_call_id &&
+          toolCallOutput.update?.messages?.find(
+            (message: { type: string }) => message.type === "tool",
+          )
+        ) {
+          toolCallOutput = toolCallOutput.update?.messages?.find(
+            (message: { type: string }) => message.type === "tool",
+          );
+        }
+
+        if (toolCallOutput && toolCallOutput.update?.messages?.length) {
+          type MessageFields = ToolMessageFieldsWithToolCallId & {
+            type: string;
+          };
+          toolCallOutput.update?.messages
+            .filter((message: MessageFields) => message.type === "tool")
+            .forEach((message: MessageFields) => {
+              // Skip the synthetic START/ARGS on a HITL resume where the tool
+              // call was already announced in a prior run (#2014).
+              if (
+                !this.activeRun!.hasFunctionStreaming &&
+                !this.toolCallAnnouncedInPriorRun(message.tool_call_id)
+              ) {
+                this.dispatchEvent({
+                  type: EventType.TOOL_CALL_START,
+                  toolCallId: message.tool_call_id,
+                  toolCallName: message.name ?? "",
+                  parentMessageId: this.toolCallOwners.get(
+                    message.tool_call_id,
+                  ),
+                  rawEvent: event,
+                });
+                this.dispatchEvent({
+                  type: EventType.TOOL_CALL_ARGS,
+                  toolCallId: message.tool_call_id,
+                  delta: JSON.stringify(event.data.input),
+                  rawEvent: event,
+                });
+              }
+
+              this.dispatchEvent({
+                type: EventType.TOOL_CALL_RESULT,
+                toolCallId: message.tool_call_id,
+                content:
+                  typeof message?.content === "string"
+                    ? message?.content
+                    : JSON.stringify(message?.content),
+                messageId: randomUUID(),
+                rawEvent: event,
+                role: "tool",
+              });
+            });
+
+          // Tool has completed — reset so the next snapshot reflects real state.
+          this.activeRun!.modelMadeToolCall = false;
+          this.activeRun!.hasFunctionStreaming = false;
+          break;
+        }
+
+        // Emit TOOL_CALL_START + ARGS + END for tool calls that were not
+        // already handled by the streaming path. Uses emittedToolCallStartIds
+        // to avoid duplicates from parallel tool calls, and the durable
+        // thread history to avoid re-announcing on a HITL resume (#2014).
+        if (
+          !this.emittedToolCallStartIds.has(toolCallOutput.tool_call_id) &&
+          !this.toolCallAnnouncedInPriorRun(toolCallOutput.tool_call_id)
+        ) {
+          this.emittedToolCallStartIds.add(toolCallOutput.tool_call_id);
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_START,
+            toolCallId: toolCallOutput.tool_call_id,
+            toolCallName: toolCallOutput.name,
+            parentMessageId: this.toolCallOwners.get(
+              toolCallOutput.tool_call_id,
+            ),
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_ARGS,
+            toolCallId: toolCallOutput.tool_call_id,
+            delta: JSON.stringify(event.data.input),
+            rawEvent: event,
+          });
+          this.dispatchEvent({
+            type: EventType.TOOL_CALL_END,
+            toolCallId: toolCallOutput.tool_call_id,
+            rawEvent: event,
+          });
+        }
+
+        const content: string = Array.isArray(toolCallOutput.content)
+          ? toolCallOutput.content
+              .map((block: any) => {
+                if (typeof block === "string") return block;
+                if (block.type === "text") return block.text;
+                return JSON.stringify(block);
+              })
+              .join("")
+          : toolCallOutput.content;
+
+        this.dispatchEvent({
+          type: EventType.TOOL_CALL_RESULT,
+          toolCallId: toolCallOutput.tool_call_id,
+          content,
+          messageId: randomUUID(),
+          role: "tool",
+          rawEvent: event,
+        });
+        // Tool has completed — reset so the next snapshot reflects real state.
+        this.activeRun!.modelMadeToolCall = false;
+        this.activeRun!.hasFunctionStreaming = false;
+        break;
+      case LangGraphEventTypes.OnToolError:
+        // A tool threw before OnToolEnd could fire. Without this, the
+        // modelMadeToolCall flag would stay set and suppress snapshots
+        // for the rest of the run.
+        this.activeRun!.modelMadeToolCall = false;
+        this.activeRun!.hasFunctionStreaming = false;
+        break;
+    }
+  }
+
+  /**
+   * Process [AIMessageChunk, metadata] tuples from messages-tuple stream mode
+   * and convert them into AG-UI text message and tool call events.
+   * Uses the same messagesInProcess tracking as events-mode streaming.
+   *
+   * This is a legacy fallback for LangGraph Platform deployments that do not emit
+   * on_chat_model_stream events (older streaming modes). It is only called when
+   * eventsStreamActive is false — i.e. no events-mode streaming has been seen yet.
+   * Do not remove: required for backward compatibility with older LangGraph Platform.
+   */
+  private handleMessagesTupleEvent(data: any[]) {
+    const chunk = data[0];
+
+    // Skip non-AI chunks (e.g., tool result messages, human messages).
+    //
+    // The two runtimes spell an assistant chunk differently and a graph served
+    // by either one reaches this handler, so both spellings have to pass.
+    // Python declares `type: Literal["AIMessageChunk"]` on AIMessageChunk while
+    // its parent AIMessage declares "ai"; JavaScript keeps "ai" on the chunk
+    // class too and exposes "AIMessageChunk" only through lc_name(). Matching
+    // one spelling alone drops every tuple produced by the other runtime.
+    // "generic" passes for the same reason langchainMessagesToAgui folds it
+    // into the assistant branch: LangGraph emits it for non-chat models that
+    // set no more specific type.
+    if (
+      chunk.type &&
+      chunk.type !== "ai" &&
+      chunk.type !== "AIMessageChunk" &&
+      chunk.type !== "generic"
+    ) {
+      return;
+    }
+
+    const content =
+      typeof chunk.content === "string"
+        ? chunk.content
+        : Array.isArray(chunk.content)
+          ? chunk.content.find((c: any) => c.type === "text")?.text
+          : null;
+    const toolCallChunks = chunk.tool_call_chunks;
+    // A turn is over when the provider says so, and the providers disagree on
+    // both the name and the place. OpenAI reports finish_reason in
+    // response_metadata. Anthropic reports stop_reason instead, and puts it in
+    // response_metadata through the Python integration but in
+    // additional_kwargs through the JavaScript one, whose message_delta branch
+    // spreads the whole delta there and builds response_metadata by hand
+    // without it.
+    //
+    // The value is not examined: "stop", "tool_calls" and "tool_use" all end
+    // the turn. Reading one field alone left a tool-call turn sitting in
+    // messagesInProcess, so its TOOL_CALL_END was never emitted and the text
+    // of the following turn streamed against a message that had never been
+    // started. The events-mode path reads its own field the same way, on
+    // presence rather than value.
+    const isFinished = Boolean(
+      chunk.response_metadata?.finish_reason ??
+        chunk.response_metadata?.stop_reason ??
+        chunk.additional_kwargs?.stop_reason,
+    );
+    const currentStream = this.getMessageInProgress(this.activeRun!.id);
+
+    // Handle tool call chunks
+    if (toolCallChunks?.length > 0) {
+      const tc = toolCallChunks[0];
+      if (tc.name) {
+        // End any text message in progress
+        if (currentStream?.id && !currentStream?.toolCallId) {
+          this.dispatchEvent({
+            type: EventType.TEXT_MESSAGE_END,
+            messageId: currentStream.id,
+          });
+          this.messagesInProcess[this.activeRun!.id] = null;
+        }
+        // Start new tool call
+        this.dispatchEvent({
+          type: EventType.TOOL_CALL_START,
+          toolCallId: tc.id || chunk.id,
+          toolCallName: tc.name,
+          parentMessageId: chunk.id,
+        });
+        this.setMessageInProgress(this.activeRun!.id, {
+          id: chunk.id,
+          toolCallId: tc.id || chunk.id,
+          toolCallName: tc.name,
+        });
+        this.activeRun!.hasFunctionStreaming = true;
+      } else if (tc.args && currentStream?.toolCallId) {
+        this.dispatchEvent({
+          type: EventType.TOOL_CALL_ARGS,
+          toolCallId: currentStream.toolCallId,
+          delta: tc.args,
+        });
+      }
+      return;
+    }
+
+    // Handle finish
+    if (isFinished) {
+      if (currentStream?.toolCallId) {
+        this.dispatchEvent({
+          type: EventType.TOOL_CALL_END,
+          toolCallId: currentStream.toolCallId,
+        });
+      } else if (currentStream?.id) {
+        this.dispatchEvent({
+          type: EventType.TEXT_MESSAGE_END,
+          messageId: currentStream.id,
+        });
+      }
+      this.messagesInProcess[this.activeRun!.id] = null;
+      return;
+    }
+
+    // Skip empty initialization chunks
+    if (!content && !toolCallChunks?.length) return;
+
+    // Handle text content streaming
+    if (content) {
+      if (!currentStream) {
+        const messageId = this.getOrPinTextMessageId(chunk.id);
+        this.dispatchEvent({
+          type: EventType.TEXT_MESSAGE_START,
+          role: "assistant",
+          messageId,
+        });
+        this.setMessageInProgress(this.activeRun!.id, {
+          id: messageId,
+          toolCallId: null,
+          toolCallName: null,
+        });
+      }
+      this.dispatchEvent({
+        type: EventType.TEXT_MESSAGE_CONTENT,
+        messageId: (
+          this.getMessageInProgress(this.activeRun!.id) ?? { id: chunk.id }
+        ).id,
+        delta: content,
+      });
+    }
+  }
+
+  protected interruptsToAGUI(
+    list: readonly LangGraphInterrupt[],
+  ): AGUIInterrupt[] {
+    return langGraphInterruptsToAGUI(list);
+  }
+
+  protected buildCommandResumeFromAgui(
+    entries: readonly ResumeEntry[],
+    _ctx: { openInterrupts: AGUIInterrupt[] },
+  ): unknown {
+    return buildLgCommandResumeFromAgui(entries);
+  }
+
+  public async runAgent(
+    ...args: Parameters<AbstractAgent["runAgent"]>
+  ): ReturnType<AbstractAgent["runAgent"]> {
+    try {
+      return await super.runAgent(...args);
+    } finally {
+      // runAgentStream consumes a pre-stream stop, but it is only reached once
+      // the run gets that far. A run that fails earlier (a throwing
+      // onInitialize or middleware) would otherwise leave the flag set and
+      // cancel the next run.
+      this.abortBeforeStreamOpen = false;
+    }
+  }
+
+  public async connectAgent(
+    ...args: Parameters<AbstractAgent["connectAgent"]>
+  ): ReturnType<AbstractAgent["connectAgent"]> {
+    try {
+      return await super.connectAgent(...args);
+    } finally {
+      this.abortBeforeStreamOpen = false;
+    }
+  }
+
+  // Request cancellation of the current run via LangGraph Platform SDK
+  public abortRun() {
+    this.cancelRequested = true;
+    if (this.isRunning && !this.activeRun) {
+      // The run has begun but its LangGraph stream has not opened yet, so
+      // there is nothing to cancel and no loop to observe cancelRequested.
+      // Hand the stop to runAgentStream. Guarded on isRunning so a stop that
+      // arrives after a run has already finished cannot kill the next one.
+      this.abortBeforeStreamOpen = true;
+    }
+    const threadId = this.activeRun?.threadId;
+    const runId = this.activeRun?.id;
+    if (threadId && runId && !this.cancelSent) {
+      void this.client.runs
+        .cancel(threadId, runId)
+        .then(() => {
+          this.cancelSent = true;
+        })
+        .catch(() => {
+          // Ignore cancellation errors; streaming loop will also check cancelRequested
+        });
+    }
+    super.abortRun();
+  }
+
+  async getCapabilities(): Promise<AgentCapabilities> {
+    return {
+      identity: { type: "langgraph" },
+      humanInTheLoop: {
+        supported: true,
+        interrupts: true,
+        approveWithEdits: true,
+      },
+      state: { snapshots: true, deltas: false, persistentState: true },
+      transport: { streaming: true },
+    };
+  }
+
+  handleReasoningEvent(reasoningData: LangGraphReasoning) {
+    if (!reasoningData || !reasoningData.type) {
+      return;
+    }
+
+    // A text-less chunk is still meaningful when it carries the provider's
+    // canonical reasoning id (the `response.output_item.added` /
+    // `…summary_part.added` chunks): stash the id so the first text delta
+    // opens the reasoning message under it, WITHOUT opening a message here —
+    // a summary-less (store=true) reasoning item must keep rendering nothing.
+    if (!reasoningData.text) {
+      if (reasoningData.id) {
+        this.pendingReasoningId = reasoningData.id;
+      }
+      return;
+    }
+
+    const reasoningStepIndex = reasoningData.index;
+
+    if (
+      this.reasoningProcess?.index &&
+      this.reasoningProcess.index !== reasoningStepIndex
+    ) {
+      if (this.reasoningProcess.type) {
+        this.dispatchEvent({
+          type: EventType.REASONING_MESSAGE_END,
+          messageId: this.reasoningProcess.messageId,
+        });
+      }
+      this.dispatchEvent({
+        type: EventType.REASONING_END,
+        messageId: this.reasoningProcess.messageId,
+      });
+      this.reasoningProcess = null;
+    }
+
+    if (!this.reasoningProcess) {
+      // No thinking step yet. Start a new one. Prefer the provider's
+      // canonical reasoning id (e.g. OpenAI `rs_…`) when the stream carried
+      // one: the snapshot converter re-emits this same reasoning under that
+      // id, and only a matching id lets the client reconcile the streamed
+      // copy with the snapshot copy instead of rendering both.
+      const messageId =
+        reasoningData.id ?? this.pendingReasoningId ?? randomUUID();
+      this.pendingReasoningId = undefined;
+      this.dispatchEvent({
+        type: EventType.REASONING_START,
+        messageId,
+      });
+      this.reasoningProcess = {
+        index: reasoningStepIndex,
+        messageId,
+      };
+    }
+
+    if (this.reasoningProcess.type !== reasoningData.type) {
+      this.dispatchEvent({
+        type: EventType.REASONING_MESSAGE_START,
+        messageId: this.reasoningProcess.messageId,
+        role: "reasoning" as const,
+      });
+      this.reasoningProcess.type = reasoningData.type;
+    }
+
+    // Accumulate signature if present (Anthropic extended thinking)
+    if (reasoningData.signature) {
+      this.reasoningProcess.signature = reasoningData.signature;
+    }
+
+    if (this.reasoningProcess.type) {
+      this.dispatchEvent({
+        type: EventType.REASONING_MESSAGE_CONTENT,
+        messageId: this.reasoningProcess.messageId,
+        delta: reasoningData.text,
+      });
+    }
+  }
+
+  getStateSnapshot(threadState: ThreadState<State>) {
+    let state = threadState.values;
+    const schemaKeys = this.activeRun!.schemaKeys!;
+    // Do not emit state keys that are not part of the output schema
+    if (schemaKeys?.output) {
+      state = filterObjectBySchemaKeys(state, [
+        ...this.constantSchemaKeys,
+        ...schemaKeys.output,
+      ]);
+    }
+    // return state
+    return state;
+  }
+
+  async getOrCreateThread(
+    threadId: string,
+    threadMetadata?: Record<string, any>,
+  ): Promise<Thread> {
+    let thread: Thread;
+    try {
+      try {
+        thread = await this.getThread(threadId);
+      } catch (error) {
+        thread = await this.createThread({
+          threadId,
+          metadata: threadMetadata,
+        });
+      }
+    } catch (error: unknown) {
+      throw new Error(`Failed to create thread: ${(error as Error).message}`);
+    }
+
+    return thread;
+  }
+
+  async getThread(threadId: string) {
+    return this.client.threads.get(threadId);
+  }
+
+  async createThread(
+    payload?: Parameters<typeof this.client.threads.create>[0],
+  ) {
+    return this.client.threads.create(payload);
+  }
+
+  async mergeConfigs({
+    configs,
+    assistant,
+    schemaKeys,
+  }: {
+    configs: Config[];
+    assistant: Assistant;
+    schemaKeys: SchemaKeys;
+  }) {
+    return configs.reduce((acc, cfg) => {
+      let filteredConfigurable = acc.configurable;
+
+      if (cfg.configurable) {
+        filteredConfigurable = schemaKeys?.config
+          ? filterObjectBySchemaKeys(cfg?.configurable, [
+              ...this.constantSchemaKeys,
+              ...(schemaKeys?.config ?? []),
+              ...(schemaKeys?.context ?? []),
+            ])
+          : cfg?.configurable;
+      }
+
+      const newConfig = {
+        ...acc,
+        ...cfg,
+        configurable: filteredConfigurable,
+      };
+
+      // LG does not return recursion limit if it's the default, therefore we check: if no recursion limit is currently set, and the user asked for 25, there is no change.
+      const isRecursionLimitSetToDefault =
+        acc.recursion_limit == null && cfg.recursion_limit === 25;
+      // Deep compare configs to avoid unnecessary update calls
+      const configsAreDifferent =
+        JSON.stringify(newConfig) !== JSON.stringify(acc);
+
+      // Check if the only difference is the recursion_limit being set to default
+      const isOnlyRecursionLimitDifferent =
+        isRecursionLimitSetToDefault &&
+        JSON.stringify({ ...newConfig, recursion_limit: null }) ===
+          JSON.stringify({ ...acc, recursion_limit: null });
+
+      if (configsAreDifferent && !isOnlyRecursionLimitDifferent) {
+        return {
+          ...acc,
+          ...newConfig,
+        };
+      }
+
+      return acc;
+    }, assistant.config);
+  }
+
+  getMessageInProgress(runId: string) {
+    return this.messagesInProcess[runId];
+  }
+
+  setMessageInProgress(runId: string, data: MessageInProgress) {
+    this.messagesInProcess = {
+      ...this.messagesInProcess,
+      [runId]: {
+        ...(this.messagesInProcess[runId] as MessageInProgress),
+        ...data,
+      },
+    };
+  }
+
+  async getAssistant(): Promise<Assistant> {
+    try {
+      const assistants = await this.client.assistants.search({
+        graphId: this.graphId,
+        limit: 1,
+      });
+      const retrievedAssistant = assistants.find(
+        (searchResult) => searchResult.graph_id === this.graphId,
+      );
+      if (!retrievedAssistant) {
+        const notFoundMessage = `
+      No agent found with graph ID ${this.graphId} found..\n
+
+      These are the available agents: [${assistants.map((a) => `${a.graph_id} (ID: ${a.assistant_id})`).join(", ")}]
+      `;
+        console.error(notFoundMessage);
+        throw new Error(notFoundMessage);
+      }
+
+      return retrievedAssistant;
+    } catch (error) {
+      const redefinedError = new Error(
+        `Failed to retrieve assistant: ${(error as Error).message}`,
+      );
+      this.dispatchEvent({
+        type: EventType.RUN_ERROR,
+        message: redefinedError.message,
+      });
+      this.subscriber.error();
+      throw redefinedError;
+    }
+  }
+
+  async getSchemaKeys(): Promise<SchemaKeys> {
+    try {
+      const graphSchema = await this.client.assistants.getSchemas(
+        this.assistant!.assistant_id,
+      );
+      let configSchema = null;
+      let contextSchema: string[] = [];
+      if (
+        "context_schema" in graphSchema &&
+        graphSchema.context_schema?.properties
+      ) {
+        contextSchema = Object.keys(graphSchema.context_schema.properties);
+      }
+      if (graphSchema.config_schema?.properties) {
+        configSchema = Object.keys(graphSchema.config_schema.properties);
+      }
+      if (
+        !graphSchema.input_schema?.properties ||
+        !graphSchema.output_schema?.properties
+      ) {
+        return {
+          config: [],
+          input: null,
+          output: null,
+          context: contextSchema,
+        };
+      }
+      const inputSchema = Object.keys(graphSchema.input_schema.properties);
+      const outputSchema = Object.keys(graphSchema.output_schema.properties);
+
+      return {
+        input:
+          inputSchema && inputSchema.length
+            ? [...inputSchema, ...this.constantSchemaKeys]
+            : null,
+        output:
+          outputSchema && outputSchema.length
+            ? [...outputSchema, ...this.constantSchemaKeys]
+            : null,
+        context: contextSchema,
+        config: configSchema,
+      };
+    } catch (e) {
+      return {
+        config: [],
+        input: this.constantSchemaKeys,
+        output: this.constantSchemaKeys,
+        context: [],
+      };
+    }
+  }
+
+  langGraphDefaultMergeState(
+    state: State,
+    messages: LangGraphMessage[],
+    input: RunAgentExtendedInput,
+  ): State<StateEnrichment> {
+    if (
+      messages.length > 0 &&
+      "role" in messages[0] &&
+      messages[0].role === "system"
+    ) {
+      // remove system message
+      messages = messages.slice(1);
+    }
+
+    // merge with existing messages
+    const existingMessages: LangGraphPlatformMessage[] = state.messages || [];
+    const existingMessageIds = new Set(
+      existingMessages.map((message) => message.id),
+    );
+
+    const newMessages = messages.filter(
+      (message) => !existingMessageIds.has(message.id),
+    );
+
+    // Input tools first so they win over stale state tools on name collision
+    const langGraphTools: LangGraphToolWithName[] = [
+      ...(input.tools ?? []),
+      ...(state.tools ?? []),
+    ].reduce((acc, tool) => {
+      let mappedTool = tool;
+      if (!tool.type) {
+        mappedTool = {
+          type: "function",
+          name: tool.name,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+          },
+        };
+      }
+
+      // Verify no duplicated
+      if (
+        acc.find(
+          (t: LangGraphToolWithName) =>
+            t.name === mappedTool.name ||
+            t.function.name === mappedTool.function.name,
+        )
+      )
+        return acc;
+
+      return [...acc, mappedTool];
+    }, []);
+
+    // Surface the A2UI tool-injection flag (set by the A2UI middleware via
+    // forwardedProps.injectA2UITool) into ag-ui state so graphs/tools can read
+    // it directly from state regardless of run mode. TS forwardedProps keys are
+    // not snake-cased, so the original camelCase key is used as-is.
+    const injectA2UITool = input.forwardedProps?.injectA2UITool;
+    const agUiState: StateEnrichment["ag-ui"] = {
+      tools: langGraphTools,
+      context: input.context,
+    };
+    if (injectA2UITool !== undefined) {
+      agUiState.inject_a2ui_tool = injectA2UITool;
+    }
+
+    return {
+      ...state,
+      messages: newMessages,
+      tools: langGraphTools,
+      "ag-ui": agUiState,
+      copilotkit: {
+        ...(state as any).copilotkit,
+        actions: langGraphTools,
+      },
+    };
+  }
+
+  handleNodeChange(nodeName: string | undefined) {
+    if (nodeName === "__end__") {
+      nodeName = undefined;
+    }
+    if (nodeName !== this.activeRun?.nodeName) {
+      // End current step
+      if (this.activeRun?.nodeName) {
+        this.endStep();
+      }
+      // If we actually got a node name, start a new step
+      if (nodeName) {
+        this.startStep(nodeName);
+      }
+      // Clear the pinned text message id: a new node should mint its own
+      // bubble. See RunMetadata.currentTextMessageId.
+      if (this.activeRun) {
+        this.activeRun.currentTextMessageId = undefined;
+      }
+    }
+    this.activeRun!.nodeName = nodeName;
+  }
+
+  /**
+   * Returns the messageId to use for a TEXT_MESSAGE_START emission, pinning
+   * the first id per node. chunk.id changes per LLM invocation, so a
+   * text→tool→text sequence within one node would otherwise render as
+   * multiple bubbles; pinning keeps them in one. handleNodeChange clears
+   * the pin on every node transition, so different nodes (e.g. a supervisor
+   * routing to specialist agents) get fresh ids and stay in separate
+   * bubbles. See #1317.
+   */
+  private getOrPinTextMessageId(fallbackId: string): string {
+    const messageId = this.activeRun!.currentTextMessageId ?? fallbackId;
+    this.activeRun!.currentTextMessageId = messageId;
+    return messageId;
+  }
+
+  startStep(nodeName: string) {
+    this.dispatchEvent({
+      type: EventType.STEP_STARTED,
+      stepName: nodeName,
+    });
+  }
+
+  endStep() {
+    this.dispatchEvent({
+      type: EventType.STEP_FINISHED,
+      stepName: this.activeRun!.nodeName!,
+    });
+  }
+
+  async getCheckpointByMessage(
+    messageId: string,
+    threadId: string,
+    checkpoint?: null | {
+      checkpoint_id?: null | string;
+      checkpoint_ns: string;
+    },
+  ): Promise<ThreadState> {
+    const options = checkpoint?.checkpoint_id
+      ? {
+          checkpoint: { checkpoint_id: checkpoint.checkpoint_id },
+        }
+      : undefined;
+    const history = await this.client.threads.getHistory(threadId, options);
+    const reversed = [...history].reverse(); // oldest → newest
+
+    let targetState = reversed.find((state) =>
+      (state.values as State).messages?.some(
+        (m: LangGraphPlatformMessage) => m.id === messageId,
+      ),
+    );
+
+    if (!targetState) throw new Error("Message not found");
+
+    const targetStateMessages = (targetState.values as State).messages ?? [];
+    const messageIndex = targetStateMessages.findIndex(
+      (m: LangGraphPlatformMessage) => m.id === messageId,
+    );
+    const messagesAfter = targetStateMessages.slice(messageIndex + 1);
+    if (messagesAfter.length) {
+      return this.getCheckpointByMessage(
+        messageId,
+        threadId,
+        targetState.parent_checkpoint,
+      );
+    }
+
+    const targetStateIndex = reversed.indexOf(targetState);
+
+    const { messages, ...targetStateValuesWithoutMessages } =
+      targetState.values as State;
+    const selectedCheckpoint = reversed[targetStateIndex - 1] ?? {
+      ...targetState,
+      values: {},
+    };
+    return {
+      ...selectedCheckpoint,
+      values: {
+        ...selectedCheckpoint.values,
+        ...targetStateValuesWithoutMessages,
+      },
+    };
+  }
+}
+
+export * from "./types";

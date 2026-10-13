@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+from typing import Final
+
+from litellm.exceptions import (
+    APIConnectionError,
+    APIError,
+    AuthenticationError,
+    BadRequestError,
+    BudgetExceededError,
+    ContentPolicyViolationError,
+    ContextWindowExceededError,
+    InternalServerError,
+    OpenAIError,
+    PermissionDeniedError,
+    RateLimitError,
+)
+
+from .types import (
+    LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
+    LLMRateLimitError,
+)
+
+
+# Minimal, provider-agnostic context-window detection
+LONG_PROMPT_PATTERNS: Final[list[str]] = [
+    "contextwindowexceedederror",
+    "prompt is too long",
+    "input length and `max_tokens` exceed context limit",
+    "please reduce the length of",
+    "exceeds the available context size",
+    "context length exceeded",
+    "input exceeds the context window",
+    "context window exceeds limit",  # Minimax provider
+]
+
+# These indicate malformed tool-use/tool-result history being sent to the
+# provider. They are tracked separately from true context-window errors so the
+# logs and agent control flow can preserve that distinction while still routing
+# into condensation-based recovery.
+MALFORMED_HISTORY_PATTERNS: Final[list[str]] = [
+    "tool_use ids were found without `tool_result` blocks immediately after",
+    # Anthropic backtick variant
+    "`tool_use` ids were found without `tool_result` blocks immediately after",
+    (
+        "each `tool_use` block must have a corresponding `tool_result` block "
+        "in the next message"
+    ),
+    "each tool_use must have a single result",
+    "found multiple `tool_result` blocks with id:",
+    "unexpected `tool_use_id` found in `tool_result` blocks",
+    (
+        "each `tool_result` block must have a corresponding `tool_use` block "
+        "in the previous message"
+    ),
+    # Moonshot / Kimi variant
+    "must be followed by tool messages responding to each 'tool_call_id'",
+    # OpenAI-compatible providers may reject replayed assistant tool calls whose
+    # arguments are not valid JSON.
+    "failed to parse tool call arguments as json",
+]
+
+# Vertex AI (Gemini) rejects context-caching requests when the cached content
+# is below the provider's minimum token threshold (currently 4096 tokens).
+# Example error: "The cached content is of 1171 tokens. The minimum token
+# count to start caching is 4096." — the `.lower()` comparison handles case
+# variation across providers but won't match reworded messages; update this
+# pattern if the API phrasing changes.
+PROMPT_CACHE_TOO_SMALL_PATTERNS: Final[list[str]] = [
+    "minimum token count to start caching",
+]
+
+# Deterministic "you have exhausted your allowance" outcomes. Unlike a transient
+# 429, these will NOT recover by retrying until the limit resets or is raised,
+# so retrying only burns backoff time. Callers (e.g. the LLM retry loop) use
+# this to skip retries; budget denials also stop model fallback.
+QUOTA_EXHAUSTION_PATTERNS: Final[list[str]] = [
+    "usage_limit_reached",
+    "insufficient_quota",
+]
+
+AUTH_PATTERNS: Final[list[str]] = [
+    "invalid api key",
+    "unauthorized",
+    "missing api key",
+    "invalid authentication",
+    "access denied",
+]
+
+CONTENT_POLICY_PATTERNS: Final[list[str]] = [
+    "content_policy",
+    "content filtering policy",
+    "output blocked by content filtering",
+]
+
+
+def is_context_window_exceeded(exception: Exception) -> bool:
+    if isinstance(exception, (ContextWindowExceededError, LLMContextWindowExceedError)):
+        return True
+
+    # Check for litellm/openai exception types that may contain context window errors.
+    # APIConnectionError can wrap provider-specific errors (e.g., Minimax) that include
+    # context window messages in their error text.
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
+        return False
+
+    s = str(exception).lower()
+    return any(p in s for p in LONG_PROMPT_PATTERNS)
+
+
+def looks_like_malformed_conversation_history_error(exception: Exception) -> bool:
+    if isinstance(exception, LLMMalformedConversationHistoryError):
+        return True
+
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
+        return False
+
+    s = str(exception).lower()
+    return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
+
+
+def is_prompt_cache_too_small(exception: Exception) -> bool:
+    """Return True if the error indicates the prompt cache content is too small.
+
+    Vertex AI (Gemini) requires a minimum number of tokens (currently 4096)
+    to create a context cache. When the cached content is below this threshold,
+    the API returns a 400 error. The SDK should detect this and retry without
+    prompt caching markers.
+    """
+    if not isinstance(exception, (BadRequestError, OpenAIError)):
+        return False
+    s = str(exception).lower()
+    return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
+
+
+def is_budget_exceeded_error(exception: BaseException) -> bool:
+    """Recognize explicit budget denials before or after SDK error mapping."""
+    if isinstance(exception, BudgetExceededError):
+        return True
+    if not isinstance(exception, (RateLimitError, LLMRateLimitError)):
+        return False
+    message = str(exception).lower()
+    return "budget_exceeded" in message or "budget has been exceeded" in message
+
+
+def is_quota_exhaustion_error(exception: BaseException) -> bool:
+    """Identify exhausted allowances that require a reset or limit increase."""
+    s = str(exception).lower()
+    return is_budget_exceeded_error(exception) or any(
+        p in s for p in QUOTA_EXHAUSTION_PATTERNS
+    )
+
+
+def looks_like_auth_error(exception: Exception) -> bool:
+    # Trust the typed exception when the provider/LiteLLM raised an explicit
+    # 401/403 — its message text may not contain the heuristic patterns below.
+    if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
+        return True
+    if not isinstance(exception, (BadRequestError, OpenAIError)):
+        return False
+    s = str(exception).lower()
+    if any(p in s for p in AUTH_PATTERNS):
+        return True
+    # Some providers include explicit status codes in message text
+    for code in ("status 401", "status 403"):
+        if code in s:
+            return True
+    return False
+
+
+def is_content_policy_violation(exception: Exception) -> bool:
+    if isinstance(exception, ContentPolicyViolationError):
+        return True
+    if not isinstance(exception, (BadRequestError, OpenAIError)):
+        return False
+    s = str(exception).lower()
+    return any(p in s for p in CONTENT_POLICY_PATTERNS)
+
+
+def is_transient_http_error(exception: BaseException) -> bool:
+    """Match provider HTTP failures eligible for retry and model fallback."""
+    return isinstance(exception, APIError) and (
+        exception.status_code in (408, 409, 429) or 500 <= exception.status_code < 600
+    )

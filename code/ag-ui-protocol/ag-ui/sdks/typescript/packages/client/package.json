@@ -1,0 +1,78 @@
+{
+  "name": "@ag-ui/client",
+  "author": "Markus Ecker <markus.ecker@gmail.com>",
+  "version": "1.0.2",
+  "agui": {
+    "protocolVersion": "1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ag-ui-protocol/ag-ui.git"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist/**",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint \"src/**/*.ts*\"",
+    "dev": "tsdown --watch",
+    "clean": "git clean -fdX --exclude=\"!.env\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:exports": "publint --strict && attw --pack",
+    "link:global": "pnpm link --global",
+    "unlink:global": "pnpm unlink --global"
+  },
+  "dependencies": {
+    "@ag-ui/core": "workspace:*",
+    "@ag-ui/encoder": "workspace:*",
+    "@ag-ui/proto": "workspace:*",
+    "@types/uuid": "^10.0.0",
+    "compare-versions": "^6.1.1",
+    "fast-json-patch": "^3.1.1",
+    "rxjs": "7.8.1",
+    "untruncate-json": "^0.0.1",
+    "uuid": "^11.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.4",
+    "@copilotkit/aimock": "1.37.4",
+    "@types/node": "^20.11.19",
+    "@vitest/coverage-istanbul": "^4.0.18",
+    "eslint": "^9.37.0",
+    "publint": "^0.3.12",
+    "tsdown": "^0.20.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "cache": false
+      },
+      "test:coverage": {
+        "cache": false
+      }
+    }
+  }
+}

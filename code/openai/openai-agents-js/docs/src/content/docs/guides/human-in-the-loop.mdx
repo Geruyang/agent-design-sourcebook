@@ -1,0 +1,152 @@
+---
+title: Human-in-the-loop
+description: Add a human in the loop check for your agent executions
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import humanInTheLoopExample from '../../../../../examples/docs/human-in-the-loop/index.ts?raw';
+import serverOwnedApprovalExample from '../../../../../examples/docs/human-in-the-loop/server.ts?raw';
+import toolApprovalDefinition from '../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
+
+This guide covers the SDK's approval-based human-in-the-loop flow. When a tool call requires approval, the SDK pauses the run, returns `interruptions`, and lets you resume later from the same `RunState`.
+
+That approval surface is run-wide, not limited to the current top-level agent. The same pattern applies when the tool belongs to the current agent, to an agent reached through a handoff, or to a nested `agent.asTool()` execution. In the nested `agent.asTool()` case, the interruption still surfaces on the outer run, so you approve or reject it on the outer `result.state` and resume the original root run.
+
+With `agent.asTool()`, approvals can happen at two different layers: the agent tool itself can require approval via `asTool({ needsApproval })`, and tools inside the nested agent can later raise their own approvals after the nested run starts. Both are handled through the same outer-run interruption flow.
+
+This page focuses on the manual approval flow via `interruptions`. If your app can decide in code, some tool types also support programmatic approval callbacks so the run can continue without pausing. If you are setting up `agent.asTool()` itself, see the [tools guide](/openai-agents-js/guides/tools#4-agents-as-tools); this page covers what happens once any tool in that run hierarchy needs approval.
+
+For `computerTool()`, use `onSafetyCheck` to accept or reject safety checks returned by the Responses API. This callback runs only for computer calls with pending checks that have non-empty `id` and `code` values and does not use the pause-and-resume approval flow described on this page. See [computer safety checks](/openai-agents-js/guides/tools#pending-computer-safety-checks) for details and an example.
+
+## Approval flow
+
+You can define a tool that requires approval by setting the `needsApproval` option to `true` or to an async function that returns a boolean.
+
+<Code
+  lang="typescript"
+  code={toolApprovalDefinition}
+  title="Tool approval definition"
+  meta={`{10}`}
+/>
+
+### Flow
+
+1. When a tool invocation is about to execute, the SDK evaluates its approval rule (`needsApproval` or the hosted MCP equivalent).
+2. If approval is required and no decision is stored yet, the tool call does not execute. Instead, the run records a [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem).
+3. At the end of that turn, the run pauses and returns all pending approvals in the [result](/openai-agents-js/guides/results) `interruptions` array. This includes approvals raised inside nested `agent.asTool()` runs.
+4. Resolve each pending item with `result.state.approve(interruption)` or `result.state.reject(interruption)`. Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` if the same tool should stay approved or rejected for the rest of the run. When rejecting, you can also pass `{ message: '...' }` to control the rejection text that is sent back to the model for that specific tool call.
+5. Resume by passing the updated `result.state` back into `runner.run(agent, state)`, where `agent` is the original top-level agent for the run. The SDK continues from the interrupted point, including nested agent-tool executions.
+
+By default, function-tool input guardrails run only after approval, immediately before the tool executes. If you want those same input guardrails to validate a local function-tool call before a pending approval is shown, pass `toolExecution: { preApprovalInputGuardrails: true }` to `run()` or `Runner`. When the pre-approval guardrail rejects, the SDK returns the guardrail message to the model as tool output instead of creating an approval interruption. When it allows the call, the run still pauses for approval, and the input guardrails run again after approval in case the tool call became unsafe while waiting.
+
+When `needsApproval` is a function, the SDK calls it only after the tool arguments have parsed into an inspectable object. Malformed JSON and non-object values fail closed: the SDK requests approval without invoking the callback or executing the tool. Approving that call still does not execute the tool; it continues through the normal argument parse-error path. Realtime function tools follow the same rule and emit `tool_approval_requested` for the invalid call.
+
+Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
+
+Computer tool interruptions can represent a batch of actions in one `computer_call` on GA models. The SDK evaluates `needsApproval` per action before execution, so one pending approval can cover a sequence such as move + click. If you inspect `interruption.rawItem` to render a UI, handle both the GA `actions` array and the legacy single `action` field.
+
+Serialized `RunState` also preserves computer approvals across both the current `computer` tool name and the legacy `computer_use_preview` name, so paused runs can resume cleanly during preview-to-GA migrations.
+
+If you do not provide `message`, the SDK falls back to the configured `toolErrorFormatter` (if any) and then to the default rejection text.
+
+You do not need to resolve every pending approval in the same pass. If you rerun after approving or rejecting only some items, those resolved calls can continue while unresolved ones remain in `interruptions` and pause the run again.
+
+Sticky decisions created with `alwaysApprove: true` or `alwaysReject: true` provide the default for later calls to the same tool. An exact decision for one call ID takes precedence over that sticky default: you can reject one call under sticky approval or approve one call under sticky rejection without changing the default for other calls. If you later replace that exact decision, the new exact decision applies to that call while the sticky default remains available for the rest.
+
+### Add input before resuming
+
+Use `RunState.addInput()` when new user input arrives while a run is paused and should be admitted before the next resumed model call. Add the input before resolving approvals and passing the same state back to `Runner.run()`. The staged input is part of the serialized state, so it survives `toString()` / `fromString()` even if unresolved approvals or local tool work delay that model call.
+
+Read `state.pendingInput` to inspect a cloned snapshot of the staged items, or call `state.clearPendingInput()` before resuming to remove all of them. `addInput()` accepts either a string or an array of input items. It raises a `UserError` when the state cannot safely reach another model call, such as a terminal state, a state with no remaining turns, or an interruption whose tool result may end the run.
+
+Once admitted, each staged occurrence becomes a [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) in the run's `newItems`, while its raw input item is included in `history`. With a local `session`, the SDK persists admitted input once before starting the model request. With `conversationId` or `previousResponseId`, it remains pending until the server accepts the response, so a failure known to occur before acceptance can be resumed without losing the input. If the provider reports that the request may already have been accepted, the SDK checkpoints that occurrence and fails closed instead of silently replaying it. See [Model retries](/openai-agents-js/guides/models#model-retries) for the separate, explicit unsafe-replay override.
+
+### Automatic approval decisions
+
+Manual `interruptions` are the most general pattern, but they are not the only one:
+
+- Local `shellTool()` and `applyPatchTool()` can use `onApproval` to approve or reject immediately in code.
+- Hosted MCP tools can use `requireApproval` together with `onApproval` for the same kind of programmatic decision.
+- Plain function tools use the manual interruption flow on this page.
+
+When these callbacks return a decision, the run continues without pausing for a human response. For Realtime session APIs, see the approval flow in the [Voice agents build guide](/openai-agents-js/guides/voice-agents/build#approval-before-tool-execution).
+
+### Streaming and sessions
+
+The same interruption flow works in streaming runs. After a streamed run pauses, wait for `stream.completed`, read `stream.interruptions`, resolve them, and call `run()` again with `{ stream: true }` if you want the resumed output to keep streaming. See [Human in the loop while streaming](/openai-agents-js/guides/streaming#human-in-the-loop-while-streaming) for the streamed version of this pattern.
+
+If you are also using a `session`, keep passing the same `session` when you resume from `RunState`. The resumed turn is then appended to session memory without re-preparing the input. See the [sessions guide](/openai-agents-js/guides/sessions) for the session lifecycle details.
+
+## Example
+
+Below is a more complete example of a human-in-the-loop flow that prompts for approval in the terminal and temporarily stores the state in a file.
+
+<Code
+  lang="typescript"
+  code={humanInTheLoopExample}
+  title="Human in the loop"
+/>
+
+See [the full example script](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) for a working end-to-end version.
+
+## Dealing with longer approval times
+
+The human-in-the-loop flow is designed to be interruptible for longer periods of time without keeping your server running. If you need to shut down the request and continue later on you can serialize the state and resume later.
+
+You can serialize the state using `result.state.toString()` (or `JSON.stringify(result.state)`) and resume later on by passing the serialized state into `RunState.fromString(agent, serializedState)` where `agent` is the instance of the agent that triggered the overall run.
+
+Output guardrails impose a stricter resume boundary when an approved function-tool result can become the run's final output. The current `RunState` schema records exact current-response generated-item ownership when the SDK can prove it, so supported output-bearing partial approval checkpoints can round-trip through serialized state. The SDK validates that ownership before further model, tool, or session side effects. Older snapshots and checkpoints with missing, invalid, or ambiguous ownership still fail closed with a `UserError`. Start a new run from safe input when this happens. Rebuild the same agent graph and preserve the original `toolUseBehavior`; do not work around an ownership error by replaying raw items.
+
+When `RunState` is serialized, the SDK records stable agent identities for the handoff and `Agent.asTool()` graph. This lets paused runs resume even when distinct agents share the same `name`, as long as the process that resumes the run rebuilds the same agent graph.
+
+The `agent` passed to `RunState.fromString(agent, serializedState)` is the root of that rebuilt graph. During deserialization, the SDK traverses that agent's handoffs and `Agent.asTool()` references, then resolves every serialized agent reference in the state against the rebuilt graph. This includes the current agent and nested references held by generated items, processed model responses, and queued next steps.
+
+If you need to resume with a substituted graph, for example agents whose models or tools were wrapped by another runtime, deserialize the state with the original graph, serialize it again, then deserialize that string with the substituted root agent. Calling `state.setCurrentAgent(agent)` only changes the active agent and does not rewrite nested references that were already resolved during deserialization.
+
+If the resumed process needs to inject a fresh context object, use `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })` instead.
+
+- `contextStrategy: 'merge'` (default) keeps the provided `RunContext`, merges in the serialized approval state, and restores serialized `toolInput` when the new context does not already define one.
+- `contextStrategy: 'replace'` rebuilds the run using the provided `RunContext` as-is.
+
+Serialized run state includes your app context plus SDK-managed runtime metadata such as approvals, usage, nested `toolInput`, and pending nested agent-tool resumptions. If you plan to store or transmit serialized state, treat `runContext.context` as persisted data and avoid placing secrets there unless you intentionally want them to travel with the state.
+
+By default tracing API keys are omitted from serialized state so you do not accidentally persist secrets. Pass `result.state.toString({ includeTracingApiKey: true })` only when you intentionally need to move tracing credentials with the state.
+
+Store serialized state in application-controlled storage, such as a server-side database.
+
+### Keep approval state on the server
+
+Serialized `RunState` contains execution state, including approval decisions, pending tool calls, tool arguments, and application context. `RunState.fromString()` restores that state; the method does not authenticate the snapshot or the person submitting it. Only deserialize snapshots from trusted storage or after your application verifies the complete snapshot's integrity, ownership, and replay protection. Schema validation and tool-call fingerprints do not authenticate a snapshot. SDK references to agent or generated-item ownership also do not authorize an application user.
+
+For browser or mobile approval interfaces, keep the complete snapshot in application-controlled server storage. Send the reviewer only authorized display details and opaque identifiers for the pending decisions. A run ID or decision ID is not proof of authorization. Treat tool names and arguments as untrusted display content: filter sensitive values and escape content when rendering HTML. Keep full run results and errors on the server, and return only application-selected output to the client.
+
+When a decision arrives, the server must:
+
+1. Authenticate the reviewer using the application's session or authentication middleware. Never obtain the authenticated identity from the approval request body.
+2. Authorize the reviewer against the stored run and the selected pending calls.
+3. Validate decision identifiers and boolean decisions against the pending requests stored on the server. Do not accept replacement tool calls, arguments, approval records, or serialized state from the client.
+4. Atomically check ownership and consume the pending request before deserialization and resumed execution. Concurrent or replayed submissions must not resume the same snapshot twice. In shared storage, use a transaction or equivalent atomic conditional transition.
+5. Load the server-owned snapshot, obtain pending items with `state.getInterruptions()`, and apply `state.approve()` or `state.reject()` only to those items before resuming the run.
+
+The following example requires one decision for every pending call in a batch. This is an application policy; the SDK also supports partial approval as described above. The store is confined to one event loop in one process. The owner check, validation, and consumption have no intervening `await`. A request remains consumed if deserialization or execution fails, or if execution is cancelled. Consumption prevents resubmitting this snapshot; it does not guarantee exactly-once tool side effects. Reconcile completed or uncertain tool side effects before initiating recovery or another run.
+
+<Code
+  lang="typescript"
+  code={serverOwnedApprovalExample}
+  title="Server-owned approval state"
+/>
+
+See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
+
+`RunState.fromStringWithContext()` with `contextStrategy: 'replace'`, or removing only serialized approval records, does not make an untrusted snapshot safe. Other fields still control execution. If a client transports the complete snapshot, verify the complete snapshot's integrity, bind it to the authorized user and run, and prevent replay before deserialization. Integrity verification does not encrypt the snapshot or hide its contents from the client.
+
+### Versioning pending tasks
+
+<Aside>
+  This primarily applies if you are trying to store your serialized state for a
+  longer time while doing changes to your agents.
+</Aside>
+
+If your approval requests take a longer time and you intend to version your agent definitions in a meaningful way or bump your Agents SDK version, we currently recommend for you to implement your own branching logic by installing two versions of the Agents SDK in parallel using package aliases.
+
+In practice this means assigning your own code a version number and storing it along with the serialized state and guiding the deserialization to the correct version of your code.

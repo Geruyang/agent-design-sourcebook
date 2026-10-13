@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package a13n.agent_envd.eip.v1;
+
+import "google/protobuf/descriptor.proto";
+
+enum MethodKind {
+  reserved 2;
+  reserved "METHOD_KIND_SERVER_NOTIFICATION";
+
+  METHOD_KIND_UNSPECIFIED = 0;
+  METHOD_KIND_REQUEST_RESPONSE = 1;
+}
+
+enum ReplayClass {
+  REPLAY_CLASS_UNSPECIFIED = 0;
+  REPLAY_CLASS_LEDGER_EXTERNAL = 1;
+  REPLAY_CLASS_ACTIVE_ONLY = 2;
+  REPLAY_CLASS_TERMINAL_EVIDENCE = 3;
+}
+
+enum ErrorFamily {
+  reserved 7, 9;
+  reserved "ERROR_FAMILY_STATE", "ERROR_FAMILY_NOTIFICATION";
+
+  ERROR_FAMILY_UNSPECIFIED = 0;
+  ERROR_FAMILY_COMMON = 1;
+  ERROR_FAMILY_INITIALIZATION = 2;
+  ERROR_FAMILY_RESOURCE = 3;
+  ERROR_FAMILY_COMMAND = 4;
+  ERROR_FAMILY_PROCESS = 5;
+  ERROR_FAMILY_OUTPUT = 6;
+  ERROR_FAMILY_SESSION = 8;
+}
+
+enum TransferAction {
+  TRANSFER_ACTION_UNSPECIFIED = 0;
+  TRANSFER_ACTION_OPEN = 1;
+  TRANSFER_ACTION_CLOSE = 2;
+  TRANSFER_ACTION_COMMIT = 3;
+  TRANSFER_ACTION_ABORT = 4;
+}
+
+enum TransferDirection {
+  TRANSFER_DIRECTION_UNSPECIFIED = 0;
+  TRANSFER_DIRECTION_SERVER_TO_CLIENT = 1;
+  TRANSFER_DIRECTION_CLIENT_TO_SERVER = 2;
+}
+
+message EIPMethodOptions {
+  reserved 2, 5;
+  reserved "capability", "idempotency_key";
+
+  string jsonrpc_method = 1;
+  MethodKind kind = 3;
+  ReplayClass replay_class = 4;
+  uint32 introduced_major = 6;
+  uint32 introduced_minor = 7;
+  ErrorFamily error_family = 8;
+  TransferAction transfer_action = 9;
+  TransferDirection transfer_direction = 10;
+  bool device_scoped = 11;
+}
+
+message EIPMessageOptions {
+  bool transparent = 1;
+  bool discriminated_union = 2;
+  bool additive_response = 3;
+  bool redacted_debug = 4;
+}
+
+message EIPEnumValueOptions {
+  string json_name = 1;
+  optional sint32 error_code = 2;
+}
+
+enum EIPStringFormat {
+  EIP_STRING_FORMAT_UNSPECIFIED = 0;
+  EIP_STRING_FORMAT_IDENTIFIER = 1;
+  EIP_STRING_FORMAT_PATH = 2;
+  EIP_STRING_FORMAT_BASE64_UNPADDED = 3;
+  EIP_STRING_FORMAT_PROTOCOL_VERSION = 4;
+  EIP_STRING_FORMAT_SHA256 = 5;
+}
+
+enum EIPDataFrameKind {
+  EIP_DATA_FRAME_KIND_UNSPECIFIED = 0;
+  EIP_DATA_FRAME_KIND_ATTACH = 1;
+  EIP_DATA_FRAME_KIND_ATTACHED = 2;
+  EIP_DATA_FRAME_KIND_CHUNK = 3;
+  EIP_DATA_FRAME_KIND_END = 4;
+  EIP_DATA_FRAME_KIND_END_ACK = 5;
+  EIP_DATA_FRAME_KIND_RESET = 6;
+  EIP_DATA_FRAME_KIND_CREDIT = 7;
+}
+
+enum EIPDataResetStatus {
+  EIP_DATA_RESET_STATUS_UNSPECIFIED = 0;
+  EIP_DATA_RESET_STATUS_PROTOCOL = 1;
+  EIP_DATA_RESET_STATUS_DENIED = 2;
+  EIP_DATA_RESET_STATUS_EXPIRED = 3;
+  EIP_DATA_RESET_STATUS_SOURCE = 4;
+  EIP_DATA_RESET_STATUS_LIMIT = 5;
+  EIP_DATA_RESET_STATUS_CANCELLED = 6;
+  EIP_DATA_RESET_STATUS_INTERNAL = 7;
+}
+
+message EIPDataFrameProfileOptions {
+  string magic = 1;
+  uint32 profile_version = 2;
+  uint32 eip_major = 3;
+  uint32 header_bytes = 4;
+  uint32 magic_bytes = 5;
+  uint32 version_bytes = 6;
+  uint32 kind_bytes = 7;
+  uint32 status_bytes = 8;
+  uint32 handle_length_bytes = 9;
+  uint32 session_length_bytes = 10;
+  uint32 stream_offset_bytes = 11;
+  uint32 payload_length_bytes = 12;
+  uint32 transfer_window_chunks = 13;
+}
+
+message EIPFieldOptions {
+  EIPStringFormat string_format = 1;
+  optional uint64 minimum = 2;
+  optional uint64 maximum = 3;
+  optional uint32 min_length = 4;
+  optional uint32 max_length = 5;
+  optional bool const_bool = 6;
+  optional string const_string = 7;
+  optional bool default_bool = 8;
+  optional uint64 default_uint = 9;
+  optional string default_string = 10;
+  bool default_message = 11;
+}
+
+extend google.protobuf.FileOptions {
+  EIPDataFrameProfileOptions eip_data_frame_profile = 51000;
+}
+
+extend google.protobuf.MethodOptions {
+  EIPMethodOptions eip_method = 51001;
+}
+
+extend google.protobuf.MessageOptions {
+  EIPMessageOptions eip_message = 51002;
+}
+
+extend google.protobuf.EnumValueOptions {
+  EIPEnumValueOptions eip_enum_value = 51003;
+}
+
+extend google.protobuf.FieldOptions {
+  EIPFieldOptions eip_field = 51004;
+}

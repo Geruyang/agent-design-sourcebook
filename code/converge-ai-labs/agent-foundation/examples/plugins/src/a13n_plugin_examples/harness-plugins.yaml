@@ -1,0 +1,12 @@
+schema_version: "1"
+plugins:
+  - plugin_id: recorder-entrypoint
+    plugin_key: example.run-recorder
+    enabled: true
+    configuration:
+      record_usage: true
+  - plugin_id: recorder-disabled
+    plugin_key: example.run-recorder
+    enabled: false
+    configuration:
+      record_usage: false

@@ -1,0 +1,65 @@
+---
+title: Voice Agents
+description: Build realtime assistants using RealtimeAgent and RealtimeSession
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+## Overview
+
+![Voice Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+
+Voice Agents let you build low-latency spoken interfaces on top of OpenAI speech-to-speech models. The SDK keeps the Realtime API mental model intact, but wraps the raw event flow in `RealtimeAgent`, `RealtimeSession`, and transport helpers that make tools, guardrails, handoffs, and session history easier to work with.
+
+Under the hood, the same Realtime concepts from the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), and [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) guides still apply. The Agents SDK adds a TypeScript-first layer on top of that API so you can stay focused on product logic instead of rebuilding transport and event handling from scratch.
+
+<Aside type="note">
+  Start with the Quickstart if you are connecting a browser client with WebRTC.
+  Jump to the transport guide first if you are deciding between WebRTC,
+  WebSocket, SIP, Twilio, or Cloudflare Workers.
+</Aside>
+
+## Start here
+
+<LinkCard
+  title="Voice Agents Quickstart"
+  href="/openai-agents-js/guides/voice-agents/quickstart"
+  description="Build your first realtime voice assistant using the OpenAI Agents SDK in minutes."
+/>
+
+<LinkCard
+  title="Building Voice Agents"
+  href="/openai-agents-js/guides/voice-agents/build"
+  description="Learn how session lifecycle, VAD, interruptions, multimodal input, tools, and history work in the SDK."
+/>
+
+<LinkCard
+  title="Realtime Transport Layer"
+  href="/openai-agents-js/guides/voice-agents/transport"
+  description="Choose between WebRTC, WebSocket, SIP, or a custom transport, and know when to drop down to raw events."
+/>
+
+## What the SDK adds
+
+- Browser-first WebRTC setup with ephemeral client tokens.
+- Server-side WebSocket and SIP transport options.
+- Automatic interruption handling and local conversation history updates.
+- Multi-agent orchestration through realtime handoffs.
+- Function tools, hosted MCP tools, approvals, and delegation patterns.
+- Output guardrails and tracing support for live spoken interactions.
+
+## Pick the next page
+
+| If you need to... | Go here |
+| --- | --- |
+| Connect a browser client safely with WebRTC and ephemeral tokens | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
+| Understand session lifecycle, VAD, interruptions, image input, tools, and history | [Building Voice Agents](/openai-agents-js/guides/voice-agents/build) |
+| Decide between WebRTC, WebSocket, SIP, and custom transports | [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) |
+| Run a phone or telephony experience on Twilio | [Voice Agents on Twilio](/openai-agents-js/extensions/twilio) |
+| Connect from Cloudflare Workers or other workerd runtimes | [Voice Agents on Cloudflare](/openai-agents-js/extensions/cloudflare) |
+
+## Why speech-to-speech
+
+Speech-to-speech models process user audio directly, so you do not have to build a separate speech-to-text, text reasoning, and text-to-speech chain for every turn. That keeps latency down and makes interruptions, mixed text and voice input, and tool calls feel much more natural in realtime applications.
+
+![Speech-to-speech model](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

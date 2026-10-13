@@ -1,0 +1,150 @@
+---
+title: 快速开始
+description: Create your first AI Agent from scratch
+canonicalHeadingIds:
+  - depth: 2
+    id: 'project-setup'
+    aliases:
+      - '项目设置'
+  - depth: 2
+    id: 'create-your-first-agent'
+    aliases:
+      - '首个智能体的创建'
+  - depth: 2
+    id: 'run-your-first-agent'
+    aliases:
+      - '首个智能体的运行'
+  - depth: 2
+    id: 'give-your-agent-tools'
+    aliases:
+      - '智能体工具的配置'
+  - depth: 2
+    id: 'add-a-few-more-agents'
+    aliases:
+      - '更多智能体的添加'
+  - depth: 2
+    id: 'define-your-handoffs'
+    aliases:
+      - '交接的定义'
+  - depth: 2
+    id: 'run-the-agent-orchestration'
+    aliases:
+      - '智能体编排的运行'
+  - depth: 2
+    id: 'putting-it-all-together'
+    aliases:
+      - '完整示例'
+  - depth: 2
+    id: 'view-your-traces'
+    aliases:
+      - '追踪查看'
+  - depth: 2
+    id: 'next-steps'
+    aliases:
+      - '后续步骤'
+---
+
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import quickstartExample from '../../../../../../examples/docs/quickstart/index.ts?raw';
+import createAgentExample from '../../../../../../examples/docs/quickstart/createAgent.ts?raw';
+import runAgentExample from '../../../../../../examples/docs/quickstart/runAgent.ts?raw';
+import agentWithToolsExample from '../../../../../../examples/docs/quickstart/agentWithTools.ts?raw';
+import additionalAgentsExample from '../../../../../../examples/docs/quickstart/additionalAgents.ts?raw';
+import defineHandoffsExample from '../../../../../../examples/docs/quickstart/defineHandoffs.ts?raw';
+import runOrchestrationExample from '../../../../../../examples/docs/quickstart/runOrchestration.ts?raw';
+
+<Aside type="note" title="正在寻找沙盒智能体？">
+  本快速开始将构建一个在应用进程中运行的文本智能体。如果您需要
+  具有隔离文件系统工作区、shell 命令和沙盒
+  会话状态的智能体，请从[快速入门](/openai-agents-js/zh/guides/sandbox-agents)开始。
+</Aside>
+
+## 项目设置
+
+<Steps>
+
+1. 创建项目并初始化 npm。此操作只需执行一次。
+
+   ```bash
+   mkdir my_project
+   cd my_project
+   npm init -y
+   ```
+
+2. 安装 Agents SDK 和 Zod。SDK 使用 Zod v4 定义工具 schema 和 structured outputs。
+
+   ```bash
+   npm install @openai/agents zod
+   ```
+
+3. 设置 OpenAI API 密钥。如果您还没有密钥，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建 OpenAI API 密钥。
+
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   ```
+
+   或者，您可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置密钥，并使用 `setTracingExportApiKey('<api key>')` 配置追踪。有关更多详细信息，请参阅 [SDK 配置](/openai-agents-js/zh/guides/config)。
+
+</Steps>
+
+## 首个智能体的创建
+
+智能体通过 instructions 和名称定义。
+
+<Code lang="typescript" code={createAgentExample} title="创建智能体" />
+
+## 首个智能体的运行
+
+您可以使用 `run` 方法运行智能体。要触发一次运行，需要同时传入作为起点的智能体和要传递的输入。
+
+该方法将返回一个执行结果，其中包含最终输出以及此次运行期间执行的所有操作。
+
+<Code lang="typescript" code={runAgentExample} title="运行智能体" />
+
+对于第二轮交互，您可以将 `result.history` 传回 `run()`、关联一个[会话](/openai-agents-js/zh/guides/sessions)，或通过 `conversationId` / `previousResponseId` 复用由 OpenAI 服务器管理的状态。[运行智能体](/openai-agents-js/zh/guides/running-agents)指南对这些方式进行了比较。
+
+## 智能体工具的配置
+
+您可以为智能体提供工具，用于查找信息或执行操作。
+
+<Code lang="typescript" code={agentWithToolsExample} title="添加工具" />
+
+## 更多智能体的添加
+
+定义更多专业智能体，将问题拆分为更小的部分，使每个专业智能体专注于一项任务，并针对不同问题使用不同模型。
+
+<Code lang="typescript" code={additionalAgentsExample} title="创建专业智能体" />
+
+## 交接的定义
+
+要编排多个智能体，请定义智能体的 `handoffs`。在运行期间选择交接后，运行器会自动将对话转交给目标智能体。
+
+<Code lang="typescript" code={defineHandoffsExample} title="定义交接" />
+
+运行结束后，您可以查看执行结果中的 `lastAgent` 属性，了解由哪个智能体生成了最终响应。
+
+## 智能体编排的运行
+
+运行器负责执行各个智能体、处理所有交接以及调用所有工具。
+
+<Code lang="typescript" code={runOrchestrationExample} title="运行智能体编排" />
+
+## 完整示例
+
+下面将所有内容整合为一个完整示例。请将其放入 `index.js` 文件并运行。如果您的应用已经配置为使用 TypeScript，也可以改用 `index.ts`。
+
+<Code lang="typescript" code={quickstartExample} title="快速上手" />
+
+## 追踪查看
+
+Agents SDK 会自动生成追踪记录。您可以使用这些追踪记录检查智能体的运行方式、调用的工具，以及哪些智能体接收了交接。
+
+要查看智能体运行期间发生的情况，请前往 [OpenAI 控制面板中的追踪查看器](https://platform.openai.com/traces)。
+
+## 后续步骤
+
+了解如何构建更复杂的智能体工作流：
+
+- 了解如何配置[智能体](/openai-agents-js/zh/guides/agents)。
+- 了解[运行智能体](/openai-agents-js/zh/guides/running-agents)和[会话](/openai-agents-js/zh/guides/sessions)。
+- 了解[工具](/openai-agents-js/zh/guides/tools)、[护栏](/openai-agents-js/zh/guides/guardrails)和[模型](/openai-agents-js/zh/guides/models)。

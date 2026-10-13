@@ -1,0 +1,3545 @@
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  afterAll,
+  vi,
+} from 'vitest';
+import { z } from 'zod';
+import { z as z3 } from 'zod/v3';
+import {
+  Agent,
+  AgentInputItem,
+  FunctionToolResult,
+  InputGuardrailTripwireTriggered,
+  Model,
+  ModelProvider,
+  ModelRequest,
+  ModelResponse,
+  ModelSettings,
+  RunAgentUpdatedStreamEvent,
+  RunContext,
+  RunStreamEvent,
+  RunToolApprovalItem,
+  ToolUseBehavior,
+  ToolsToFinalOutputResult,
+  Usage,
+  OutputGuardrailTripwireTriggered,
+  MaxTurnsExceededError,
+  handoff,
+  run,
+  tool,
+  hostedMcpTool,
+  setDefaultModelProvider,
+  Runner,
+  RunState,
+  MemorySession,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  shellTool,
+  applyPatchTool,
+  attachClientToolSearchExecutor,
+  type StandardSchemaWithJSON,
+} from '../src';
+import { getDefaultModelProvider } from '../src/providers';
+import { user } from '../src/helpers/message';
+import * as protocol from '../src/types/protocol';
+import logger from '../src/logger';
+import { getFunctionToolStateKey } from '../src/toolIdentity';
+import {
+  ScriptedModel,
+  modelError,
+  type ScriptedModelInput,
+} from '../src/testing';
+
+/**
+ * Compatibility wrapper for the scenario tests' existing queue helpers.
+ */
+class RecordingModel extends ScriptedModel {
+  constructor(initial?: ModelResponse | ModelResponse['output'] | Error) {
+    super(typeof initial === 'undefined' ? [] : [toScriptedInput(initial)]);
+  }
+
+  get lastTurnArgs(): Readonly<ModelRequest> | undefined {
+    return this.lastCall?.request;
+  }
+
+  get firstTurnArgs(): Readonly<ModelRequest> | undefined {
+    return this.firstCall?.request;
+  }
+
+  setNextOutput(output: ModelResponse | ModelResponse['output'] | Error) {
+    this.enqueue(toScriptedInput(output));
+  }
+
+  addMultipleTurnOutputs(
+    outputs: Array<ModelResponse | ModelResponse['output'] | Error>,
+  ) {
+    this.enqueue(...outputs.map(toScriptedInput));
+  }
+}
+
+function toScriptedInput(
+  output: ModelResponse | ModelResponse['output'] | Error,
+): ScriptedModelInput {
+  return output instanceof Error ? modelError(output) : output;
+}
+
+/**
+ * Helper that returns a function-call item referencing a handoff tool.
+ */
+function handoffToolCall(
+  agent: Agent<any, any>,
+  args?: string,
+): protocol.FunctionCallItem {
+  const h = handoff(agent);
+  return functionToolCall(h.toolName, args);
+}
+
+function functionToolCall(
+  name: string,
+  args?: string,
+  callId?: string,
+): protocol.FunctionCallItem {
+  return {
+    id: `fc_${callId ?? '1'}`,
+    type: 'function_call',
+    name,
+    callId: callId ?? 'call_1',
+    status: 'completed',
+    arguments: args ?? '',
+    providerData: {},
+  };
+}
+
+function hostedToolCall(
+  name: string,
+  args?: string,
+  output?: string,
+): protocol.HostedToolCallItem {
+  return {
+    id: `htc_${name}`,
+    type: 'hosted_tool_call',
+    name,
+    status: 'completed',
+    arguments: args,
+    output,
+    providerData: {
+      type: 'mcp_call',
+      server_label: 'gitmcp',
+      name,
+      id: `htc_${name}`,
+      arguments: args,
+    },
+  };
+}
+
+function hostedMcpApprovalRequest(
+  requestId: string,
+  serverLabel: string,
+  toolName: string,
+  rawRequestId = requestId,
+): protocol.HostedToolCallItem {
+  return {
+    id: rawRequestId,
+    type: 'hosted_tool_call',
+    name: 'mcp_approval_request',
+    status: 'completed',
+    providerData: {
+      type: 'mcp_approval_request',
+      id: requestId,
+      server_label: serverLabel,
+      name: toolName,
+      arguments: '{}',
+    },
+  };
+}
+
+function textMessage(content: string): protocol.AssistantMessageItem {
+  return {
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [
+      {
+        type: 'output_text',
+        text: content,
+        providerData: { annotations: [] },
+      },
+    ],
+    providerData: {},
+  };
+}
+
+function finalOutputMessage(content: string): protocol.AssistantMessageItem {
+  return textMessage(content);
+}
+
+function shellCall(
+  action: protocol.ShellAction,
+  callId?: string,
+): protocol.ShellCallItem {
+  return {
+    id: `shell_${callId ?? '1'}`,
+    type: 'shell_call',
+    callId: callId ?? 'shell_call_1',
+    action,
+    status: 'completed',
+    providerData: {},
+  };
+}
+
+function applyPatchCall(
+  operation: protocol.ApplyPatchOperation,
+  callId?: string,
+): protocol.ApplyPatchCallItem {
+  return {
+    id: `ap_${callId ?? '1'}`,
+    type: 'apply_patch_call',
+    callId: callId ?? 'ap1',
+    status: 'completed',
+    operation,
+    providerData: {},
+  };
+}
+
+function extractUserText(
+  input: ModelRequest['input'] | undefined,
+): string | undefined {
+  if (typeof input === 'string') {
+    return input;
+  }
+  const first = Array.isArray(input) ? input[0] : undefined;
+  if (!first || first.type !== 'message' || first.role !== 'user') {
+    return undefined;
+  }
+  if (typeof first.content === 'string') {
+    return first.content;
+  }
+  if (Array.isArray(first.content)) {
+    const content = first.content[0] as protocol.InputText | undefined;
+    if (content && content.type === 'input_text') {
+      return content.text;
+    }
+  }
+  return undefined;
+}
+
+describe('Agent scenarios (examples and docs patterns)', () => {
+  let previousDefaultProvider: ModelProvider | undefined;
+
+  beforeAll(() => {
+    try {
+      previousDefaultProvider = getDefaultModelProvider();
+    } catch {
+      previousDefaultProvider = undefined;
+    }
+
+    class DummyProvider implements ModelProvider {
+      async getModel(): Promise<Model> {
+        throw new Error(
+          'Default model provider should not be used in these tests',
+        );
+      }
+    }
+    setDefaultModelProvider(new DummyProvider());
+  });
+
+  afterAll(() => {
+    if (previousDefaultProvider) {
+      setDefaultModelProvider(previousDefaultProvider);
+    }
+  });
+
+  beforeEach(() => {
+    // Ensure tracing stays disabled for these fake-model tests.
+    // helpers/tests/setup.ts already calls setTracingDisabled(true) globally.
+  });
+
+  describe('guarded agent tool output', () => {
+    it.each([
+      { schema: 'zod-v3', stream: false },
+      { schema: 'standard', stream: true },
+    ])(
+      'returns the exact guarded $schema transform result (stream=$stream)',
+      async ({ schema, stream }) => {
+        let transformations = 0;
+        const transform = () => `checked-${++transformations}`;
+        const standardSchema: StandardSchemaWithJSON<
+          { answer: string },
+          { answer: string }
+        > = {
+          '~standard': {
+            version: 1,
+            vendor: 'test',
+            jsonSchema: {
+              input: () => ({
+                type: 'object',
+                properties: { answer: { type: 'string' } },
+                required: ['answer'],
+                additionalProperties: false,
+              }),
+              output: () => ({ type: 'object' }),
+            },
+            validate: () => ({ value: { answer: transform() } }),
+          },
+        };
+        // Zod v3 is supported at runtime; this workspace's types resolve to v4.
+        const zodSchema = z3.object({
+          answer: z3.string().transform(transform),
+        }) as unknown as z.ZodObject<{ answer: z.ZodString }>;
+        const checked: unknown[] = [];
+        const worker = new Agent({
+          name: 'TransformingWorker',
+          model: new RecordingModel([textMessage('{"answer":"raw"}')]),
+          outputType: schema === 'zod-v3' ? zodSchema : standardSchema,
+          outputGuardrails: [
+            {
+              name: 'record approved value',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [
+            worker.asTool({
+              toolName: 'delegate',
+              toolDescription: 'Run worker.',
+              onStream: stream ? () => {} : undefined,
+            }),
+          ],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toHaveLength(1);
+        const approved = JSON.stringify(checked[0]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([approved]);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: approved },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each<{
+      name: string;
+      stream?: boolean;
+      finalText: string;
+      owner?: 'runner' | 'handoff' | 'none';
+      custom?: boolean;
+      resume?: boolean;
+    }>([
+      { name: 'non-streaming final text', stream: false, finalText: 'checked' },
+      { name: 'streaming final text', stream: true, finalText: 'checked' },
+      { name: 'non-streaming empty output', stream: false, finalText: '' },
+      { name: 'streaming empty output', stream: true, finalText: '' },
+      { name: 'runner guardrail', owner: 'runner', finalText: 'checked' },
+      { name: 'handoff guardrail', owner: 'handoff', finalText: 'checked' },
+      { name: 'unguarded raw text', owner: 'none', finalText: 'checked' },
+      { name: 'custom extractor', custom: true, finalText: 'checked' },
+      { name: 'non-streaming approval resume', resume: true, finalText: '' },
+      {
+        name: 'streaming approval resume',
+        stream: true,
+        resume: true,
+        finalText: '',
+      },
+    ])(
+      'preserves $name at the parent boundary',
+      async ({
+        finalText,
+        stream = false,
+        resume = false,
+        custom = false,
+        owner = 'agent',
+      }) => {
+        const checked: unknown[] = [];
+        const guardrail = {
+          name: 'check selected output',
+          execute: async ({ agentOutput }: { agentOutput: unknown }) => {
+            checked.push(agentOutput);
+            return {
+              outputInfo: undefined,
+              tripwireTriggered: agentOutput === 'preliminary text',
+            };
+          },
+        };
+        const execute = vi.fn(async () => finalText);
+        const lookup = tool({
+          name: 'lookup',
+          description: 'Return the selected result.',
+          parameters: z.object({}),
+          needsApproval: resume,
+          execute,
+        });
+        const worker = new Agent({
+          name: 'GuardedWorker',
+          model: new RecordingModel([
+            functionToolCall('lookup', '{}', 'lookup-call'),
+            ...(resume ? [] : [textMessage('preliminary text')]),
+          ]),
+          tools: [lookup],
+          toolUseBehavior: 'stop_on_first_tool',
+          outputGuardrails:
+            owner === 'agent' || owner === 'handoff' ? [guardrail] : [],
+        });
+        const nested =
+          owner === 'handoff'
+            ? new Agent({
+                name: 'Delegator',
+                model: new RecordingModel([handoffToolCall(worker)]),
+                handoffs: [worker],
+              })
+            : worker;
+        const customOutputExtractor = vi.fn(() => 'custom output');
+        const nestedTool = nested.asTool({
+          toolName: 'delegate',
+          toolDescription: 'Run the worker.',
+          runConfig: {
+            tracingDisabled: true,
+            outputGuardrails: owner === 'runner' ? [guardrail] : [],
+          },
+          onStream: stream ? () => {} : undefined,
+          customOutputExtractor: custom ? customOutputExtractor : undefined,
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [nestedTool],
+        });
+        const runner = new Runner({ tracingDisabled: true });
+        let result = await runner.run<typeof parent, unknown>(parent, 'start');
+        if (resume) {
+          expect(result.interruptions).toHaveLength(1);
+          expect(checked).toEqual([]);
+          expect(execute).not.toHaveBeenCalled();
+          expect(
+            result.newItems.filter(
+              (item) => item.type === 'tool_call_output_item',
+            ),
+          ).toEqual([]);
+          const restored = await RunState.fromString(
+            parent,
+            result.state.toString(),
+          );
+          restored.approve(restored.getInterruptions()[0]!);
+          result = await runner.run(parent, restored);
+        }
+        const expected = custom
+          ? 'custom output'
+          : owner === 'none'
+            ? 'preliminary text'
+            : finalText;
+        expect(checked).toEqual(owner === 'none' ? [] : [finalText]);
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(result.finalOutput).toBe('parent done');
+        expect(result.interruptions).toHaveLength(0);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([expected]);
+        const parentInput = parentModel.lastTurnArgs?.input;
+        expect(parentInput).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: expected },
+            }),
+          ]),
+        );
+        if (custom) {
+          expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it.each(['direct', 'handoff'] as const)(
+      'returns serialized guarded structured output through %s execution',
+      async (route) => {
+        const checked: unknown[] = [];
+        const worker = new Agent({
+          name: 'StructuredWorker',
+          model: new RecordingModel([textMessage('{ "answer": "checked" }')]),
+          outputType: z.object({ answer: z.string() }),
+          outputGuardrails: [
+            {
+              name: 'check object',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const toolOptions = {
+          toolName: 'delegate',
+          toolDescription: 'Run worker.',
+        };
+        const nestedTool =
+          route === 'handoff'
+            ? Agent.create({
+                name: 'TextDelegator',
+                model: new RecordingModel([handoffToolCall(worker)]),
+                handoffs: [worker],
+              }).asTool(toolOptions)
+            : worker.asTool(toolOptions);
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [nestedTool],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toEqual([{ answer: 'checked' }]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual(['{"answer":"checked"}']);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: '{"answer":"checked"}' },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each(['checked text', ''])(
+      'preserves guarded text %j after a structured-agent handoff',
+      async (text) => {
+        const checked: string[] = [];
+        const worker = new Agent({
+          name: 'TextWorker',
+          model: new RecordingModel([textMessage(text)]),
+          outputGuardrails: [
+            {
+              name: 'check text',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const nested = Agent.create({
+          name: 'StructuredDelegator',
+          outputType: z.object({ answer: z.string() }),
+          model: new RecordingModel([handoffToolCall(worker)]),
+          handoffs: [worker],
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [
+            nested.asTool({
+              toolName: 'delegate',
+              toolDescription: 'Run worker.',
+            }),
+          ],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toEqual([text]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([text]);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it('does not forward preliminary text when the final output is rejected', async () => {
+      const worker = new Agent({
+        name: 'RejectedWorker',
+        model: new RecordingModel([
+          functionToolCall('lookup', '{}', 'lookup-call'),
+          textMessage('preliminary text'),
+        ]),
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Return a rejected result.',
+            parameters: z.object({}),
+            execute: async () => 'rejected result',
+          }),
+        ],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'reject final output',
+            execute: async () => ({
+              outputInfo: undefined,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const parentModel = new RecordingModel([
+        functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+      ]);
+      parentModel.setNextOutput([textMessage('parent done')]);
+      const parent = new Agent({
+        name: 'Parent',
+        model: parentModel,
+        tools: [
+          worker.asTool({
+            toolName: 'delegate',
+            toolDescription: 'Run worker.',
+          }),
+        ],
+      });
+      const result = await new Runner({ tracingDisabled: true }).run(
+        parent,
+        'start',
+      );
+      const output = result.newItems.find(
+        (item) => item.type === 'tool_call_output_item',
+      );
+      expect(output?.output).toBe(
+        'An error occurred while running the tool. Please try again.',
+      );
+      expect(JSON.stringify(parentModel.lastTurnArgs?.input)).not.toContain(
+        'preliminary text',
+      );
+      expect(JSON.stringify(parentModel.lastTurnArgs?.input)).not.toContain(
+        'rejected result',
+      );
+    });
+  });
+
+  it('loops until evaluator passes the outline (llm_as_judge)', async () => {
+    const outlineModel = new RecordingModel();
+    outlineModel.addMultipleTurnOutputs([
+      [textMessage('Outline v1')],
+      [textMessage('Outline v2')],
+    ]);
+
+    const judgeModel = new RecordingModel();
+    judgeModel.addMultipleTurnOutputs([
+      [
+        finalOutputMessage(
+          JSON.stringify({
+            feedback: 'Add more suspense',
+            score: 'needs_improvement',
+          }),
+        ),
+      ],
+      [
+        finalOutputMessage(
+          JSON.stringify({ feedback: 'Looks good', score: 'pass' }),
+        ),
+      ],
+    ]);
+
+    const evaluationOutput = z.object({
+      feedback: z.string(),
+      score: z.enum(['pass', 'needs_improvement']),
+    });
+
+    const outlineAgent = new Agent({ name: 'outline', model: outlineModel });
+    const judgeAgent = new Agent({
+      name: 'judge',
+      model: judgeModel,
+      outputType: evaluationOutput,
+    });
+
+    let conversation: AgentInputItem[] = [user('Tell me a space story')];
+    let latestOutline: string | undefined;
+
+    for (const [expectedOutline, expectedScore] of [
+      ['Outline v1', 'needs_improvement'] as const,
+      ['Outline v2', 'pass'] as const,
+    ]) {
+      const outlineResult = await run(outlineAgent, conversation);
+      latestOutline = outlineResult.finalOutput;
+      expect(latestOutline).toBe(expectedOutline);
+
+      conversation = outlineResult.history;
+
+      const judgeResult = await run(judgeAgent, conversation);
+      const feedback = judgeResult.finalOutput;
+      expect(feedback).toBeDefined();
+      expect(feedback?.score).toBe(expectedScore);
+
+      if (feedback?.score === 'pass') {
+        break;
+      }
+
+      conversation.push(user(`Feedback: ${feedback?.feedback}`));
+    }
+
+    expect(latestOutline).toBe('Outline v2');
+    expect(conversation.length).toBeGreaterThanOrEqual(2);
+    expect(judgeModel.lastTurnArgs?.input).toEqual(conversation);
+  });
+
+  it('returns simple text output for a single-turn agent', async () => {
+    const model = new RecordingModel([textMessage('Hello from agent')]);
+    const agent = new Agent({ name: 'simple', model });
+
+    const result = await run(agent, 'Hi');
+
+    expect(result.finalOutput).toBe('Hello from agent');
+    expect(result.rawResponses.length).toBe(1);
+    expect(result.history.length).toBe(2);
+  });
+
+  it('surfaces tool approval interruptions when a tool needs approval', async () => {
+    let executed = 0;
+    const needsApprovalTool = tool({
+      name: 'secure_tool',
+      description: 'A tool that needs approval',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: async () => {
+        executed += 1;
+        return 'should not run';
+      },
+    });
+
+    const model = new RecordingModel([functionToolCall('secure_tool', '{}')]);
+
+    const agent = new Agent({
+      name: 'approvals',
+      model,
+      tools: [needsApprovalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const result = await run(agent, 'run the secure tool');
+
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+    expect(result.interruptions?.length).toBe(1);
+    expect(result.interruptions?.[0].name).toBe('secure_tool');
+    expect(executed).toBe(0);
+
+    warnSpy.mockRestore();
+  });
+
+  it('resumes nested agent tools after approval across serialization', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'secret' }),
+          'nested-call',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: { nested: true } },
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'hello' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+
+    expect(first.interruptions).toHaveLength(1);
+    expect(first.interruptions?.[0]?.agent.name).toBe('NestedAgent');
+
+    const outerOutputsBefore = first.newItems.filter(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        'callId' in item.rawItem &&
+        item.rawItem.callId === 'outer-call',
+    );
+    expect(outerOutputsBefore).toHaveLength(0);
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    expect(approval.agent.name).toBe('NestedAgent');
+    restored.approve(approval);
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions ?? []).toHaveLength(0);
+    expect(resumed.finalOutput).toBe('Outer done');
+
+    const outerOutputsAfter = resumed.newItems.filter(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        'callId' in item.rawItem &&
+        item.rawItem.callId === 'outer-call',
+    );
+    expect(outerOutputsAfter).toHaveLength(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it.each([
+    ['current schema after restoration', 'after restoration', false],
+    ['legacy schema before serialization', 'before serialization', true],
+    ['legacy schema after restoration', 'after restoration', true],
+  ] as const)(
+    'rebinds nested deferred bare approvals in %s',
+    async (_description, approvalTiming, downgrade) => {
+      let executions = 0;
+      const deferredApprovalTool = tool({
+        name: 'secure_lookup',
+        description: 'Requires approval after deferred loading.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        needsApproval: true,
+        execute: async () => {
+          executions += 1;
+          return 'approved lookup';
+        },
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => deferredApprovalTool,
+      );
+      const nestedModel = new RecordingModel();
+      nestedModel.addMultipleTurnOutputs([
+        [
+          {
+            type: 'tool_search_call',
+            id: 'nested-search-call',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'nested-search-provider-call',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          functionToolCall('secure_lookup', '{}', 'nested-deferred-call'),
+        ],
+        [textMessage('Nested done')],
+      ]);
+      const nestedAgent = new Agent({
+        name: 'LegacyNestedDeferredAgent',
+        model: nestedModel,
+        tools: [clientToolSearch],
+      });
+      const nestedTool = nestedAgent.asTool({
+        toolName: 'legacy_nested_agent',
+        toolDescription: 'Runs the nested deferred approval agent.',
+      });
+      const outerModel = new RecordingModel();
+      outerModel.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            nestedTool.name,
+            JSON.stringify({ input: 'look up the record' }),
+            'outer-nested-call',
+          ),
+        ],
+        [textMessage('Outer done')],
+      ]);
+      const outerAgent = new Agent({
+        name: 'LegacyNestedDeferredOuterAgent',
+        model: outerModel,
+        tools: [nestedTool],
+      });
+      const runner = new Runner();
+
+      const first = await runner.run(outerAgent, 'start');
+      expect(first.interruptions).toHaveLength(1);
+      expect(first.interruptions[0]?.agent).toBe(nestedAgent);
+
+      if (approvalTiming === 'before serialization') {
+        first.state.approve(first.interruptions[0]!);
+      }
+      const publicApprovals = first.state._context.toJSON().approvals;
+      const serialized = first.state.toJSON() as any;
+      const downgradeToLegacy = (value: any) => {
+        value.$schemaVersion = '1.15';
+        delete value.currentResponseGeneratedItemOwnership;
+        delete value.context.functionApprovals;
+        delete value.context.legacyFunctionApprovals;
+        delete value.pendingAgentToolRunAliases;
+        for (const interruption of value.currentStep?.data?.interruptions ??
+          []) {
+          delete interruption.functionToolStateKey;
+        }
+      };
+      if (downgrade) {
+        for (const [key, pendingState] of Object.entries(
+          serialized.pendingAgentToolRuns,
+        )) {
+          const nestedState = JSON.parse(pendingState as string);
+          downgradeToLegacy(nestedState);
+          serialized.pendingAgentToolRuns[key] = JSON.stringify(nestedState);
+        }
+        downgradeToLegacy(serialized);
+        serialized.context.approvals = {
+          ...serialized.context.approvals,
+          ...publicApprovals,
+        };
+      }
+
+      const restored = await RunState.fromString(
+        outerAgent,
+        JSON.stringify(serialized),
+      );
+      const approval = restored.getInterruptions()[0];
+      expect(approval?.functionToolStateKey).toBe(
+        getFunctionToolStateKey(deferredApprovalTool),
+      );
+      if (approvalTiming === 'after restoration') {
+        restored.approve(approval!);
+      } else {
+        expect(
+          restored._context.isToolApproved({
+            toolName: getFunctionToolStateKey(deferredApprovalTool)!,
+            callId: 'nested-deferred-call',
+            functionTool: false,
+            agent: nestedAgent,
+          }),
+        ).toBe(true);
+      }
+
+      const resumed = await runner.run(outerAgent, restored);
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(resumed.finalOutput).toBe('Outer done');
+      expect(executions).toBe(1);
+    },
+  );
+
+  it('handles multi-step approvals in deeply nested agent tools', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const level3Model = new RecordingModel();
+    level3Model.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'lvl3-1',
+        ),
+      ],
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'two' }),
+          'lvl3-2',
+        ),
+      ],
+      [textMessage('Level3 done')],
+    ]);
+
+    const level3Agent = new Agent({
+      name: 'Level3Agent',
+      model: level3Model,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const level3Tool = level3Agent.asTool({
+      toolName: 'level3_tool',
+      toolDescription: 'Level 3 agent tool',
+    });
+
+    const level2Model = new RecordingModel();
+    level2Model.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'level3_tool',
+          JSON.stringify({ input: 'go' }),
+          'lvl2-call',
+        ),
+      ],
+      [textMessage('Level2 done')],
+    ]);
+
+    const level2Agent = new Agent({
+      name: 'Level2Agent',
+      model: level2Model,
+      tools: [level3Tool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const level2Tool = level2Agent.asTool({
+      toolName: 'level2_tool',
+      toolDescription: 'Level 2 agent tool',
+    });
+
+    const level1Model = new RecordingModel();
+    level1Model.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'level2_tool',
+          JSON.stringify({ input: 'start' }),
+          'lvl1-call',
+        ),
+      ],
+      [textMessage('Level1 done')],
+    ]);
+
+    const level1Agent = new Agent({
+      name: 'Level1Agent',
+      model: level1Model,
+      tools: [level2Tool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(level1Agent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    let restored = await RunState.fromString(
+      level1Agent,
+      first.state.toString(),
+    );
+    restored.approve(restored.getInterruptions()[0]);
+    const second = await runner.run(level1Agent, restored);
+    expect(second.interruptions).toHaveLength(1);
+
+    restored = await RunState.fromString(level1Agent, second.state.toString());
+    restored.approve(restored.getInterruptions()[0]);
+    const final = await runner.run(level1Agent, restored);
+
+    expect(final.interruptions ?? []).toHaveLength(0);
+    expect(final.finalOutput).toBe('Level1 done');
+
+    warnSpy.mockRestore();
+  });
+
+  it('propagates alwaysApprove across nested resumes with context override', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'nested-1',
+        ),
+      ],
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'two' }),
+          'nested-2',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedApproveAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: { nested: true } },
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'start' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterApproveAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.approve(approval, { alwaysApprove: true });
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions ?? []).toHaveLength(0);
+    expect(resumed.finalOutput).toBe('Outer done');
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not merge approvals when resume strategy is replace', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'nested-1',
+        ),
+      ],
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'two' }),
+          'nested-2',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedReplaceAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: { nested: true } },
+      resumeState: { contextStrategy: 'replace' },
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'start' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterReplaceAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.approve(approval, { alwaysApprove: true });
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      resumed.state.hasPendingAgentToolRun('nested_tool', 'outer-call'),
+    ).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('prefers serialized context when resuming nested tools', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'nested-1',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedPreferSerializedAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedContext = new RunContext({ snapshot: 'v1' });
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: nestedContext },
+      resumeState: { contextStrategy: 'preferSerialized' },
+      customOutputExtractor: (result) =>
+        String((result.runContext.context as { snapshot?: string }).snapshot),
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'start' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterPreferSerializedAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    nestedContext.context.snapshot = 'v2';
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.approve(approval);
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions ?? []).toHaveLength(1);
+
+    const pending = resumed.state.getPendingAgentToolRun(
+      'nested_tool',
+      'outer-call',
+    );
+    if (!pending) {
+      throw new Error('Expected pending nested run state');
+    }
+    const nestedState = await RunState.fromString(nestedAgent, pending);
+    expect(
+      (nestedState._context.context as { snapshot?: string }).snapshot,
+    ).toBe('v1');
+
+    warnSpy.mockRestore();
+  });
+
+  it('resumes multiple nested agent tools independently', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModelA = new RecordingModel();
+    nestedModelA.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'alpha' }),
+          'nested-a',
+        ),
+      ],
+      [textMessage('Nested A done')],
+    ]);
+
+    const nestedAgentA = new Agent({
+      name: 'NestedAgentA',
+      model: nestedModelA,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedModelB = new RecordingModel();
+    nestedModelB.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'beta' }),
+          'nested-b',
+        ),
+      ],
+      [textMessage('Nested B done')],
+    ]);
+
+    const nestedAgentB = new Agent({
+      name: 'NestedAgentB',
+      model: nestedModelB,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedToolA = nestedAgentA.asTool({
+      toolName: 'nested_a',
+      toolDescription: 'Nested agent A',
+    });
+
+    const nestedToolB = nestedAgentB.asTool({
+      toolName: 'nested_b',
+      toolDescription: 'Nested agent B',
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_a',
+          JSON.stringify({ input: 'first' }),
+          'outer-a',
+        ),
+        functionToolCall(
+          'nested_b',
+          JSON.stringify({ input: 'second' }),
+          'outer-b',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterAgentMulti',
+      model: outerModel,
+      tools: [nestedToolA, nestedToolB],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+
+    expect(first.interruptions).toHaveLength(2);
+    expect(first.state.hasPendingAgentToolRun('nested_a', 'outer-a')).toBe(
+      true,
+    );
+    expect(first.state.hasPendingAgentToolRun('nested_b', 'outer-b')).toBe(
+      true,
+    );
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approvalA = restored
+      .getInterruptions()
+      .find(
+        (item: RunToolApprovalItem) =>
+          item.rawItem.type === 'function_call' &&
+          item.rawItem.callId === 'nested-a',
+      );
+    if (!approvalA) {
+      throw new Error('Expected approval for nested tool A');
+    }
+    restored.approve(approvalA);
+
+    const second = await runner.run(outerAgent, restored);
+    expect(second.interruptions).toHaveLength(1);
+    expect(second.state.hasPendingAgentToolRun('nested_a', 'outer-a')).toBe(
+      false,
+    );
+    expect(second.state.hasPendingAgentToolRun('nested_b', 'outer-b')).toBe(
+      true,
+    );
+
+    const restoredAgain = await RunState.fromString(
+      outerAgent,
+      second.state.toString(),
+    );
+    const approvalB = restoredAgain
+      .getInterruptions()
+      .find(
+        (item: RunToolApprovalItem) =>
+          item.rawItem.type === 'function_call' &&
+          item.rawItem.callId === 'nested-b',
+      );
+    if (!approvalB) {
+      throw new Error('Expected approval for nested tool B');
+    }
+    restoredAgain.approve(approvalB);
+
+    const final = await runner.run(outerAgent, restoredAgain);
+    expect(final.interruptions ?? []).toHaveLength(0);
+    expect(final.finalOutput).toBe('Outer done');
+    expect(final.state.hasPendingAgentToolRun('nested_a', 'outer-a')).toBe(
+      false,
+    );
+    expect(final.state.hasPendingAgentToolRun('nested_b', 'outer-b')).toBe(
+      false,
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('clears pending nested runs after rejection', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'nope' }),
+          'nested-reject',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedRejectAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_reject',
+      toolDescription: 'Nested agent tool',
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_reject',
+          JSON.stringify({ input: 'go' }),
+          'outer-reject',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterRejectAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+    expect(
+      first.state.hasPendingAgentToolRun('nested_reject', 'outer-reject'),
+    ).toBe(true);
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.reject(approval);
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions ?? []).toHaveLength(0);
+    expect(resumed.finalOutput).toBe('Outer done');
+    expect(
+      resumed.state.hasPendingAgentToolRun('nested_reject', 'outer-reject'),
+    ).toBe(false);
+
+    warnSpy.mockRestore();
+  });
+
+  it('applies callModelInputFilter edits before calling the model', async () => {
+    const model = new RecordingModel([textMessage('Filtered response')]);
+    const agent = new Agent({ name: 'filtered', model });
+
+    const result = await run(agent, 'Sensitive input', {
+      callModelInputFilter: ({ modelData: _modelData }) => {
+        return {
+          instructions: 'Filtered instructions',
+          input: [user('Redacted')],
+        };
+      },
+    });
+
+    expect(result.finalOutput).toBe('Filtered response');
+    expect(model.lastTurnArgs?.systemInstructions).toBe(
+      'Filtered instructions',
+    );
+    expect(extractUserText(model.lastTurnArgs?.input)).toBe('Redacted');
+  });
+
+  it('passes conversation identifiers through to the model request', async () => {
+    const model = new RecordingModel([textMessage('Hello')]);
+    const agent = new Agent({ name: 'conv', model });
+
+    const result = await run(agent, 'Hi', {
+      conversationId: 'conv-123',
+      previousResponseId: 'prev-456',
+    });
+
+    expect(result.finalOutput).toBe('Hello');
+    expect(model.lastTurnArgs?.conversationId).toBe('conv-123');
+    expect(model.lastTurnArgs?.previousResponseId).toBe('prev-456');
+  });
+
+  it('replays session history across runs using MemorySession', async () => {
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [textMessage('First reply')],
+      [textMessage('Second reply')],
+    ]);
+
+    const agent = new Agent({ name: 'sessioned', model });
+    const session = new MemorySession();
+
+    const first = await run(agent, 'Hello session', { session });
+    expect(first.finalOutput).toBe('First reply');
+    const storedAfterFirst = await session.getItems();
+    expect(storedAfterFirst.length).toBe(2);
+
+    const second = await run(agent, 'Follow up', { session });
+    expect(second.finalOutput).toBe('Second reply');
+
+    const secondInput = model.calls[1]?.request.input;
+    expect(Array.isArray(secondInput)).toBe(true);
+    if (Array.isArray(secondInput)) {
+      const assistantMessages = secondInput.filter(
+        (item): item is protocol.AssistantMessageItem =>
+          item.type === 'message' && item.role === 'assistant',
+      );
+      expect(
+        assistantMessages.some((msg) => {
+          const content = Array.isArray(msg.content)
+            ? msg.content[0]
+            : undefined;
+          return (
+            content && (content as protocol.OutputText).text === 'First reply'
+          );
+        }),
+      ).toBe(true);
+
+      const userMessages = secondInput.filter(
+        (item): item is protocol.UserMessageItem =>
+          item.type === 'message' && item.role === 'user',
+      );
+      expect(
+        extractUserText([
+          userMessages[userMessages.length - 1],
+        ] as ModelRequest['input']),
+      ).toBe('Follow up');
+    }
+
+    const storedAfterSecond = await session.getItems();
+    const userCount = storedAfterSecond.filter(
+      (item): item is protocol.UserMessageItem =>
+        item.type === 'message' && item.role === 'user',
+    ).length;
+    const assistantCount = storedAfterSecond.filter(
+      (item): item is protocol.AssistantMessageItem =>
+        item.type === 'message' && item.role === 'assistant',
+    ).length;
+    expect(userCount).toBe(2);
+    expect(assistantCount).toBe(2);
+  });
+
+  it('resumes with previousResponseId and only sends new user input', async () => {
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      {
+        output: [textMessage('First turn')],
+        usage: new Usage(),
+        responseId: 'resp-100',
+      },
+      [textMessage('Second turn')],
+    ]);
+
+    const agent = new Agent({ name: 'prev-response', model });
+
+    const first = await run(agent, 'Initial', {
+      previousResponseId: 'seed-resp',
+    });
+    expect(first.finalOutput).toBe('First turn');
+    expect(model.calls[0]?.request.previousResponseId).toBe('seed-resp');
+
+    const followUp = await run(agent, 'Follow up', {
+      previousResponseId: first.rawResponses[0]?.responseId,
+    });
+    expect(followUp.finalOutput).toBe('Second turn');
+    expect(model.calls[1]?.request.previousResponseId).toBe('resp-100');
+
+    const secondInput = model.calls[1]?.request.input;
+    expect(Array.isArray(secondInput)).toBe(true);
+    if (Array.isArray(secondInput)) {
+      expect(secondInput.length).toBe(1);
+      expect(extractUserText(secondInput)).toBe('Follow up');
+    }
+  });
+
+  it('applies callModelInputFilter even when server manages conversation state', async () => {
+    const model = new RecordingModel([textMessage('hi there')]);
+    const agent = new Agent({ name: 'filtered-server', model });
+
+    const history: AgentInputItem[] = [
+      user('keep me'),
+      textMessage('assistant reply'),
+      user('redact me'),
+    ];
+
+    const result = await run(agent, history, {
+      conversationId: 'conv-filter',
+      callModelInputFilter: ({ modelData }) => ({
+        ...modelData,
+        input: modelData.input.filter(
+          (item) => item.type === 'message' && item.role === 'user',
+        ),
+      }),
+    });
+
+    expect(result.finalOutput).toBe('hi there');
+    expect(Array.isArray(model.lastTurnArgs?.input)).toBe(true);
+    if (Array.isArray(model.lastTurnArgs?.input)) {
+      const userOnly = model.lastTurnArgs?.input.filter(
+        (item) => item.type === 'message' && item.role === 'user',
+      );
+      expect(userOnly.length).toBe(2);
+      expect(extractUserText(userOnly)).toBe('keep me');
+    }
+    expect(model.lastTurnArgs?.conversationId).toBe('conv-filter');
+  });
+
+  it('sends prompt templates and overrides prompt model when a custom model is set', async () => {
+    const model = new RecordingModel([textMessage('Hello Kaz')]);
+    const agent = new Agent({
+      name: 'prompted',
+      model,
+      instructions: 'Be concise',
+      prompt: {
+        promptId: 'pmpt_template_123',
+        version: 'v2',
+        variables: {
+          name: 'Kaz',
+          greeting: { type: 'input_text', text: 'Howdy' },
+        },
+      },
+    });
+
+    const result = await run(agent, 'What is your name?');
+
+    expect(result.finalOutput).toBe('Hello Kaz');
+    expect(model.lastTurnArgs?.prompt).toMatchObject({
+      promptId: 'pmpt_template_123',
+      version: 'v2',
+      variables: {
+        name: 'Kaz',
+        greeting: { type: 'input_text', text: 'Howdy' },
+      },
+    });
+    expect(model.lastTurnArgs?.overridePromptModel).toBe(true);
+    expect(model.lastTurnArgs?.systemInstructions).toBe('Be concise');
+  });
+
+  it('runs a basic tool call and uses the tool output', async () => {
+    let toolCalls = 0;
+    const adder = tool({
+      name: 'add',
+      description: 'Adds two numbers',
+      parameters: z.object({ a: z.number(), b: z.number() }),
+      execute: async ({ a, b }) => {
+        toolCalls += 1;
+        return a + b;
+      },
+    });
+
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [functionToolCall('add', JSON.stringify({ a: 2, b: 3 }))],
+      [textMessage('sum is 5')],
+    ]);
+
+    const agent = new Agent({
+      name: 'calculator',
+      model,
+      tools: [adder],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'Add 2 and 3');
+
+    expect(toolCalls).toBe(1);
+    expect(result.finalOutput).toBe('sum is 5');
+    expect(result.rawResponses.length).toBe(2);
+  });
+
+  it('reuses outputs across parallel translations', async () => {
+    const translationModel = new RecordingModel();
+    translationModel.addMultipleTurnOutputs([
+      [textMessage('Uno')],
+      [textMessage('Dos')],
+      [textMessage('Tres')],
+    ]);
+    const spanishAgent = new Agent({
+      name: 'spanish_agent',
+      model: translationModel,
+    });
+
+    const pickerModel = new RecordingModel();
+    pickerModel.setNextOutput([textMessage('Pick: Dos')]);
+    const pickerAgent = new Agent({ name: 'picker', model: pickerModel });
+
+    const translationResults = await Promise.all(
+      Array.from({ length: 3 }).map(() => run(spanishAgent, 'Hello')),
+    );
+    const translations = translationResults.map(
+      (result) => result.finalOutput ?? '',
+    );
+
+    const combined = translations.join('\n\n');
+    const pickerResult = await run(
+      pickerAgent,
+      `Input: Hello\n\nTranslations:\n${combined}`,
+    );
+
+    expect(translations).toEqual(['Uno', 'Dos', 'Tres']);
+    expect(translationModel.calls.length).toBe(3);
+    expect(
+      translationModel.calls.every(
+        (call) => extractUserText(call.request.input) === 'Hello',
+      ),
+    ).toBe(true);
+    expect(pickerResult.finalOutput).toBe('Pick: Dos');
+    expect(extractUserText(pickerModel.lastTurnArgs?.input)).toBe(
+      `Input: Hello\n\nTranslations:\n${combined}`,
+    );
+  });
+
+  it('stops deterministic flow when checker blocks', async () => {
+    const outlineModel = new RecordingModel([textMessage('Outline v1')]);
+    const checkerModel = new RecordingModel([
+      finalOutputMessage(
+        JSON.stringify({ good_quality: false, is_scifi: true }),
+      ),
+    ]);
+    const storyModel = new RecordingModel(new Error('story should not run'));
+
+    const outlineAgent = new Agent({ name: 'outline', model: outlineModel });
+    const checkerAgent = new Agent({
+      name: 'checker',
+      model: checkerModel,
+      outputType: z.object({
+        good_quality: z.boolean(),
+        is_scifi: z.boolean(),
+      }),
+    });
+    const storyAgent = new Agent({ name: 'story', model: storyModel });
+
+    let inputs: protocol.UserMessageItem[] = [user('Sci-fi please')];
+    const outlineResult = await run(outlineAgent, inputs);
+    inputs = outlineResult.history as protocol.UserMessageItem[];
+
+    const checkerResult = await run(checkerAgent, inputs);
+    const decision = checkerResult.finalOutput;
+
+    expect(decision?.good_quality).toBe(false);
+    expect(decision?.is_scifi).toBe(true);
+    if (decision?.good_quality && decision?.is_scifi) {
+      await run(storyAgent, outlineResult.finalOutput ?? '');
+    }
+    expect(storyModel.firstTurnArgs).toBeUndefined();
+  });
+
+  it('runs full deterministic path when checker approves', async () => {
+    const outlineModel = new RecordingModel([textMessage('Outline ready')]);
+    const checkerModel = new RecordingModel([
+      finalOutputMessage(
+        JSON.stringify({ good_quality: true, is_scifi: true }),
+      ),
+    ]);
+    const storyModel = new RecordingModel([textMessage('Final story')]);
+
+    const outlineAgent = new Agent({ name: 'outline', model: outlineModel });
+    const checkerAgent = new Agent({
+      name: 'checker',
+      model: checkerModel,
+      outputType: z.object({
+        good_quality: z.boolean(),
+        is_scifi: z.boolean(),
+      }),
+    });
+    const storyAgent = new Agent({ name: 'story', model: storyModel });
+
+    let inputs: protocol.UserMessageItem[] = [user('Sci-fi please')];
+    const outlineResult = await run(outlineAgent, inputs);
+    inputs = outlineResult.history as protocol.UserMessageItem[];
+
+    const checkerResult = await run(checkerAgent, inputs);
+    const decision = checkerResult.finalOutput;
+    expect(decision?.good_quality).toBe(true);
+    expect(decision?.is_scifi).toBe(true);
+
+    const storyResult = await run(storyAgent, outlineResult.finalOutput ?? '');
+    expect(storyResult.finalOutput).toBe('Final story');
+    expect(extractUserText(storyModel.lastTurnArgs?.input)).toBe(
+      'Outline ready',
+    );
+  });
+
+  it('streams routing result and updates history', async () => {
+    const model = new RecordingModel();
+    model.setNextOutput([textMessage('Bonjour')]);
+    const triageAgent = new Agent({ name: 'triage_agent', model });
+
+    const streamed = await run(triageAgent, 'Salut', { stream: true });
+
+    const deltas: string[] = [];
+    for await (const event of streamed) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      ) {
+        deltas.push(event.data.delta);
+      }
+    }
+
+    expect(deltas.join('')).toBe('Bonjour');
+    expect(streamed.finalOutput).toBe('Bonjour');
+    expect(streamed.newItems.length).toBe(1);
+    const inputList = streamed.history;
+    expect(inputList.length).toBe(2);
+    const assistantItem = inputList[1] as protocol.AssistantMessageItem;
+    expect(assistantItem.role).toBe('assistant');
+    const firstContent = Array.isArray(assistantItem.content)
+      ? (assistantItem.content[0] as protocol.OutputText)
+      : undefined;
+    expect(firstContent?.text).toBe('Bonjour');
+  });
+
+  it('trips input guardrail and exposes guardrail info', async () => {
+    const guardrailModel = new RecordingModel([
+      finalOutputMessage(
+        JSON.stringify({ reasoning: 'math detected', is_math_homework: true }),
+      ),
+    ]);
+    const guardrailAgent = new Agent({
+      name: 'guardrail',
+      model: guardrailModel,
+      outputType: z.object({
+        reasoning: z.string(),
+        is_math_homework: z.boolean(),
+      }),
+    });
+
+    const mainModel = new RecordingModel([textMessage('Should not run')]);
+    const mainAgent = new Agent({
+      name: 'main',
+      model: mainModel,
+      inputGuardrails: [
+        {
+          name: 'Math Guardrail',
+          execute: async ({ input, context }) => {
+            const result = await run(guardrailAgent, input, { context });
+            return {
+              tripwireTriggered: result.finalOutput?.is_math_homework ?? false,
+              outputInfo: result.finalOutput,
+            };
+          },
+        },
+      ],
+    });
+
+    await expect(run(mainAgent, 'Solve 2x+5=11')).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+  });
+
+  it('blocks tool execution when a tool input guardrail trips', async () => {
+    let executions = 0;
+    const inputGuardrail = defineToolInputGuardrail({
+      name: 'tool-blocker',
+      run: async ({ toolCall }: { toolCall: protocol.FunctionCallItem }) => {
+        const args = toolCall.arguments ?? '';
+        if (typeof args === 'string' && args.includes('block')) {
+          return {
+            behavior: { type: 'throwException' },
+            outputInfo: { reason: 'blocked' },
+          };
+        }
+        return { behavior: { type: 'allow' } };
+      },
+    });
+
+    const guardedTool = tool({
+      name: 'echo_tool',
+      description: 'Echo',
+      parameters: z.object({ text: z.string() }),
+      inputGuardrails: [inputGuardrail],
+      execute: async ({ text }) => {
+        executions += 1;
+        return `echo:${text}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('echo_tool', JSON.stringify({ text: 'block this' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'tool-guardrail',
+      model,
+      tools: [guardedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    await expect(run(agent, 'guardrail')).rejects.toThrow(
+      /tool input guardrail triggered/i,
+    );
+    expect(executions).toBe(0);
+    expect(model.calls.length).toBe(1);
+  });
+
+  it('rejects a tool call with guardrail message without executing the tool', async () => {
+    let executed = 0;
+    const inputGuardrail = defineToolInputGuardrail({
+      name: 'redact',
+      run: async () => ({
+        behavior: { type: 'rejectContent', message: 'blocked:pii' },
+      }),
+    });
+
+    const guardedTool = tool({
+      name: 'pii_check',
+      description: 'Should not run',
+      parameters: z.object({ text: z.string() }),
+      inputGuardrails: [inputGuardrail],
+      execute: async () => {
+        executed += 1;
+        return 'unsafe';
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('pii_check', JSON.stringify({ text: '123-45-6789' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'reject-guardrail',
+      model,
+      tools: [guardedTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'contains pii');
+
+    expect(executed).toBe(0);
+    expect(result.finalOutput).toBe('blocked:pii');
+    expect(result.interruptions ?? []).toHaveLength(0);
+  });
+
+  it('resumes an interrupted turn after tool approval without calling the model again', async () => {
+    let executed = 0;
+    const approvalTool = tool({
+      name: 'needs_approval',
+      description: 'requires approval',
+      parameters: z.object({ input: z.string() }),
+      needsApproval: true,
+      execute: async ({ input }) => {
+        executed += 1;
+        return `approved:${input}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('needs_approval', JSON.stringify({ input: 'hi' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'approvals',
+      model,
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const first = await run(agent, 'hello');
+    expect(first.interruptions?.length).toBe(1);
+    expect(first.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+    expect(model.calls.length).toBe(1);
+    warnSpy.mockRestore();
+
+    first.state._context.approveTool(first.interruptions![0], {
+      alwaysApprove: true,
+    });
+
+    const resumed = await run(agent, first.state);
+    expect(resumed.finalOutput).toBe('approved:hi');
+    expect(executed).toBe(1);
+    expect(model.calls.length).toBe(1);
+  });
+
+  it('reruns tool input guardrails when resuming approved state after pre-approval guardrails', async () => {
+    let executed = 0;
+    const inputGuardrailRun = vi.fn(async () => ({
+      behavior: { type: 'allow' as const },
+    }));
+    const approvalTool = tool({
+      name: 'guarded_approval',
+      description: 'requires approval',
+      parameters: z.object({ input: z.string() }),
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'time_sensitive_check',
+          run: inputGuardrailRun,
+        },
+      ],
+      execute: async ({ input }) => {
+        executed += 1;
+        return `approved:${input}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('guarded_approval', JSON.stringify({ input: 'hi' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'approval-guardrail-resume',
+      model,
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const first = await run(agent, 'hello', {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+    expect(first.interruptions).toHaveLength(1);
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(1);
+    expect(executed).toBe(0);
+
+    const restored = await RunState.fromString(agent, first.state.toString());
+    restored.approve(restored.getInterruptions()[0]);
+
+    const resumed = await run(agent, restored, {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+
+    expect(resumed.finalOutput).toBe('approved:hi');
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(2);
+    expect(resumed.toolInputGuardrailResults).toHaveLength(2);
+    expect(executed).toBe(1);
+    expect(model.calls.length).toBe(1);
+  });
+
+  it('trips output guardrail on sensitive data', async () => {
+    const model = new RecordingModel([
+      finalOutputMessage(
+        JSON.stringify({
+          reasoning: 'User shared phone 650-123-4567',
+          response: 'Thanks!',
+          user_name: null,
+        }),
+      ),
+    ]);
+    const messageOutput = z.object({
+      reasoning: z.string(),
+      response: z.string(),
+      user_name: z.string().nullable(),
+    });
+    const agent = new Agent({
+      name: 'assistant',
+      model,
+      outputType: messageOutput,
+      outputGuardrails: [
+        {
+          name: 'Phone Guardrail',
+          execute: async ({ agentOutput }) => {
+            const containsPhone =
+              agentOutput.response.includes('650') ||
+              agentOutput.reasoning.includes('650');
+            return {
+              tripwireTriggered: containsPhone,
+              outputInfo: { contains_phone: containsPhone },
+            };
+          },
+        },
+      ],
+    });
+
+    await expect(
+      run(agent, 'My phone number is 650-123-4567.'),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+  });
+
+  it('throws when a tool output guardrail trips before returning the tool result', async () => {
+    const outputGuardrail = defineToolOutputGuardrail({
+      name: 'secret-block',
+      run: async ({ output }: { output: unknown }) => {
+        if (String(output).includes('secret')) {
+          return {
+            behavior: { type: 'throwException' },
+            outputInfo: { reason: 'secret' },
+          };
+        }
+        return { behavior: { type: 'allow' } };
+      },
+    });
+
+    const guardedTool = tool({
+      name: 'secret_tool',
+      description: 'Returns secret',
+      parameters: z.object({ code: z.string() }),
+      outputGuardrails: [outputGuardrail],
+      execute: async ({ code }) => `secret:${code}`,
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('secret_tool', JSON.stringify({ code: '123' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'tool-output-guardrail',
+      model,
+      tools: [guardedTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    await expect(run(agent, 'get secret')).rejects.toThrow(
+      /tool output guardrail triggered/i,
+    );
+    expect(model.calls.length).toBe(1);
+  });
+
+  it('replaces tool output when output guardrail rejects content', async () => {
+    let executed = 0;
+    const outputGuardrail = defineToolOutputGuardrail({
+      name: 'replace-secret',
+      run: async ({ output }: { output: unknown }) => {
+        return String(output).includes('secret')
+          ? { behavior: { type: 'rejectContent', message: '[redacted]' } }
+          : { behavior: { type: 'allow' } };
+      },
+    });
+
+    const guardedTool = tool({
+      name: 'secret_tool',
+      description: 'Returns secret',
+      parameters: z.object({ code: z.string() }),
+      outputGuardrails: [outputGuardrail],
+      execute: async ({ code }) => {
+        executed += 1;
+        return `secret:${code}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('secret_tool', JSON.stringify({ code: '999' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'tool-output-reject',
+      model,
+      tools: [guardedTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'get secret');
+    expect(executed).toBe(1);
+    expect(result.finalOutput).toBe('[redacted]');
+  });
+
+  it('propagates RunContext mutations set inside tools to later turns', async () => {
+    const setStageTool = tool({
+      name: 'set_stage',
+      description: 'Sets the stage on context',
+      parameters: z.object({ stage: z.string() }),
+      execute: async ({ stage }, ctx) => {
+        if (ctx && typeof ctx.context === 'object') {
+          (ctx.context as any).stage = stage;
+        }
+        return `stage:${stage}`;
+      },
+    });
+
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [functionToolCall('set_stage', JSON.stringify({ stage: 'review' }))],
+      [textMessage('done')],
+    ]);
+
+    const agent = new Agent({
+      name: 'context-mutator',
+      model,
+      tools: [setStageTool],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'set stage', {
+      context: { stage: 'draft' },
+    });
+
+    expect(result.finalOutput).toBe('done');
+    expect((result.state._context as any).context.stage).toBe('review');
+  });
+
+  it('uses sessionInputCallback with server-managed conversations without persisting history', async () => {
+    const model = new RecordingModel([textMessage('callback-ok')]);
+    const agent = new Agent({ name: 'session-callback', model });
+
+    const history: AgentInputItem[] = [
+      user('old message'),
+      textMessage('old reply'),
+    ];
+
+    const session = {
+      getSessionId: async () => 'sess',
+      getItems: async () => history,
+      addItems: async () => {},
+      popItem: async () => undefined,
+      clearSession: async () => {},
+    } as any;
+
+    const sessionInputCallback = async (
+      _historyItems: AgentInputItem[],
+      newItems: AgentInputItem[],
+    ) => {
+      return newItems;
+    };
+
+    const result = await run(agent, [user('new message')], {
+      session,
+      conversationId: 'conv-managed',
+      sessionInputCallback,
+    });
+
+    expect(result.finalOutput).toBe('callback-ok');
+
+    const lastInput = model.lastTurnArgs?.input;
+    expect(Array.isArray(lastInput)).toBe(true);
+    if (Array.isArray(lastInput)) {
+      expect(lastInput.length).toBe(1);
+      expect(extractUserText(lastInput)).toBe('new message');
+    }
+  });
+
+  it('combines sessionInputCallback and callModelInputFilter and persists filtered items', async () => {
+    const model = new RecordingModel([textMessage('filtered ok')]);
+    const agent = new Agent({ name: 'session-filter', model });
+
+    const stored: AgentInputItem[] = [user('keep history')];
+    const added: AgentInputItem[][] = [];
+    const session = {
+      getSessionId: async () => 'sess-filter',
+      getItems: async () => stored,
+      addItems: async (items: AgentInputItem[]) => {
+        added.push(items);
+        stored.push(...items);
+      },
+      popItem: async () => undefined,
+      clearSession: async () => {},
+    } as any;
+
+    const sessionInputCallback = async (
+      historyItems: AgentInputItem[],
+      newItems: AgentInputItem[],
+    ) => {
+      return [...historyItems.slice(-1), ...newItems, user('cb-added')];
+    };
+
+    const result = await run(agent, [user('SECRET')], {
+      session,
+      sessionInputCallback,
+      // Filter redacts every user message, including items inserted by the callback,
+      // and the persisted session state should match what the model saw.
+      callModelInputFilter: ({ modelData }) => ({
+        ...modelData,
+        input: modelData.input.map((item) => {
+          if (item.type === 'message' && item.role === 'user') {
+            return user('[redacted]');
+          }
+          return item;
+        }),
+      }),
+    });
+
+    expect(result.finalOutput).toBe('filtered ok');
+
+    const lastInput = model.lastTurnArgs?.input;
+    expect(Array.isArray(lastInput)).toBe(true);
+    if (Array.isArray(lastInput)) {
+      const texts = lastInput
+        .filter((item) => item.type === 'message' && item.role === 'user')
+        .map((item) => extractUserText([item] as ModelRequest['input']))
+        .filter(Boolean);
+      // Order: last history item (redacted), filtered new input, callback-inserted item.
+      const expectedTexts = ['[redacted]', '[redacted]', '[redacted]'];
+      expect(texts).toHaveLength(expectedTexts.length);
+      expect(texts).toEqual(expectedTexts);
+    }
+
+    expect(added.length).toBe(1);
+    const persistedTexts = added[0]
+      .filter((item) => item.type === 'message' && item.role === 'user')
+      .map((item) => extractUserText([item] as ModelRequest['input']))
+      .filter(Boolean);
+    // Session only persists the newly provided items (original input + callback addition).
+    expect(persistedTexts).toEqual(['[redacted]', '[redacted]']);
+    expect(JSON.stringify(added[0])).not.toContain('SECRET');
+  });
+
+  it('aggregates usage across multiple model calls and preserves request usage entries', async () => {
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      {
+        output: [functionToolCall('echo', JSON.stringify({ text: 'hi' }))],
+        usage: new Usage({
+          requests: 1,
+          inputTokens: 5,
+          outputTokens: 1,
+          totalTokens: 6,
+          inputTokensDetails: [],
+          outputTokensDetails: [],
+          requestUsageEntries: [
+            {
+              inputTokens: 5,
+              outputTokens: 1,
+              totalTokens: 6,
+              endpoint: 'first',
+            },
+          ],
+        }),
+      },
+      {
+        output: [textMessage('ok')],
+        usage: new Usage({
+          requests: 1,
+          inputTokens: 2,
+          outputTokens: 2,
+          totalTokens: 4,
+          inputTokensDetails: [],
+          outputTokensDetails: [],
+          requestUsageEntries: [
+            {
+              inputTokens: 2,
+              outputTokens: 2,
+              totalTokens: 4,
+              endpoint: 'second',
+            },
+          ],
+        }),
+      },
+    ]);
+
+    const echoTool = tool({
+      name: 'echo',
+      description: 'Echoes text',
+      parameters: z.object({ text: z.string() }),
+      execute: async ({ text }) => text,
+    });
+
+    const agent = new Agent({
+      name: 'usage-tracker',
+      model,
+      tools: [echoTool],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'go');
+    expect(result.finalOutput).toBe('ok');
+    expect(result.state.usage.requests).toBe(2);
+    expect(result.state.usage.totalTokens).toBe(10);
+    const endpoints = result.state.usage.requestUsageEntries?.map(
+      (entry) => entry.endpoint,
+    );
+    expect(endpoints).toEqual(['first', 'second']);
+  });
+
+  it('executes shell tool calls and forwards shell output to the model', async () => {
+    const executed: protocol.ShellAction[] = [];
+    const stubShell = {
+      run: async (action: protocol.ShellAction) => {
+        executed.push(action);
+        return {
+          output: [
+            {
+              stdout: 'hi\n',
+              stderr: '',
+              outcome: { type: 'exit' as const, exitCode: 0 },
+            },
+          ],
+        };
+      },
+    };
+    const shell = shellTool({ name: 'shell', shell: stubShell });
+
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [shellCall({ commands: ['echo hi'] })],
+      [textMessage('shell ok')],
+    ]);
+
+    const agent = new Agent({
+      name: 'shell-runner',
+      model,
+      tools: [shell],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'run shell');
+    expect(result.finalOutput).toBe('shell ok');
+    expect(executed).toHaveLength(1);
+    expect(executed[0].commands).toEqual(['echo hi']);
+
+    const secondInput = model.calls[1]?.request.input;
+    expect(Array.isArray(secondInput)).toBe(true);
+    if (Array.isArray(secondInput)) {
+      const shellOutputs = secondInput.filter(
+        (item): item is protocol.ShellCallResultItem =>
+          item.type === 'shell_call_output',
+      );
+      expect(shellOutputs).toHaveLength(1);
+      expect(shellOutputs[0].output[0].stdout).toContain('hi');
+    }
+  });
+
+  it('runs apply_patch tool calls and exposes editor output to the model', async () => {
+    const operations: protocol.ApplyPatchOperation[] = [];
+    const editor = {
+      createFile: async () => {},
+      updateFile: async (operation: protocol.ApplyPatchOperation) => {
+        operations.push(operation);
+        return { status: 'completed' as const, output: 'updated' };
+      },
+      deleteFile: async () => {},
+    };
+    const applyPatch = applyPatchTool({ name: 'apply_patch', editor });
+
+    const callId = 'ap42';
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [
+        applyPatchCall(
+          {
+            type: 'update_file',
+            path: 'README.md',
+            diff: 'diff --git a/README.md b/README.md',
+          },
+          callId,
+        ),
+      ],
+      [textMessage('patched')],
+    ]);
+
+    const agent = new Agent({
+      name: 'patcher',
+      model,
+      tools: [applyPatch],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'apply patch');
+    expect(result.finalOutput).toBe('patched');
+    expect(operations).toHaveLength(1);
+
+    const secondInput = model.calls[1]?.request.input;
+    expect(Array.isArray(secondInput)).toBe(true);
+    if (Array.isArray(secondInput)) {
+      const patchOutputs = secondInput.filter(
+        (item): item is protocol.ApplyPatchCallResultItem =>
+          item.type === 'apply_patch_call_output',
+      );
+      expect(patchOutputs).toHaveLength(1);
+      expect(patchOutputs[0].callId).toBe(callId);
+      expect(patchOutputs[0].output).toBe('updated');
+    }
+  });
+
+  it('cancels streaming mid-output when consumer aborts', async () => {
+    const model = new RecordingModel([
+      textMessage('Chunk1 '),
+      textMessage('Chunk2 '),
+      textMessage('Chunk3'),
+    ]);
+    const agent = new Agent({ name: 'talkative', model });
+
+    const streamed = await run(agent, 'Start', { stream: true });
+    const reader = (streamed.toStream() as any).getReader();
+
+    let collected = '';
+    while (true) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      const event = next.value as RunStreamEvent;
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      ) {
+        collected += event.data.delta;
+        if (collected.length >= 'Chunk1 Chunk2 '.length) {
+          await reader.cancel('stop');
+          break;
+        }
+      }
+    }
+
+    await streamed.completed;
+    expect(collected).toContain('Chunk1');
+    expect(collected).not.toContain('Chunk3');
+    expect(streamed.cancelled).toBe(true);
+  });
+
+  it('streams handoff and emits agent update', async () => {
+    const delegateModel = new RecordingModel([textMessage('delegate reply')]);
+    const delegateAgent = new Agent({ name: 'delegate', model: delegateModel });
+
+    const triageModel = new RecordingModel([
+      textMessage('triage summary'),
+      handoffToolCall(delegateAgent),
+    ]);
+    const triageAgent = new Agent({
+      name: 'triage',
+      model: triageModel,
+      handoffs: [delegateAgent],
+    });
+
+    const streamed = await run(triageAgent, 'Help me', { stream: true });
+    const updates: RunAgentUpdatedStreamEvent[] = [];
+
+    for await (const event of streamed) {
+      if (event.type === 'agent_updated_stream_event') {
+        updates.push(event);
+      }
+    }
+
+    expect(streamed.finalOutput).toBe('delegate reply');
+    expect(streamed.lastAgent).toBe(delegateAgent);
+    expect(updates.some((u) => u.agent === delegateAgent)).toBe(true);
+  });
+
+  it('captures nested streaming events when using agents as tools', async () => {
+    // Mirrors the docs pattern where an agent is exposed as a streaming tool.
+    const billingModel = new RecordingModel([textMessage('Billing: $100')]);
+    const billingAgent = new Agent({ name: 'billing', model: billingModel });
+    const received: Array<RunStreamEvent> = [];
+
+    const billingTool = billingAgent.asTool({
+      toolName: 'billing_agent',
+      toolDescription: 'Answer billing questions',
+      onStream: (event) => {
+        received.push(event.event);
+      },
+    });
+
+    const mainModel = new RecordingModel();
+    mainModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'billing_agent',
+          JSON.stringify({ input: 'Need bill' }),
+        ),
+      ],
+      [textMessage('Final answer')],
+    ]);
+
+    const mainAgent = new Agent({
+      name: 'support',
+      model: mainModel,
+      tools: [billingTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(mainAgent, 'How much is my bill?');
+    expect(result.finalOutput).toBe('Final answer');
+    expect(received.length).toBeGreaterThan(0);
+  });
+
+  it('applies handoff input filters before delegating', async () => {
+    const delegateModel = new RecordingModel([
+      textMessage('Handled filtered input'),
+    ]);
+    const delegateAgent = new Agent({ name: 'delegate', model: delegateModel });
+
+    const filter = (data: any) => {
+      const userOnly = (
+        Array.isArray(data.inputHistory) ? data.inputHistory : []
+      ).filter(
+        (item: AgentInputItem): item is protocol.UserMessageItem =>
+          typeof item === 'object' &&
+          item !== null &&
+          'role' in item &&
+          (item as any).role === 'user',
+      );
+      return {
+        ...data,
+        inputHistory: userOnly.slice(-1),
+      };
+    };
+
+    const filteredHandoff = handoff(delegateAgent, {
+      inputFilter: filter,
+    });
+    const triageModel = new RecordingModel([
+      functionToolCall(filteredHandoff.toolName, '{}'),
+    ]);
+    const triageAgent = new Agent({
+      name: 'triage',
+      model: triageModel,
+      handoffs: [filteredHandoff],
+    });
+
+    const history: AgentInputItem[] = [
+      user('First'),
+      textMessage('Old assistant reply'),
+      user('Newest'),
+    ];
+
+    const result = await run(triageAgent, history);
+
+    expect(result.finalOutput).toBe('Handled filtered input');
+    const delegateInput = delegateModel.lastTurnArgs?.input;
+    expect(Array.isArray(delegateInput)).toBe(true);
+    if (Array.isArray(delegateInput)) {
+      const userMessages = delegateInput.filter(
+        (item) => item.type === 'message' && item.role === 'user',
+      );
+      expect(userMessages.length).toBe(1);
+      expect(extractUserText(userMessages)).toBe('Newest');
+    }
+  });
+
+  it('applies runner-level handoffInputFilter when handoff defines none', async () => {
+    const delegateModel = new RecordingModel([
+      textMessage('Delegate seen last only'),
+    ]);
+    const delegateAgent = new Agent({ name: 'delegate', model: delegateModel });
+
+    const triageModel = new RecordingModel([
+      functionToolCall(handoff(delegateAgent).toolName, '{}'),
+    ]);
+    const triageAgent = new Agent({
+      name: 'triage',
+      model: triageModel,
+      handoffs: [delegateAgent],
+    });
+
+    const runner = new Runner({
+      handoffInputFilter: (data) => {
+        const tail = Array.isArray(data.inputHistory)
+          ? (data.inputHistory as AgentInputItem[]).slice(-1)
+          : data.inputHistory;
+        return {
+          ...data,
+          inputHistory: tail,
+        };
+      },
+    });
+
+    const history: AgentInputItem[] = [user('Earlier'), user('Latest message')];
+    const result = await runner.run(triageAgent, history);
+
+    expect(result.finalOutput).toBe('Delegate seen last only');
+    const delegateInput = delegateModel.lastTurnArgs?.input;
+    expect(extractUserText(delegateInput)).toBe('Latest message');
+  });
+
+  it('persists session input after AbortError and allows retry without duplication', async () => {
+    const abortError = new Error('aborted');
+    abortError.name = 'AbortError';
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      abortError,
+      [textMessage('Recovered after abort')],
+    ]);
+
+    const agent = new Agent({ name: 'abort-retry', model });
+    const session = new MemorySession();
+
+    await expect(run(agent, 'First attempt', { session })).rejects.toThrow(
+      'aborted',
+    );
+    const afterFail = await session.getItems();
+    expect(
+      afterFail.filter(
+        (item): item is protocol.UserMessageItem =>
+          item.type === 'message' && item.role === 'user',
+      ),
+    ).toHaveLength(0);
+
+    const retry = await run(agent, 'Retry now', { session });
+    expect(retry.finalOutput).toBe('Recovered after abort');
+
+    const finalItems = await session.getItems();
+    const userMessages = finalItems.filter(
+      (item): item is protocol.UserMessageItem =>
+        item.type === 'message' && item.role === 'user',
+    );
+    const userTexts = userMessages.map((msg) => {
+      if (typeof msg.content === 'string') {
+        return msg.content;
+      }
+      if (Array.isArray(msg.content)) {
+        const first = msg.content[0] as protocol.InputText | undefined;
+        return first?.type === 'input_text' ? first.text : undefined;
+      }
+      return undefined;
+    });
+    expect(userTexts).toEqual(['Retry now']);
+    expect(model.calls.length).toBe(2);
+  });
+
+  it('throws MaxTurnsExceeded when tool-flow exceeds maxTurns', async () => {
+    const testTool = tool({
+      name: 'echo_tool',
+      description: 'Echo input',
+      parameters: z.object({ text: z.string() }),
+      execute: async ({ text }) => `echo:${text}`,
+    });
+
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [functionToolCall('echo_tool', JSON.stringify({ text: 'hi' }))],
+      [textMessage('should not reach')],
+    ]);
+
+    const agent = new Agent({
+      name: 'looper',
+      model,
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    await expect(
+      run(agent, 'keep going', { maxTurns: 1 }),
+    ).rejects.toBeInstanceOf(MaxTurnsExceededError);
+  });
+
+  it('uses runner-level model override when agent has default placeholder', async () => {
+    const runnerModel = new RecordingModel([textMessage('Runner model')]);
+    const agent = new Agent({ name: 'no-model' });
+
+    const result = await new Runner({ model: runnerModel }).run(agent, 'hi');
+
+    expect(result.finalOutput).toBe('Runner model');
+    expect(runnerModel.lastTurnArgs?.input).toBeDefined();
+  });
+
+  it('chains server-managed conversation state and reuses previous response IDs', async () => {
+    // Ensures only the delta (tool result) is sent when the server tracks history by conversationId.
+    const echoTool = tool({
+      name: 'echo_tool',
+      description: 'Echo back text',
+      parameters: z.object({ text: z.string() }),
+      execute: async ({ text }) => `echo:${text}`,
+    });
+
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [functionToolCall('echo_tool', JSON.stringify({ text: 'hi' }))],
+      [textMessage('Echo complete')],
+    ]);
+
+    const agent = new Agent({
+      name: 'server-conversation',
+      model,
+      tools: [echoTool],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const result = await run(agent, 'hi', { conversationId: 'conv-session' });
+
+    expect(result.finalOutput).toBe('Echo complete');
+    expect(model.calls.length).toBe(2);
+    expect(model.firstTurnArgs?.conversationId).toBe('conv-session');
+    expect(model.lastTurnArgs?.conversationId).toBe('conv-session');
+    expect(model.lastTurnArgs?.previousResponseId).toBeUndefined();
+
+    const secondTurnInput = model.lastTurnArgs?.input;
+    if (Array.isArray(secondTurnInput)) {
+      const userMessages = secondTurnInput.filter(
+        (item) => item.type === 'message' && item.role === 'user',
+      );
+      expect(userMessages.length).toBe(0);
+      const toolResults = secondTurnInput.filter(
+        (item) => item.type === 'function_call_result',
+      );
+      expect(toolResults.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('respects forcing tool-use behaviors', async () => {
+    const getWeather = tool({
+      name: 'get_weather',
+      description: 'Get the weather',
+      parameters: z.object({ city: z.string() }),
+      execute: async ({ city }) => `${city}: Sunny`,
+    });
+
+    // default: run_llm_again
+    const defaultModel = new RecordingModel();
+    defaultModel.addMultipleTurnOutputs([
+      [
+        textMessage('Tool call coming'),
+        functionToolCall('get_weather', JSON.stringify({ city: 'Tokyo' })),
+      ],
+      [textMessage('Done after tool')],
+    ]);
+    const defaultAgent = new Agent({
+      name: 'default',
+      model: defaultModel,
+      tools: [getWeather],
+      toolUseBehavior: 'run_llm_again',
+      modelSettings: { toolChoice: undefined },
+    });
+    const defaultResult = await run(defaultAgent, 'Weather?');
+    expect(defaultResult.finalOutput).toBe('Done after tool');
+    expect(defaultResult.rawResponses.length).toBe(2);
+
+    // stop_on_first_tool
+    const firstModel = new RecordingModel([
+      textMessage('Tool call coming'),
+      functionToolCall('get_weather', JSON.stringify({ city: 'Paris' })),
+    ]);
+    const firstAgent = new Agent({
+      name: 'first',
+      model: firstModel,
+      tools: [getWeather],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+    const firstResult = await run(firstAgent, 'Weather?');
+    expect(firstResult.finalOutput).toBe('Paris: Sunny');
+    expect(firstResult.rawResponses.length).toBe(1);
+
+    // custom tool behavior
+    const customModel = new RecordingModel([
+      textMessage('Tool call coming'),
+      functionToolCall('get_weather', JSON.stringify({ city: 'Berlin' })),
+    ]);
+    const customBehavior: ToolUseBehavior = async (
+      _context,
+      results: FunctionToolResult[],
+    ): Promise<ToolsToFinalOutputResult> => {
+      const first = results[0];
+      if (!first || first.type !== 'function_output') {
+        return { isFinalOutput: false, isInterrupted: undefined };
+      }
+      return {
+        isFinalOutput: true,
+        finalOutput: `Custom:${String(first.output ?? '')}`,
+        isInterrupted: undefined,
+      };
+    };
+    const customAgent = new Agent({
+      name: 'custom',
+      model: customModel,
+      tools: [getWeather],
+      toolUseBehavior: customBehavior,
+      modelSettings: { toolChoice: 'required' },
+    });
+    const customResult = await run(customAgent, 'Weather?');
+    expect(customResult.finalOutput).toBe('Custom:Berlin: Sunny');
+  });
+
+  it('continues with handoff agent on follow-up turn', async () => {
+    const delegateModel = new RecordingModel([textMessage('Bonjour')]);
+    const delegateAgent = new Agent({ name: 'delegate', model: delegateModel });
+
+    const triageModel = new RecordingModel();
+    triageModel.addMultipleTurnOutputs([
+      [handoffToolCall(delegateAgent)],
+      [textMessage('handoff completed')],
+    ]);
+    const triageAgent = new Agent({
+      name: 'triage',
+      model: triageModel,
+      handoffs: [delegateAgent],
+    });
+
+    const firstResult = await run(triageAgent, 'Help me in French');
+    expect(firstResult.finalOutput).toBe('Bonjour');
+    expect(firstResult.lastAgent).toBe(delegateAgent);
+
+    delegateModel.setNextOutput([textMessage('Encore?')]);
+    const followUpInput = firstResult.history;
+    followUpInput.push(user('Encore!'));
+
+    const secondResult = await run(delegateAgent, followUpInput);
+    expect(secondResult.finalOutput).toBe('Encore?');
+    expect(delegateModel.lastTurnArgs?.input).toEqual(followUpInput);
+  });
+
+  it('enables agents-as-tools conditionally', async () => {
+    type AppContext = {
+      languagePreference: 'spanish_only' | 'french_spanish' | 'european';
+    };
+    const scenarios: Array<[AppContext['languagePreference'], Set<string>]> = [
+      ['spanish_only', new Set(['respond_spanish'])],
+      ['french_spanish', new Set(['respond_spanish', 'respond_french'])],
+      [
+        'european',
+        new Set(['respond_spanish', 'respond_french', 'respond_italian']),
+      ],
+    ];
+
+    const enabledTools = (preference: AppContext['languagePreference']) =>
+      new RunContext<AppContext>({ languagePreference: preference });
+
+    for (const [preference, expectedTools] of scenarios) {
+      const spanishModel = new RecordingModel([textMessage('ES hola')]);
+      const spanishAgent = new Agent<AppContext>({
+        name: 'spanish',
+        model: spanishModel,
+      });
+
+      const frenchModel = new RecordingModel([textMessage('FR bonjour')]);
+      const frenchAgent = new Agent<AppContext>({
+        name: 'french',
+        model: frenchModel,
+      });
+
+      const italianModel = new RecordingModel([textMessage('IT ciao')]);
+      const italianAgent = new Agent<AppContext>({
+        name: 'italian',
+        model: italianModel,
+      });
+
+      const orchestratorModel = new RecordingModel();
+      const toolCalls = Array.from(expectedTools)
+        .sort()
+        .map((toolName, idx) =>
+          functionToolCall(
+            toolName,
+            JSON.stringify({ input: 'Hi' }),
+            `${idx + 1}`,
+          ),
+        );
+      orchestratorModel.addMultipleTurnOutputs([
+        toolCalls,
+        [textMessage('Done')],
+      ]);
+
+      const orchestrator = new Agent<AppContext>({
+        name: 'orchestrator',
+        model: orchestratorModel,
+        tools: [
+          spanishAgent.asTool({
+            toolName: 'respond_spanish',
+            toolDescription: 'Spanish',
+            isEnabled: true,
+          }),
+          frenchAgent.asTool({
+            toolName: 'respond_french',
+            toolDescription: 'French',
+            isEnabled: ({ runContext }) =>
+              runContext.context.languagePreference === 'french_spanish' ||
+              runContext.context.languagePreference === 'european',
+          }),
+          italianAgent.asTool({
+            toolName: 'respond_italian',
+            toolDescription: 'Italian',
+            isEnabled: ({ runContext }) =>
+              runContext.context.languagePreference === 'european',
+          }),
+        ],
+        modelSettings: { toolChoice: 'required' } as ModelSettings,
+      });
+
+      const context = enabledTools(preference);
+      const result = await run(orchestrator, 'Hello', { context });
+      expect(result.finalOutput).toBe('Done');
+
+      expect(spanishModel.firstTurnArgs !== undefined).toBe(
+        expectedTools.has('respond_spanish'),
+      );
+      expect(frenchModel.firstTurnArgs !== undefined).toBe(
+        expectedTools.has('respond_french'),
+      );
+      expect(italianModel.firstTurnArgs !== undefined).toBe(
+        expectedTools.has('respond_italian'),
+      );
+    }
+  });
+
+  it('omits disabled agents-as-tools from the serialized tool list', async () => {
+    const model = new RecordingModel([textMessage('Only Spanish')]);
+    const orchestrator = new Agent({
+      name: 'orchestrator',
+      model,
+      tools: [
+        new Agent({
+          name: 'spanish',
+          model: new RecordingModel([textMessage('Hola')]),
+        }).asTool({
+          toolName: 'respond_spanish',
+          toolDescription: 'Spanish',
+          isEnabled: true,
+        }),
+        new Agent({
+          name: 'italian',
+          model: new RecordingModel([textMessage('Ciao')]),
+        }).asTool({
+          toolName: 'respond_italian',
+          toolDescription: 'Italian',
+          isEnabled: false,
+        }),
+      ],
+    });
+
+    const result = await run(orchestrator, 'Hello');
+    expect(result.finalOutput).toBe('Only Spanish');
+    const toolNames = (model.lastTurnArgs?.tools ?? []).map((t: any) => t.name);
+    expect(toolNames).toEqual(['respond_spanish']);
+  });
+
+  it('sends hosted MCP tool metadata and records hosted tool calls', async () => {
+    const model = new RecordingModel([
+      hostedToolCall(
+        'fetch_codex_documentation',
+        '{"query":"language"}',
+        'TypeScript',
+      ),
+      textMessage('Repo uses TypeScript'),
+    ]);
+
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      allowedTools: ['fetch_codex_documentation'],
+      requireApproval: 'never',
+    });
+
+    const agent = new Agent({
+      name: 'mcp-agent',
+      model,
+      tools: [mcpTool],
+    });
+
+    const result = await run(agent, 'Which language is this repo written in?');
+
+    expect(result.finalOutput).toBe('Repo uses TypeScript');
+    const tools = model.lastTurnArgs?.tools;
+    expect(tools?.[0]).toMatchObject({
+      type: 'hosted_tool',
+      name: 'hosted_mcp',
+      providerData: {
+        type: 'mcp',
+        server_label: 'gitmcp',
+      },
+    });
+    const hostedItems = result.newItems.filter(
+      (item) => item.rawItem.type === 'hosted_tool_call',
+    );
+    expect(hostedItems.length).toBe(1);
+    expect(hostedItems[0].rawItem).toMatchObject({
+      name: 'fetch_codex_documentation',
+      output: 'TypeScript',
+    });
+    expect(result.interruptions ?? []).toHaveLength(0);
+  });
+
+  it('requires approval for hosted MCP tool calls and surfaces the interruption', async () => {
+    const model = new RecordingModel({
+      output: [
+        {
+          type: 'hosted_tool_call',
+          id: 'approval-1',
+          name: 'mcp_approval_request',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_approval_request',
+            server_label: 'gitmcp',
+            name: 'search_codex_code',
+            id: 'approval-1',
+            arguments: '{}',
+          },
+        } as protocol.HostedToolCallItem,
+      ],
+      usage: new Usage(),
+      responseId: 'resp-approval',
+    } as ModelResponse);
+
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: {
+        always: { toolNames: ['search_codex_code'] },
+      },
+    });
+
+    const agent = new Agent({
+      name: 'mcp-approval',
+      model,
+      tools: [mcpTool],
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const result = await run(agent, 'Check the repo language', {
+      conversationId: 'conv-mcp',
+    });
+
+    expect(result.interruptions?.length).toBe(1);
+    expect(result.interruptions?.[0].name).toBe('search_codex_code');
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+    expect(model.lastTurnArgs?.conversationId).toBe('conv-mcp');
+    expect(model.lastTurnArgs?.tools?.[0]).toMatchObject({
+      name: 'hosted_mcp',
+      providerData: { server_label: 'gitmcp' },
+    });
+
+    warnSpy.mockRestore();
+  });
+
+  it.each([
+    { name: 'run', stream: false },
+    { name: 'stream', stream: true },
+  ])(
+    'does not reuse a persistent hosted MCP approval across servers with $name',
+    async ({ stream }) => {
+      const model = new RecordingModel();
+      model.addMultipleTurnOutputs([
+        [hostedMcpApprovalRequest('request-a', 'server-a', 'lookup_account')],
+        [
+          hostedMcpApprovalRequest(
+            'request-b',
+            'server-b',
+            'lookup_account',
+            'conflicting-raw-request-b',
+          ),
+        ],
+      ]);
+      const agent = new Agent({
+        name: 'scoped-mcp-approval',
+        model,
+        tools: [
+          hostedMcpTool({
+            serverLabel: 'server-a',
+            serverUrl: 'https://server-a.example/mcp',
+            requireApproval: 'always',
+          }),
+          hostedMcpTool({
+            serverLabel: 'server-b',
+            serverUrl: 'https://server-b.example/mcp',
+            requireApproval: 'always',
+          }),
+        ],
+      });
+
+      const runWithMode = async (
+        input: string | RunState<unknown, Agent<unknown, 'text'>>,
+      ) => {
+        if (stream) {
+          const result = await run(agent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input);
+      };
+
+      const first = await runWithMode('Lookup the account');
+      expect(first.interruptions).toHaveLength(1);
+      expect(
+        (first.interruptions[0].rawItem.providerData as any).server_label,
+      ).toBe('server-a');
+      first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+      const restored = await RunState.fromString(agent, first.state.toString());
+      const resumed = await runWithMode(restored);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(
+        (resumed.interruptions[0].rawItem.providerData as any).server_label,
+      ).toBe('server-b');
+    },
+  );
+
+  it.each([
+    { name: 'run with sticky approval', stream: false, sticky: 'approve' },
+    { name: 'stream with sticky approval', stream: true, sticky: 'approve' },
+    { name: 'run with sticky rejection', stream: false, sticky: 'reject' },
+    { name: 'stream with sticky rejection', stream: true, sticky: 'reject' },
+  ] as const)(
+    'honors exact call decisions after a serialized $name resume',
+    async ({ stream, sticky }) => {
+      const executions: string[] = [];
+      const approvalTool = tool({
+        name: 'exact_decision_tool',
+        description: 'Executes only approved calls.',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        execute: async ({ value }) => {
+          executions.push(value);
+          return value;
+        },
+      });
+      const model = new RecordingModel();
+      model.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            approvalTool.name,
+            JSON.stringify({ value: 'sticky' }),
+            'sticky-call',
+          ),
+          functionToolCall(
+            approvalTool.name,
+            JSON.stringify({ value: 'exception' }),
+            'exception-call',
+          ),
+        ],
+        [textMessage('done')],
+      ]);
+      const agent = new Agent({
+        name: 'ExactDecisionResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runWithMode = async (
+        input: string | RunState<unknown, Agent<unknown, 'text'>>,
+      ) => {
+        if (stream) {
+          const result = await run(agent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input);
+      };
+
+      const first = await runWithMode('start');
+      expect(first.interruptions).toHaveLength(2);
+      if (sticky === 'approve') {
+        first.state.approve(first.interruptions[0], { alwaysApprove: true });
+        first.state.reject(first.interruptions[1], {
+          message: 'Denied exactly.',
+        });
+      } else {
+        first.state.reject(first.interruptions[0], {
+          alwaysReject: true,
+          message: 'Denied by default.',
+        });
+        first.state.approve(first.interruptions[1]);
+      }
+
+      const restored = await RunState.fromString(agent, first.state.toString());
+      const resumed = await runWithMode(restored);
+
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(resumed.finalOutput).toBe('done');
+      expect(executions).toEqual([
+        sticky === 'approve' ? 'sticky' : 'exception',
+      ]);
+    },
+  );
+
+  it('restores a pending schema 1.17 sticky MCP approval as exact-call approval', async () => {
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [hostedMcpApprovalRequest('request-a', 'server-a', 'lookup_account')],
+      [hostedMcpApprovalRequest('request-b', 'server-b', 'lookup_account')],
+    ]);
+    const agent = new Agent({
+      name: 'legacy-scoped-mcp-approval',
+      model,
+      tools: [
+        hostedMcpTool({
+          serverLabel: 'server-a',
+          serverUrl: 'https://server-a.example/mcp',
+          requireApproval: 'always',
+        }),
+        hostedMcpTool({
+          serverLabel: 'server-b',
+          serverUrl: 'https://server-b.example/mcp',
+          requireApproval: 'always',
+        }),
+      ],
+    });
+
+    const first = await run(agent, 'Lookup the account');
+    expect(first.interruptions).toHaveLength(1);
+    first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+    const serialized = first.state.toJSON() as any;
+    serialized.$schemaVersion = '1.17';
+    serialized.context.approvals = {
+      lookup_account: { approved: true, rejected: [] },
+    };
+    delete serialized.context.hostedMcpApprovals;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const resumed = await run(agent, restored);
+
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      (resumed.interruptions[0].rawItem.providerData as any).server_label,
+    ).toBe('server-b');
+  });
+
+  it('keeps hosted MCP approvals server-scoped in nested agent resumes', async () => {
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [hostedMcpApprovalRequest('nested-a', 'server-a', 'lookup_account')],
+      [hostedMcpApprovalRequest('nested-b', 'server-b', 'lookup_account')],
+    ]);
+    const nestedAgent = new Agent({
+      name: 'NestedMcpApprovalAgent',
+      model: nestedModel,
+      tools: [
+        hostedMcpTool({
+          serverLabel: 'server-a',
+          serverUrl: 'https://server-a.example/mcp',
+          requireApproval: 'always',
+        }),
+        hostedMcpTool({
+          serverLabel: 'server-b',
+          serverUrl: 'https://server-b.example/mcp',
+          requireApproval: 'always',
+        }),
+      ],
+    });
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_mcp_agent',
+      toolDescription: 'Run the nested MCP agent.',
+    });
+    const outerModel = new RecordingModel([
+      functionToolCall(
+        'nested_mcp_agent',
+        JSON.stringify({ input: 'lookup' }),
+        'outer-mcp-call',
+      ),
+    ]);
+    const outerAgent = new Agent({
+      name: 'OuterMcpApprovalAgent',
+      model: outerModel,
+      tools: [nestedTool],
+    });
+
+    const first = await run(outerAgent, 'Start');
+    expect(first.interruptions).toHaveLength(1);
+    first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const resumed = await run(outerAgent, restored);
+
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      (resumed.interruptions[0].rawItem.providerData as any).server_label,
+    ).toBe('server-b');
+  });
+
+  it('orchestrator calls multiple translation tools then summarizes', async () => {
+    const spanishModel = new RecordingModel([textMessage('ES hola')]);
+    const spanishAgent = new Agent({ name: 'spanish', model: spanishModel });
+
+    const frenchModel = new RecordingModel([textMessage('FR bonjour')]);
+    const frenchAgent = new Agent({ name: 'french', model: frenchModel });
+
+    const orchestratorModel = new RecordingModel();
+    orchestratorModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'translate_to_spanish',
+          JSON.stringify({ input: 'Hi' }),
+          'translate-spanish',
+        ),
+      ],
+      [
+        functionToolCall(
+          'translate_to_french',
+          JSON.stringify({ input: 'Hi' }),
+          'translate-french',
+        ),
+      ],
+      [textMessage('Summary complete')],
+    ]);
+
+    const orchestrator = new Agent({
+      name: 'orchestrator',
+      model: orchestratorModel,
+      tools: [
+        spanishAgent.asTool({
+          toolName: 'translate_to_spanish',
+          toolDescription: 'Spanish',
+        }),
+        frenchAgent.asTool({
+          toolName: 'translate_to_french',
+          toolDescription: 'French',
+        }),
+      ],
+    });
+
+    const result = await run(orchestrator, 'Hi');
+    expect(result.finalOutput).toBe('Summary complete');
+    expect(extractUserText(spanishModel.lastTurnArgs?.input)).toBe('Hi');
+    expect(extractUserText(frenchModel.lastTurnArgs?.input)).toBe('Hi');
+    expect(result.rawResponses.length).toBe(3);
+  });
+});

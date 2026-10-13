@@ -1,0 +1,101 @@
+---
+name: Publish all OpenHands packages (uv)
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Version to publish without a leading v
+                required: true
+                type: string
+
+concurrency:
+    group: pypi-release-${{ inputs.version }}
+    cancel-in-progress: false
+
+
+jobs:
+    publish:
+        runs-on: ubuntu-24.04
+        permissions:
+            actions: write
+            contents: read
+        outputs:
+            version: ${{ steps.extract_version.outputs.version }}
+        steps:
+            - name: Check out release tag
+              uses: actions/checkout@v7.0.1
+              with:
+                  ref: v${{ inputs.version }}
+
+            - name: Validate release version
+              id: extract_version
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  set -euo pipefail
+                  actual_version=$(grep -m1 '^version = ' openhands-sdk/pyproject.toml | cut -d'"' -f2)
+                  if [ "$actual_version" != "$VERSION" ]; then
+                    echo "❌ SDK version $actual_version does not match requested version $VERSION"
+                    exit 1
+                  fi
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "📦 Version: $VERSION"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Build and publish all packages
+              env:
+                  UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN_OPENHANDS }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  if [ -z "${UV_PUBLISH_TOKEN:-}" ]; then
+                    echo "❌ Missing secret PYPI_TOKEN_OPENHANDS"
+                    exit 1
+                  fi
+
+                  PACKAGES=(
+                    openhands-sdk
+                    openhands-tools
+                    openhands-workspace
+                    openhands-agent-server
+                  )
+
+                  expected_version="${VERSION}"
+                  actual_version=$(python3 -c \
+                    'import json; print(json.load(open("clients/typescript/package.json"))["version"])')
+                  if [ "$actual_version" != "$expected_version" ]; then
+                    echo "❌ TypeScript client version $actual_version does not match release version $expected_version"
+                    exit 1
+                  fi
+
+                  echo "🚀 Building and publishing all packages..."
+                  for PKG in "${PACKAGES[@]}"; do
+                    echo "===== $PKG ====="
+                    uv build --package "$PKG"
+                  done
+
+                  # Use --check-url to skip files that already exist on PyPI
+                  # This allows re-running the workflow after partial failures
+                  uv publish --token "$UV_PUBLISH_TOKEN" --check-url https://pypi.org/simple/
+                  echo "✅ All packages built and published successfully!"
+                  echo ""
+                  echo "📋 Note: Version bump PRs will be created by the 'Create Version Bump PRs' workflow"
+                  echo "   which is dispatched after this publish succeeds."
+
+            - name: Dispatch version bump workflow
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
+              run: |
+                  gh workflow run version-bump-prs.yml \
+                    --repo "${{ github.repository }}" \
+                    -f "version=${VERSION}"
+
+                  echo "🚀 Dispatched version-bump-prs.yml for v${VERSION}"

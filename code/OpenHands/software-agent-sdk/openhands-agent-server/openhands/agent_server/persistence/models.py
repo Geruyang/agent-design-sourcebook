@@ -1,0 +1,689 @@
+"""Pydantic models for persisted settings and secrets.
+
+These models mirror the structure used in OpenHands app-server for consistency,
+allowing the agent-server to be used standalone or as a drop-in replacement
+for the Cloud API's settings/secrets endpoints.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from typing import Any, TypedDict
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from openhands.sdk.settings import (
+    AgentSettingsConfig,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    apply_agent_settings_diff,
+    default_agent_settings,
+    validate_agent_settings,
+)
+from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+class _SecretProbeCipher:
+    """Fake cipher that flags secret serialization without needing a real key.
+
+    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    serializer down the "encrypted" branch (see ``resolve_expose_mode``),
+    reusing the real serialization pipeline to detect secret-bearing fields
+    instead of hand-walking the model for ``SecretStr`` instances. That
+    matters for fields like ``AgentContext.secrets``, whose bare-string
+    entries are plain ``str`` at rest and only become secret-shaped inside
+    their own field serializer at dump time -- a value-type walk can't see
+    that, but reusing the pipeline does.
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+        return None
+
+    def encrypt(self, value: SecretStr) -> str:
+        if value.get_secret_value():
+            self.found = True
+        return ""
+
+
+def _contains_secret_value(model: BaseModel) -> bool:
+    """Check if serializing `model` would touch any secret-bearing field."""
+    probe = _SecretProbeCipher()
+    model.model_dump(mode="json", context={"cipher": probe})
+    return probe.found
+
+
+class SettingsUpdatePayload(TypedDict, total=False):
+    """Typed payload for PersistedSettings.update() method.
+
+    ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
+    full RFC 7386 merge-patch semantics — a ``None`` value on any key (top-level
+    or nested) removes it, resetting that field to its default.
+
+    ``conversation_settings_diff`` and ``misc_settings_diff`` use
+    :func:`_deep_merge`: nested maps merge recursively, ``None`` *inside* a
+    nested map removes that entry, but a ``None`` on a top-level field flows to
+    validation as before.
+
+    ``misc_settings_diff`` is deep-merged into the persisted ``misc_settings``
+    block. The agent-server treats ``misc_settings`` as opaque
+    frontend-owned data (it persists and merges, but does not interpret), so
+    any shape the client chooses is valid; lists are replaced wholesale by
+    the deep-merge.
+    """
+
+    agent_settings_diff: dict[str, Any]
+    conversation_settings_diff: dict[str, Any]
+    misc_settings_diff: dict[str, Any]
+    active_profile: str | None
+    active_agent_profile_id: str | None
+    active_meta_profile: str | None
+
+
+def _deep_merge(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    unset_nulls: bool = False,
+) -> dict[str, Any]:
+    """Recursively merge ``overlay`` into ``base``.
+
+    - Nested dicts are merged recursively.
+    - **Inside a nested map** a ``None`` value **removes** that key — the
+      "unset" primitive a plain deep-merge lacks. It lets a
+      ``PATCH /api/settings`` diff delete a single map entry (one MCP
+      ``env`` / ``headers`` key) without round-tripping the whole map::
+
+          {"agent_settings_diff":
+              {"mcp_config": {"svc": {"env": {"STALE_KEY": null}}}}}
+
+    - **At the top level** (a settings *field* like ``confirmation_mode``)
+      a ``None`` is left as-is and flows to model
+      validation — exactly as before this primitive existed. So a stray
+      ``{"confirmation_mode": null}`` still fails loudly (422) instead of
+      silently resetting a field to its default. This scoping is deliberate:
+      ``unset`` is for *entries within* a map, not for nulling whole fields.
+    - For any other scalar/list value, the overlay wins.
+
+    ``unset_nulls`` is ``False`` for the top-level call and ``True`` for every
+    recursive (nested) call — that's what draws the field-vs-entry line above.
+
+    Corner case: a key **absent from** ``base`` whose overlay value is a dict
+    is assigned wholesale (no recursion), so any ``null`` entries inside that
+    dict are stored as-is rather than treated as deletes. This is intentional
+    — you can't delete an entry from a map that doesn't exist yet — but it
+    means "initialize a new map and unset a key within it" in one diff won't
+    strip the null; downstream validation handles the resulting value.
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        if value is None and unset_nulls:
+            # Nested map entry: a null member removes the key (no-op if absent).
+            result.pop(key, None)
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value, unset_nulls=True)
+        else:
+            # Top-level null (unset_nulls=False) falls here: set as-is and let
+            # model validation decide (preserves pre-existing behavior).
+            result[key] = value
+    return result
+
+
+PERSISTED_SETTINGS_SCHEMA_VERSION = 5
+
+
+class PersistedSettings(BaseModel):
+    """Persisted settings for agent server.
+
+    Agent settings (LLM config, MCP config, condenser) live in ``agent_settings``.
+    Conversation settings (max_iterations, confirmation_mode) live in
+    ``conversation_settings``.
+
+    The ``active_profile`` field tracks which LLM profile was last activated,
+    allowing frontends to display which profile is currently in use.
+
+    The ``misc_settings`` field is an opaque dict the agent-server persists
+    on behalf of the frontend. The agent-server never reads its contents and
+    has no schema for it; clients are free to store any JSON-serializable
+    structure they need (e.g. app/UI preferences, git identity used for
+    in-conversation commits, etc.).
+
+    One namespace inside ``misc_settings`` is a documented exception to the
+    "never read" rule: ``misc_settings.telemetry`` holds ``consent``
+    (``granted``/``denied``/``unset``) and an optional ``managed`` flag. The
+    frontend still owns the value; the agent-server only reads it, to decide
+    whether product analytics may be delivered. Nothing else in the container
+    is interpreted.
+    """
+
+    schema_version: int = Field(
+        default=PERSISTED_SETTINGS_SCHEMA_VERSION,
+        description="Persisted settings file schema version.",
+    )
+
+    agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
+    conversation_settings: ConversationSettings = Field(
+        default_factory=ConversationSettings
+    )
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active LLM profile.",
+    )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable id of the currently active AgentProfile. Distinct from "
+            "active_profile (the active LLM profile name); additive with a "
+            "default, so older settings files load with this as None."
+        ),
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile used for "
+        "intelligent model routing.",
+    )
+    misc_settings: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Opaque dict the agent-server persists on behalf of the frontend. "
+            "Updated through misc_settings_diff (deep-merged); contents are "
+            "never read or validated by the agent-server."
+        ),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def llm_api_key_is_set(self) -> bool:
+        """Check if an LLM API key is configured."""
+        if not isinstance(self.agent_settings, OpenHandsAgentSettings):
+            return False
+        raw = self.agent_settings.llm.api_key
+        if raw is None:
+            return False
+        secret_value = (
+            raw.get_secret_value() if isinstance(raw, SecretStr) else str(raw)
+        )
+        return bool(secret_value and secret_value.strip())
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these settings contain any secret value anywhere.
+
+        Broader than ``llm_api_key_is_set``: walks the whole ``agent_settings``
+        tree (MCP server env/headers, ``critic_api_key``, provider creds,
+        ``agent_context.secrets``, ...) rather than checking a fixed field
+        list, so it stays correct as new secret-bearing fields are added.
+        """
+        return _contains_secret_value(self.agent_settings)
+
+    def update(
+        self,
+        payload: SettingsUpdatePayload,
+        *,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        """Apply a batch of changes from a nested dict.
+
+        Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
+        ``active_profile``, and ``active_agent_profile_id`` for partial updates.
+
+        ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
+        RFC 7386 merge-patch semantics with kind-switch awareness. When
+        ``agent_kind`` changes, the diff is applied onto a fresh base of the
+        target variant. Same-kind diffs deep-merge within the variant. A
+        ``None`` value at any level removes that key and resets it to default.
+
+        ``conversation_settings_diff`` uses :func:`_deep_merge`: ``None`` inside
+        a nested map removes that entry; ``None`` on a top-level field flows to
+        validation.
+
+        Thread Safety:
+            This method is NOT thread-safe for concurrent in-memory updates.
+            The assignments to ``agent_settings`` and ``conversation_settings``
+            are not atomic. However, the router wraps calls via ``store.update()``
+            which uses file locking to prevent concurrent updates at the I/O layer.
+            Multiple ``PersistedSettings`` instances should NOT be shared across
+            threads without external synchronization.
+
+        Atomicity:
+            Both updates are validated before any mutations occur. If either
+            validation fails, the object remains unchanged.
+
+        Raises:
+            ValueError: If validation fails (sanitized to avoid secret leakage).
+        """
+        agent_update = payload.get("agent_settings_diff")
+        conv_update = payload.get("conversation_settings_diff")
+
+        # Phase 1: Validate all updates before any mutations
+        new_agent: AgentSettingsConfig | None = None
+        new_conv: ConversationSettings | None = None
+        conv_merged: dict | None = None
+
+        try:
+            if isinstance(agent_update, dict):
+                try:
+                    new_agent = apply_agent_settings_diff(
+                        self.agent_settings, agent_update, context=context
+                    )
+                except Exception as e:
+                    # Use 'from None' to break exception chain - the original
+                    # exception may contain secret values in Pydantic errors
+                    raise ValueError(
+                        f"Failed to update agent settings: {type(e).__name__}"
+                    ) from None
+
+            if isinstance(conv_update, dict):
+                conv_merged = _deep_merge(
+                    self.conversation_settings.model_dump(mode="json"),
+                    conv_update,
+                )
+                try:
+                    new_conv = ConversationSettings.from_persisted(conv_merged)
+                except Exception as e:
+                    # Use 'from None' to break exception chain - see above
+                    raise ValueError(
+                        f"Failed to update conversation settings: {type(e).__name__}"
+                    ) from None
+
+            # ``misc_settings`` is opaque: deep-merge without schema
+            # validation. The agent-server doesn't interpret what's inside,
+            # and ``misc_settings`` is not a secret container — the merged
+            # dict is therefore stored directly without the post-commit
+            # clear-down used by ``conversation_settings``.
+            misc_update = payload.get("misc_settings_diff")
+            new_misc: dict[str, Any] | None = None
+            if isinstance(misc_update, dict):
+                new_misc = _deep_merge(self.misc_settings, misc_update)
+
+            # Phase 2: Apply validated changes atomically
+            if new_agent is not None:
+                self.agent_settings = new_agent
+            if new_conv is not None:
+                self.conversation_settings = new_conv
+            if new_misc is not None:
+                self.misc_settings = new_misc
+
+            # Update pointers if explicitly provided (including None to clear)
+            if "active_profile" in payload:
+                self.active_profile = payload["active_profile"]
+            if "active_agent_profile_id" in payload:
+                self.active_agent_profile_id = payload["active_agent_profile_id"]
+
+            # Update active_meta_profile if explicitly provided (incl. None)
+            if "active_meta_profile" in payload:
+                self._apply_active_meta_profile(payload["active_meta_profile"])
+
+            # Enforce the invariant even when only ``agent_settings`` changed:
+            # switching to an agent variant that cannot attach the routing tool
+            # (e.g. ACP) must not leave a stale top-level ``active_meta_profile``
+            # claiming routing is active. (No-op when active already matches.)
+            self._clear_active_meta_profile_if_unsupported()
+        finally:
+            # Clear conv_merged to minimize plaintext exposure window
+            if conv_merged is not None:
+                conv_merged.clear()
+
+    def _agent_supports_routing(self) -> bool:
+        """Whether the current agent variant can attach the routing tool.
+
+        OpenHands agent settings expose ``active_meta_profile`` /
+        ``enable_classify_and_switch_llm_tool``; ACP (and any other) variants do
+        not and never attach :class:`ClassifyAndSwitchLLMTool`.
+        """
+        return "active_meta_profile" in type(self.agent_settings).model_fields
+
+    def _apply_active_meta_profile(self, name: str | None) -> None:
+        """Set ``active_meta_profile`` and propagate it into agent_settings.
+
+        Propagating into the nested ``agent_settings`` is what enables/uses the
+        routing tool on the agent built from these settings (mirrors how
+        activating a profile bakes the LLM into ``agent_settings``).
+
+        The top-level field is a strict facade for the nested state, not a
+        best-effort hint: if the current agent variant cannot attach the routing
+        tool (e.g. ACP), the request is dropped and the facade cleared so
+        persisted state never claims an active router no conversation can use.
+        """
+        if not self._agent_supports_routing():
+            self.active_meta_profile = None
+            return
+        self.active_meta_profile = name
+        self.agent_settings = self.agent_settings.model_copy(
+            update={
+                "active_meta_profile": name,
+                "enable_classify_and_switch_llm_tool": name is not None,
+            }
+        )
+
+    def _clear_active_meta_profile_if_unsupported(self) -> None:
+        """Clear the facade when the agent variant cannot support routing.
+
+        Guards the agent-kind-switch path: changing ``agent_settings`` to a
+        non-routing variant (e.g. ACP) while a meta-profile is active would
+        otherwise leave the top-level ``active_meta_profile`` stale.
+        """
+        if not self._agent_supports_routing() and self.active_meta_profile is not None:
+            self.active_meta_profile = None
+
+    @classmethod
+    def from_persisted(
+        cls, data: Any, *, context: dict[str, Any] | None = None
+    ) -> PersistedSettings:
+        """Load persisted settings.
+
+        Schema-version history:
+
+        - **v1**: ``agent_settings`` + ``conversation_settings`` plus
+          ``active_profile``.
+        - **v2**: adds the opaque ``misc_settings`` container.
+        - **v3**: nested ``agent_settings`` advanced to schema v6
+          (dropped the removed ``llm.modify_params`` field). Nested payloads
+          are migrated through ``validate_agent_settings`` in
+          ``_normalize_inputs``; the top-level bump keeps the file schema in
+          step with the nested shape change.
+        - **v4**: nested ``agent_settings`` advanced to schema v7
+          (dropped the deprecated ``llm`` from ACP settings).
+        - **v5** (current): nested ``agent_settings`` advanced to schema v8
+          (retired tool switches folded into ``tools``).
+        """
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("PersistedSettings schema_version must be an integer")
+        if version > PERSISTED_SETTINGS_SCHEMA_VERSION:
+            raise ValueError(
+                "PersistedSettings schema_version "
+                f"{version} is newer than supported version "
+                f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
+            )
+
+        payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
+        return cls.model_validate(payload, context=context)
+
+    @field_serializer("agent_settings")
+    def agent_settings_serializer(
+        self,
+        agent_settings: AgentSettingsConfig,
+        info: SerializationInfo,
+    ) -> dict[str, Any]:
+        # Pass through the full context (cipher, expose_secrets) to AgentSettings
+        # This ensures secrets are properly encrypted/exposed based on context
+        return agent_settings.model_dump(mode="json", context=info.context)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_inputs(
+        cls, data: dict | object, info: ValidationInfo
+    ) -> dict | object:
+        """Normalize inputs during deserialization.
+
+        Applies schema migrations for both agent and conversation settings,
+        ensuring forward compatibility when loading settings files saved with
+        older schema versions.
+
+        Agent settings are normalized through ``validate_agent_settings``
+        so the same migration entry point is used for settings files and direct
+        SDK callers. The validation context is forwarded so cipher-based secret
+        decryption still works during the nested settings validation.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        agent_settings = data.get("agent_settings")
+        if isinstance(agent_settings, dict):
+            coerced = _coerce_dict_secrets(agent_settings)
+            data["agent_settings"] = validate_agent_settings(
+                coerced,
+                context=info.context,
+                persisted=True,
+            )
+
+        # Apply migrations for conversation_settings
+        conv_settings = data.get("conversation_settings")
+        if isinstance(conv_settings, dict):
+            data["conversation_settings"] = ConversationSettings.from_persisted(
+                conv_settings
+            )
+
+        return data
+
+
+# Validation pattern for secret names - exported for use by settings_router
+# Names: start with letter, alphanumeric + underscores, 1-64 chars
+SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+
+
+class CustomSecret(BaseModel):
+    """A custom secret with name, value, and optional description."""
+
+    name: str
+    secret: SecretStr | None
+    description: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        """Validate secret name format for safety.
+
+        Secret names are used as environment variable names and may be logged,
+        so we enforce strict validation to prevent:
+        - Path traversal (../, null bytes)
+        - Log injection (control characters)
+        - Shell injection (special characters)
+        - Invalid env var names (starting with numbers, special chars)
+
+        Note: The router also validates names, but this provides defense-in-depth
+        for secrets created directly via the store (bypassing the HTTP layer).
+        """
+        if not SECRET_NAME_PATTERN.match(v):
+            raise ValueError(
+                "Secret name must start with a letter, contain only "
+                "letters/numbers/underscores, and be 1-64 characters"
+            )
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def _validate_secret(
+        cls, v: str | SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        return validate_secret(v, info)
+
+    @field_serializer("secret", when_used="always")
+    def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
+        return serialize_secret(v, info)
+
+
+class Secrets(BaseModel):
+    """Model for storing custom secrets.
+
+    Unlike OpenHands app-server which also stores provider tokens,
+    the agent-server only stores custom secrets since it doesn't
+    integrate with OAuth providers directly.
+    """
+
+    custom_secrets: dict[str, CustomSecret] = Field(default_factory=dict)
+
+    model_config = ConfigDict(frozen=True)
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these secrets contain any non-empty value."""
+        return _contains_secret_value(self)
+
+    def get_env_vars(self) -> dict[str, str]:
+        """Get secrets as environment variables dict.
+
+        Safely extracts secret values, logging warnings for malformed secrets.
+        """
+        result: dict[str, str] = {}
+        for name, secret in self.custom_secrets.items():
+            if secret.secret is None:
+                continue
+            try:
+                result[name] = secret.secret.get_secret_value()
+            except Exception:
+                # Log without exposing secret contents
+                from openhands.sdk.logger import get_logger
+
+                get_logger(__name__).warning(
+                    f"Failed to extract secret '{name}' - skipping"
+                )
+        return result
+
+    def get_descriptions(self) -> dict[str, str | None]:
+        """Get secret name to description mapping."""
+        return {
+            name: secret.description for name, secret in self.custom_secrets.items()
+        }
+
+    @field_serializer("custom_secrets")
+    def custom_secrets_serializer(
+        self, custom_secrets: dict[str, CustomSecret], info: SerializationInfo
+    ) -> dict[str, dict[str, Any]]:
+        # Delegate to CustomSecret.model_dump which uses serialize_secret
+        # This ensures cipher context flows through for encryption
+        result = {}
+        for name, secret in custom_secrets.items():
+            result[name] = secret.model_dump(mode="json", context=info.context)
+        return result
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_inputs(cls, data: dict | object) -> dict | object:
+        """Normalize dict inputs to the expected structure.
+
+        Note: We deliberately keep values as raw strings/dicts here so that
+        Pydantic's field validators can handle cipher-based decryption via
+        the validation context. Wrapping in SecretStr here would bypass the
+        validate_secret() call that handles decryption.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        custom_secrets = data.get("custom_secrets")
+        if isinstance(custom_secrets, dict):
+            converted = {}
+            for name, value in custom_secrets.items():
+                if isinstance(value, CustomSecret):
+                    converted[name] = value
+                elif isinstance(value, dict):
+                    # Keep as dict - let Pydantic handle validation with context
+                    # Note: Use None instead of "" for missing secret to preserve
+                    # distinction between "empty secret" and "missing secret"
+                    converted[name] = {
+                        "name": name,
+                        "secret": value.get("secret"),  # None if missing
+                        "description": value.get("description"),
+                    }
+                elif isinstance(value, str):
+                    converted[name] = {
+                        "name": name,
+                        "secret": value,
+                        "description": None,
+                    }
+            data["custom_secrets"] = converted
+
+        return data
+
+
+# ── Workspaces ───────────────────────────────────────────────────────────
+
+WORKSPACES_SCHEMA_VERSION = 1
+
+
+class WorkspaceItem(BaseModel):
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+    parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkspaceParentItem(BaseModel):
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+class PersistedWorkspaces(BaseModel):
+    schema_version: int = Field(default=WORKSPACES_SCHEMA_VERSION)
+    workspaces: list[WorkspaceItem] = Field(default_factory=list)
+    workspace_parents: list[WorkspaceParentItem] = Field(
+        default_factory=list, alias="workspaceParents"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedWorkspaces:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", WORKSPACES_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedWorkspaces schema_version must be an integer")
+        if version > WORKSPACES_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedWorkspaces schema_version {version} is newer than "
+                f"supported {WORKSPACES_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
+        return cls.model_validate(payload)
+
+
+# ── Helper Functions ─────────────────────────────────────────────────────
+#
+# Note: API request/response models have been moved to the SDK to enable
+# sharing between SDK clients and the agent-server. See:
+#   openhands.sdk.settings.api_models (SecretCreateRequest, SecretItemResponse, etc.)
+
+
+def _coerce_dict_secrets(d: dict[str, Any]) -> dict[str, Any]:
+    """Recursively coerce SecretStr leaves to plain values.
+
+    Note: SecretStr extraction is wrapped in error handling to prevent secret
+    values from leaking in exception tracebacks.
+    """
+    from openhands.sdk.logger import get_logger
+
+    _logger = get_logger(__name__)
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out[k] = _coerce_dict_secrets(v)
+        elif isinstance(v, SecretStr):
+            try:
+                out[k] = v.get_secret_value()
+            except Exception:
+                _logger.warning(
+                    f"Failed to extract secret value for key '{k}' - skipping"
+                )
+                out[k] = None
+        else:
+            out[k] = v
+    return out

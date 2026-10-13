@@ -1,0 +1,14 @@
+.nx
+.DS_Store
+.git
+.gitignore
+.idea
+.vscode
+.env
+__tests__
+src
+scripts
+eslint.config.mjs
+tsdown.config.ts
+tsconfig.json
+vitest.config.ts

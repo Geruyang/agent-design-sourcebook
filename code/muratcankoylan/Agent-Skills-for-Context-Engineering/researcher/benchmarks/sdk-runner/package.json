@@ -1,0 +1,24 @@
+{
+  "name": "researcher-sdk-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cursor SDK-based benchmark runner for the researcher operating system. Runs router and effectiveness benchmarks against the skill corpus.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "router:dry-run": "node --experimental-strip-types src/runRouter.ts --dry-run",
+    "router:run": "node --experimental-strip-types src/runRouter.ts",
+    "effectiveness:dry-run": "node --experimental-strip-types src/runEffectiveness.ts --dry-run",
+    "effectiveness:run": "node --experimental-strip-types src/runEffectiveness.ts"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.13"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.0.0"
+  }
+}

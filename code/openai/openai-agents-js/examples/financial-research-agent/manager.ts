@@ -1,0 +1,170 @@
+import { Agent, run, RunResult } from '@openai/agents';
+import { financialsAgent } from './agents.ts';
+import {
+  plannerAgent,
+  FinancialSearchItem,
+  FinancialSearchPlan,
+  MAX_SEARCHES,
+} from './agents.ts';
+import { riskAgent } from './agents.ts';
+import { searchAgent } from './agents.ts';
+import { verifierAgent, VerificationResult } from './agents.ts';
+import { writerAgent, FinancialReportData } from './agents.ts';
+
+const MAX_REPORT_REVISIONS = 2;
+
+function formatSearchResults(searchResults: string[]): string {
+  return searchResults
+    .map((result, index) => `Source summary ${index + 1}:\n${result}`)
+    .join('\n\n');
+}
+
+// Custom output extractor for sub-agents that return an AnalysisSummary
+async function summaryExtractor(
+  runResult: RunResult<unknown, Agent<unknown, any>>,
+): Promise<string> {
+  return String(runResult.finalOutput.summary);
+}
+
+const reportWriterAgent = writerAgent.clone({
+  tools: [
+    financialsAgent.asTool({
+      toolName: 'fundamentals_analysis',
+      toolDescription: 'Use to get a short write-up of key financial metrics',
+      customOutputExtractor: summaryExtractor,
+    }),
+    riskAgent.asTool({
+      toolName: 'risk_analysis',
+      toolDescription: 'Use to get a short write-up of potential red flags',
+      customOutputExtractor: summaryExtractor,
+    }),
+  ],
+});
+
+export class FinancialResearchManager {
+  async run(query: string): Promise<void> {
+    console.log(`[start] Starting financial research...`);
+    const searchPlan = await this.planSearches(query);
+    const searchResults = (await this.performSearches(searchPlan)).filter(
+      (result) => result.trim().length > 0,
+    );
+    if (searchResults.length === 0) {
+      throw new Error(
+        'Financial research failed because no usable search summaries were returned.',
+      );
+    }
+    let report = await this.writeReport(query, searchResults);
+    let verification = await this.verifyReport(report, searchResults);
+    let revisions = 0;
+    while (!verification.verified && revisions < MAX_REPORT_REVISIONS) {
+      report = await this.reviseReport(
+        query,
+        report,
+        verification,
+        searchResults,
+      );
+      verification = await this.verifyReport(report, searchResults);
+      revisions++;
+    }
+    if (!verification.verified) {
+      throw new Error(
+        `Report failed verification after ${MAX_REPORT_REVISIONS} revisions:\n${verification.issues}`,
+      );
+    }
+    const finalReport = `Report summary\n\n${report.short_summary}`;
+    console.log(finalReport);
+    console.log('\n\n=====REPORT=====\n\n');
+    console.log(`Report:\n${report.markdown_report}`);
+    console.log('\n\n=====FOLLOW UP QUESTIONS=====\n\n');
+    console.log(report.follow_up_questions.join('\n'));
+    console.log('\n\n=====VERIFICATION=====\n\n');
+    console.log(verification);
+  }
+
+  async planSearches(query: string): Promise<FinancialSearchPlan> {
+    console.log(`[planning] Planning searches...`);
+    const result = await run(plannerAgent, `Query: ${query}`);
+    console.log(
+      `[planning] Will perform ${Math.min(result.finalOutput!.searches.length, MAX_SEARCHES)} searches`,
+    );
+    return result.finalOutput!;
+  }
+
+  async performSearches(searchPlan: FinancialSearchPlan): Promise<string[]> {
+    // Enforce the host's search budget before allocating or scheduling work.
+    const searches = searchPlan.searches.slice(0, MAX_SEARCHES);
+    // Run selected searches in parallel and log progress as each completes.
+    console.log(`[searching] Searching...`);
+    let numCompleted = 0;
+    const results: (string | null)[] = new Array(searches.length);
+    await Promise.all(
+      searches.map(async (item, i) => {
+        const result = await this.search(item);
+        results[i] = result;
+        numCompleted++;
+        console.log(
+          `[searching] Searching... ${numCompleted}/${searches.length} completed`,
+        );
+      }),
+    );
+    console.log(`[searching] Done searching.`);
+    // Filter out nulls and preserve order
+    return results.filter((r): r is string => r !== null);
+  }
+
+  async search(item: FinancialSearchItem): Promise<string | null> {
+    const inputData = `Search term: ${item.query}\nReason: ${item.reason}`;
+    try {
+      const result = await run(searchAgent, inputData);
+      return String(result.finalOutput);
+    } catch {
+      return null;
+    }
+  }
+
+  async writeReport(
+    query: string,
+    searchResults: string[],
+  ): Promise<FinancialReportData> {
+    console.log(`[writing] Thinking about report...`);
+    const inputData = `Original query: ${query}\n\n${formatSearchResults(searchResults)}`;
+    const result = await run(reportWriterAgent, inputData);
+    console.log(`[writing] Done writing report.`);
+    return result.finalOutput!;
+  }
+
+  async verifyReport(
+    report: FinancialReportData,
+    searchResults: string[],
+  ): Promise<VerificationResult> {
+    console.log(`[verifying] Verifying report...`);
+    const inputData = `Report:\n${report.markdown_report}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
+    const result = await run(verifierAgent, inputData);
+    console.log(`[verifying] Done verifying report.`);
+    return result.finalOutput!;
+  }
+
+  async reviseReport(
+    query: string,
+    report: FinancialReportData,
+    verification: VerificationResult,
+    searchResults: string[],
+  ): Promise<FinancialReportData> {
+    console.log(`[revising] Revising report from verifier feedback...`);
+    const inputData = `Original query: ${query}
+
+The current report failed verification. Revise it to resolve every verifier issue. Remove unsupported claims instead of guessing, and preserve explicit uncertainty when the supplied sources conflict.
+
+Verifier feedback:
+${verification.issues}
+
+Current report:
+${JSON.stringify(report, null, 2)}
+
+Source summaries:
+${formatSearchResults(searchResults)}`;
+    const result = await run(reportWriterAgent, inputData);
+    console.log(`[revising] Done revising report.`);
+    return result.finalOutput!;
+  }
+}

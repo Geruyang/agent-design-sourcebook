@@ -1,0 +1,87 @@
+---
+title: 音声エージェントの概要
+description: Build realtime assistants using RealtimeAgent and RealtimeSession
+canonicalHeadingIds:
+  - depth: 2
+    id: 'overview'
+    aliases:
+      - '概要'
+  - depth: 2
+    id: 'start-here'
+    aliases:
+      - 'はじめに'
+  - depth: 2
+    id: 'what-the-sdk-adds'
+    aliases:
+      - 'sdk-が追加する機能'
+  - depth: 2
+    id: 'pick-the-next-page'
+    aliases:
+      - '次のページの選択'
+  - depth: 2
+    id: 'why-speech-to-speech'
+    aliases:
+      - '音声対音声を使用する理由'
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+## 概要
+
+![音声エージェント](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+
+音声エージェントを使用すると、OpenAI の音声対音声モデル上に低レイテンシーの音声インターフェースを構築できます。SDK は Realtime API のメンタルモデルを維持しながら、元のイベントフローを `RealtimeAgent`、`RealtimeSession`、トランスポートヘルパーでラップすることで、ツール、ガードレール、ハンドオフ、セッション履歴を扱いやすくします。
+
+内部では、公式ガイドの [WebRTC を使用した Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、[リアルタイム会話](https://developers.openai.com/api/docs/guides/realtime-conversations/)、[音声アクティビティ検出](https://developers.openai.com/api/docs/guides/realtime-vad/)で説明されているものと同じリアルタイムのコンセプトが引き続き適用されます。音声エージェント向け SDK は、その API 上に TypeScript ファーストのレイヤーを追加するため、トランスポートやイベント処理を一から再構築することなく、プロダクトロジックに集中できます。
+
+<Aside type="note">
+  WebRTC
+  でブラウザクライアントを接続する場合は、クイックスタートから始めてください。
+  WebRTC、WebSocket、SIP、Twilio、Cloudflare Workers のどれを使用するか
+  検討している場合は、先にリアルタイムトランスポートを参照してください。
+</Aside>
+
+## はじめに
+
+<LinkCard
+  title="クイックスタート"
+  href="/openai-agents-js/ja/guides/voice-agents/quickstart"
+  description="OpenAI Agents SDK を使用して、ほんの数分ではじめてのリアルタイム音声アシスタントを構築します。"
+/>
+
+<LinkCard
+  title="音声エージェントの構築"
+  href="/openai-agents-js/ja/guides/voice-agents/build"
+  description="セッションのライフサイクル、VAD、割り込み、マルチモーダル入力、ツール、履歴が SDK 内でどのように機能するかを学びます。"
+/>
+
+<LinkCard
+  title="リアルタイムトランスポート"
+  href="/openai-agents-js/ja/guides/voice-agents/transport"
+  description="WebRTC、WebSocket、SIP、カスタムトランスポートから選択し、元のイベントを直接扱うべきタイミングを理解します。"
+/>
+
+## SDK が追加する機能
+
+- 一時的なクライアントトークンを使用した、ブラウザファーストの WebRTC セットアップ
+- サーバー側の WebSocket および SIP トランスポートオプション
+- 割り込みの自動処理とローカルの会話履歴の更新
+- リアルタイムハンドオフによるエージェントオーケストレーション
+- 関数ツール、ホスト型 MCP ツール、承認、委任パターン
+- ライブ音声対話向けの出力ガードレールとトレーシングのサポート
+
+## 次のページの選択
+
+| 必要なこと | 参照先 |
+| --- | --- |
+| WebRTC と一時トークンを使用して、ブラウザクライアントを安全に接続する | [クイックスタート](/openai-agents-js/ja/guides/voice-agents/quickstart) |
+| セッションのライフサイクル、VAD、割り込み、画像入力、ツール、履歴を理解する | [音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build) |
+| WebRTC、WebSocket、SIP、カスタムトランスポートから選択する | [リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport) |
+| Twilio 上で電話またはテレフォニー体験を実行する | [Twilio 上の音声エージェント](/openai-agents-js/ja/extensions/twilio) |
+| Cloudflare Workers またはその他の workerd ランタイムから接続する | [Cloudflare 上の音声エージェント](/openai-agents-js/ja/extensions/cloudflare) |
+
+## 音声対音声を使用する理由
+
+音声対音声モデルはユーザーの音声を直接処理するため、ターンごとに音声認識、テキスト推論、音声合成を個別につなぐ処理を構築する必要がありません。これによりレイテンシーが抑えられ、リアルタイムアプリケーションでの割り込み、テキストと音声を組み合わせた入力、ツール呼び出しがより自然になります。
+
+![音声対音声モデル](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

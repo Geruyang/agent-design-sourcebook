@@ -1,0 +1,107 @@
+{
+  "name": "@ag-ui/aws-strands",
+  "author": "AG-UI Contributors",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ag-ui-protocol/ag-ui.git"
+  },
+  "description": "AWS Strands Agents integration for the AG-UI protocol",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "clean": "git clean -fdX --exclude=\"!.env\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:exports": "publint --strict && attw --pack",
+    "link:global": "pnpm link --global",
+    "unlink:global": "pnpm unlink --global"
+  },
+  "peerDependencies": {
+    "@ag-ui/a2ui-toolkit": ">=0.0.3",
+    "@ag-ui/client": ">=1.0.0",
+    "@ag-ui/core": ">=1.0.0",
+    "@ag-ui/encoder": ">=0.0.59",
+    "@modelcontextprotocol/sdk": ">=1.0.0",
+    "@strands-agents/sdk": ">=1.1.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.0 || ^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
+    "cors": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "zod": "^3.25.18 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@ag-ui/a2ui-toolkit": "workspace:*",
+    "@ag-ui/client": "workspace:*",
+    "@ag-ui/core": "workspace:*",
+    "@ag-ui/encoder": "workspace:*",
+    "@arethetypeswrong/cli": "^0.17.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@strands-agents/sdk": "^1.1.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.11.19",
+    "@vitest/coverage-istanbul": "^4.0.18",
+    "cors": "^2.8.5",
+    "express": "^5.0.0",
+    "openai": "^6.10.0",
+    "publint": "^0.3.12",
+    "rxjs": "7.8.1",
+    "tsdown": "^0.20.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./server": {
+      "require": "./dist/server.js",
+      "import": "./dist/server.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "server": [
+        "dist/server.d.ts"
+      ]
+    }
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "cache": false
+      },
+      "test:coverage": {
+        "cache": false
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "status": "reference-only",
+  "reason": "Seed run captured the deep-research evidence that bootstrapped the harness-engineering skill, the mechanism registry, and the researcher OS. Closed as reference-only: its raw evidence and THREAD.md remain as a worked example of the autonomous-loop lifecycle. The skill change itself was already published; no further PR derives from this run.",
+  "closed_at": "2026-05-15T05:19:20+00:00",
+  "reviewed_by": "release-team"
+}

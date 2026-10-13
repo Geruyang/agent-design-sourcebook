@@ -1,0 +1,58 @@
+---
+title: "Subagents"
+sidebarTitle: "Subagents"
+description: "Run parallel research agents to explore your codebase without filling the main agent's context window."
+---
+
+<Warning>
+  Subagents are available in the Cline CLI and Cline Desktop. The VS Code and JetBrains extensions don't use them.
+</Warning>
+
+Subagents let Cline hand a focused task to another agent. Each subagent gets its own prompt and context window, does the work, and returns a report to the main agent. This keeps the main agent's context clean, and several subagents can run at the same time.
+
+## How It Works
+
+When Cline uses the `spawn_agent` tool, it starts a subagent. Each one:
+
+- Gets its own instructions and task from the main agent
+- Runs with a separate context window
+- Has Cline's built-in tools for the current mode. In Act mode it can read and edit files and run commands. In Plan mode it has no tools for editing files, and Cline refuses shell commands that usually change files, such as `rm` and `git commit`. Other commands still run, and some of them, such as `python -c`, can write files. A subagent can start subagents of its own. It doesn't get MCP tools.
+- Returns its final reply to the main agent
+
+The main agent waits for its subagents, then continues. Their token use and cost are added to the session's total.
+
+## Approvals
+
+Approving the `spawn_agent` call approves everything the subagent then does: its own tool calls don't ask for approval. Approval settings don't apply inside a subagent, so read the subagent's task before you approve it.
+
+## Turning Subagents Off
+
+Subagents are on in Act and Plan modes. To turn them off, turn off the `spawn_agent` tool:
+
+- **CLI:** run `cline`, type `/settings`, and turn off `spawn_agent` on the **Tools** tab.
+- **Desktop:** open **Customize**, select **Tools**, and turn off `spawn_agent`.
+
+The setting applies to new sessions in both products.
+
+## Using Subagents
+
+Cline decides when a task is worth splitting. You can also ask for subagents in your prompt.
+
+Example prompts:
+
+- "Use subagents to explore how authentication works and where the database models are defined"
+- "Spin up subagents to investigate the API routes, the test setup, and the deployment config"
+- "I'm new to this codebase. Use subagents to map out the main entry points, the routing layer, and the data access patterns"
+
+Give each subagent one focused question. Asking for research only, and working in Plan mode, make subagents less likely to change files, but neither stops every change.
+
+## When to Use Subagents
+
+Subagents work best when you need broad context from multiple areas of a codebase at once:
+
+- **Onboarding to an unfamiliar project**: Ask subagents to map out the architecture, key entry points, and data flow in parallel.
+- **Investigating cross-cutting concerns**: Have separate subagents trace authentication, logging, and error handling simultaneously.
+- **Pre-edit research**: Before making changes, use subagents to gather context from related files so the main agent can make informed edits without burning through its context window.
+- **Large codebases**: When reading many files sequentially would consume too much of the main agent's context, subagents let you explore broadly without that tradeoff.
+
+For small, focused tasks where you already know which files to look at, subagents add unnecessary overhead. Just ask Cline directly.

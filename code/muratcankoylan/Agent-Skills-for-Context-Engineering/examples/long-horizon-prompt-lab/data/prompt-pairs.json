@@ -1,0 +1,366 @@
+{
+  "meta": {
+    "title": "Prompts for work that does not end in one turn.",
+    "subtitle": "Four launch prompts, rewritten as complete, ready-to-run prompts for long-running agents.",
+    "skill": "long-horizon-prompting",
+    "exemplar": "OpenAI GPT-5.6 Sol Ultra Cycle Double Cover run (July 2026)",
+    "rubric_source": "skills/long-horizon-prompting/references/task-brief-template.md",
+    "honesty_note": "Scores use the skill's own 10-dimension pre-launch rubric, so a high 'after' score means the brief fully applies the skill's checklist as measured by that checklist. This is a structural comparison, not an outcome benchmark: it shows the briefs are harder to satisfy by a near miss, not that any specific run succeeds. The 'before' prompts are competent, prompt-engineered launch prompts (persona, context, chain-of-thought, explicit format, persistence), not strawmen. Each pair lists a residual risk the optimized prompt still cannot remove.",
+    "aggregate": {
+      "before_pct": 11,
+      "after_pct": 100,
+      "gain_pp": 89,
+      "pairs": 4
+    }
+  },
+  "rubric": [
+    {
+      "id": "predicate",
+      "name": "Success predicate",
+      "two": "An adversarial reader can decide unambiguously whether an artifact satisfies it; quantifiers and scope explicit."
+    },
+    {
+      "id": "definitions",
+      "name": "Definitions",
+      "two": "Every load-bearing term defined, degenerate cases settled."
+    },
+    {
+      "id": "non_counting",
+      "name": "Non-counting outcomes",
+      "two": "The plausible near misses for this specific problem are excluded by name."
+    },
+    {
+      "id": "auditor",
+      "name": "Auditor checklist",
+      "two": "Enumerated, domain-specific failure modes including the circularity analogue."
+    },
+    {
+      "id": "persistence_gate",
+      "name": "Persistence-verification pairing",
+      "two": "Every persistence instruction has a matching verification gate."
+    },
+    {
+      "id": "return_condition",
+      "name": "Return condition",
+      "two": "A predicate over the artifact; fallback scoped to external budget exhaustion only."
+    },
+    {
+      "id": "diversity",
+      "name": "Diversity policy (parallel)",
+      "two": "Early independence, idea-keyed registry, blocked-route rules, late cross-pollination."
+    },
+    {
+      "id": "reporting",
+      "name": "Reporting contract",
+      "two": "Concrete artifacts required; claims must trace to session evidence."
+    },
+    {
+      "id": "contamination",
+      "name": "Contamination guards",
+      "two": "Retrieval scope stated wherever result independence matters."
+    },
+    {
+      "id": "harness",
+      "name": "Harness separation",
+      "two": "No hard constraint lives only in the prompt; budgets and permissions enforced outside."
+    }
+  ],
+  "pairs": [
+    {
+      "id": "ml-optimization",
+      "title": "Autonomous model-improvement run",
+      "domain": "ML training / benchmark optimization",
+      "topology": "Primary long-running agent + fresh-context reviewer",
+      "horizon": "Hours, unattended, with cluster access",
+      "summary": "A run told to beat a production model's benchmark score. The gap between 'beat the number' and 'produce a real, generalizing improvement' is exactly the reward-hacking surface the skill warns about.",
+      "before_techniques": [
+        "Expert persona and rich task context",
+        "Explicit numbered method and chain-of-thought request",
+        "Persistence instruction ('do not give up')",
+        "Named baseline metric and output-format spec"
+      ],
+      "before": "You are a world-class ML research engineer with deep expertise in model\ntraining, optimization, and empirical evaluation. Your task is to improve our\ntext-classification model's accuracy on the internal benchmark we care about.\n\nContext: our current production model (v3) scores 87.2 accuracy on our internal\neval set. We need to beat it. You have the training code in /repo, the training\ndata, and a GPU cluster. The eval harness is in eval/.\n\nWork autonomously and be thorough. Think step by step:\n  1. Analyze the current architecture and training setup.\n  2. Brainstorm a comprehensive list of improvements (architecture, hyperparameters,\n     data augmentation, loss functions, regularization).\n  3. Systematically try the most promising ideas.\n  4. For each experiment, record the eval accuracy.\n  5. Keep iterating until you find something that beats 87.2.\n\nBe persistent - do not give up if the first few ideas fail. Keep going until you\nhave a clear win. You are an expert, so use your best judgment and do not stop at\npartial results. When done, write a detailed report of what you tried, what worked,\nand the final accuracy you achieved.",
+      "after": "You are the autonomous research lead responsible for producing a real,\nreproducible improvement to our production text-classification model. Work directly\nin /repo. The current v3 model reports 87.2 accuracy on the internal evaluation set;\nthe training code and data are in the repository, and the evaluation entry point is\nunder eval/.\n\nYour job is not to find one run whose displayed number is above 87.2. Your job is to\ndeliver a training change that improves the predeclared frozen benchmark without\nevaluation leakage, survives an independent audit, and can be reproduced from a\nclean checkout.\n\nSUCCESS CONDITION\n\nBefore launch, the runtime records the current git SHA, evaluation command, evaluator\ndependency-image digest, and SHA-256 manifests of the evaluation set, harness, and\ntransitive evaluator-owned modules. It then denies the primary agent all evaluation-\ndata access; the agent receives only the digests. Predeclare seeds 17, 29, 43, 71, and\n101. Only the final reviewer may access evaluation data and run v3 plus exactly one\ncommitted candidate with those seeds.\n\nThe task is complete only if all of the following are true:\n\n1. The candidate's mean frozen-evaluation accuracy is above 87.2.\n2. Let d_i be candidate accuracy minus v3 accuracy, in percentage points, for seed i.\n   The lower endpoint of the two-sided 95% paired Student-t interval\n   mean(d) +/- t(0.975, 4) * stdev(d) / sqrt(5) is strictly greater than zero.\n3. The candidate is produced by a committed code or configuration change and a\n   reproducible training command from a clean checkout.\n4. The frozen evaluation data, metric implementation, and harness are byte-identical\n   to the recorded snapshot.\n5. A separately launched fresh-context reviewer, with read-only access to candidate\n   artifacts and no access to the research history, runs the only candidate\n   evaluation and accepts the leakage, selection, and preprocessing audits below.\n\nThe evaluation set is frozen data used only for final measurement. It must never be\ncopied, sampled, relabeled, or indirectly exposed to training or model selection.\nAn improvement on a re-drawn split, a subset, or a modified metric is not an\nimprovement for this task.\n\nRESULTS THAT DO NOT COUNT\n\n- A single-seed win, a cherry-picked seed, or a gain whose confidence interval\n  includes zero.\n- A gain obtained by modifying the evaluation set, evaluator, label mapping, metric,\n  thresholding rule, or preprocessing path.\n- Any train/evaluation overlap, including duplicates or transformed near-duplicates.\n- A configuration that was never trained and evaluated end to end.\n- A validation-only improvement that disappears on the frozen evaluation set.\n- A list of promising ideas, experiment logs without a passing candidate, or a\n  narrative report in place of runnable artifacts.\n\nWORK POLICY\n\nStart by reproducing v3 on training and validation data. Then explore materially\ndifferent hypothesis families rather than repeatedly tuning one knob: data quality or\naugmentation, optimization and loss, regularization, and architecture or\nrepresentation. Maintain experiments/results.jsonl with the git SHA, exact command,\nseed, input-data manifest, training/validation metrics, and artifact path for every\nrun. Keep frozen-evaluation data and outputs inaccessible during research. Select and\ncommit exactly one candidate using training and validation evidence only. If its one\nfinal frozen evaluation fails, return INCOMPLETE; do not use that result to select a\nsecond candidate.\n\nBefore declaring the search blocked, complete and record at least three materially\ndifferent hypothesis families. This effort requirement does not weaken the success\ncondition. GPU-hour and wall-clock limits are enforced by the runtime, not by this\nprompt.\n\nINDEPENDENT VERIFICATION\n\nThe runtime must launch the final reviewer in a separate context with a read-only\nevaluation worktree and the pinned dependency image. Give it the immutable experiment\nledger, dataset-access logs, training/validation artifacts, frozen manifests,\ncandidate commit, and result artifacts, but no narrative research history. Require\nthe reviewer to:\n\n- hash all train, validation, and evaluation examples and check exact overlap; use a\n  near-duplicate detector, normalization procedure, similarity threshold, and manual\n  adjudication rule recorded before training and never tuned after overlap inspection;\n- confirm the evaluator and frozen files are unchanged from the initial snapshot;\n- rerun all five paired seeds from a clean checkout;\n- compare the baseline and candidate preprocessing paths for train/serve skew;\n- check that every reported aggregate can be recomputed from the per-seed JSON; and\n- revert the complete candidate patch, rerun the same five seeds, and confirm the\n  paired difference from the recorded v3 results includes zero under the same\n  prespecified interval calculation.\n\nDELIVERABLES AND RETURN RULE\n\nReturn only after a candidate satisfies every success condition and survives the\nindependent audit. The final response must identify the candidate commit and link to:\nthe exact training command, frozen manifests, code diff, five baseline result files,\nfive candidate result files, confidence-interval calculation, and reviewer verdict.\n\nIf the externally enforced budget is exhausted first, label the run INCOMPLETE and\nreturn only the verified experiment ledger and the exact remaining gap. Never present\nan incomplete or unaudited candidate as an improvement.\n\nExternal search is allowed for standard ML techniques and library documentation. Do\nnot search for this benchmark's labels, hidden examples, or leaderboard solution, and\ndo not use any retrieved artifact that reveals evaluation content.",
+      "deltas": [
+        {
+          "dim": "Success predicate",
+          "text": "'Beat 87.2' becomes a CI-bounded margin over >=5 seeds on a hash-pinned frozen slice. A 0.1-point single-seed bump no longer satisfies the letter."
+        },
+        {
+          "dim": "Persistence-verification pairing",
+          "text": "'Keep going until a clear win' with no gate is the documented persistence-hacking surface (claim-long-horizon-persistence-hacking). The brief pairs persistence with a leakage/seed/harness-mutation audit."
+        },
+        {
+          "dim": "Contamination guards",
+          "text": "Adds explicit no-leakage and no-leaderboard-lookup guards; the before prompt let the agent train on eval or copy answers."
+        },
+        {
+          "dim": "Reporting contract",
+          "text": "'Detailed report of what you tried' (status theater) becomes runnable artifacts: diff, training command, per-seed eval JSON."
+        }
+      ],
+      "residual": "The brief cannot enforce the write-protection on frozen_eval or the GPU budget; both are assumed to live in the harness. If they do not, a persistence-trained model still has a mutation path the prompt only discourages. The effort floor is a permission, not a schedule.",
+      "scores": {
+        "before": {
+          "predicate": 1,
+          "definitions": 1,
+          "non_counting": 0,
+          "auditor": 0,
+          "persistence_gate": 0,
+          "return_condition": 0,
+          "diversity": "na",
+          "reporting": 1,
+          "contamination": 0,
+          "harness": 0
+        },
+        "after": {
+          "predicate": 2,
+          "definitions": 2,
+          "non_counting": 2,
+          "auditor": 2,
+          "persistence_gate": 2,
+          "return_condition": 2,
+          "diversity": "na",
+          "reporting": 2,
+          "contamination": 2,
+          "harness": 2
+        }
+      },
+      "score_summary": {
+        "before": {
+          "total": 3,
+          "max": 18,
+          "pct": 17
+        },
+        "after": {
+          "total": 18,
+          "max": 18,
+          "pct": 100
+        },
+        "gain_pp": 83
+      }
+    },
+    {
+      "id": "approx-proof",
+      "title": "Parallel approximation-ratio proof search",
+      "domain": "Algorithms / theory (metric TSP)",
+      "topology": "Orchestrator with up to 64 parallel workers",
+      "horizon": "Long, multi-round parallel search",
+      "summary": "The direct analogue of the CDC exemplar in a different domain. The original bakes in a diversity-collapse antipattern; the optimized prompt preserves independence and makes a verified algorithm-and-proof package the return gate.",
+      "before_techniques": [
+        "Orchestrator persona with an explicit worker budget",
+        "Enumerated solution directions (LP, Christofides, sampling, local search)",
+        "Team-collaboration and consensus protocol",
+        "Rigor and persistence instructions"
+      ],
+      "before": "You are an expert orchestrator managing up to 64 parallel research agents,\neach a strong combinatorial-optimization theorist. Mission: improve the best known\napproximation ratio for metric Traveling Salesman below the current published bound,\nand prove the improved guarantee.\n\nAssign agents to promising directions: LP relaxations, Christofides-style\nconstructions, random sampling, local-search analysis, and any other angles. Have\nthem collaborate and share findings frequently in a shared channel so everyone stays\nin sync, and vote each round on the most promising approach. Encourage the team to\nconverge quickly on the best idea and pour resources into it.\n\nThink carefully and be rigorous. Do not stop until the team is confident it has an\nimprovement. Once the team agrees the proof is correct, return the new ratio and the\nproof.",
+      "after": "You are the root research agent for a long-running, parallel attempt to improve\nthe worst-case approximation ratio for metric Traveling Salesman. You may coordinate\nup to 64 equally capable research agents. Use that capacity dynamically; your role is\nto preserve independent search, demand checkable mathematics, and return only a\ncomplete candidate theorem that survives adversarial review.\n\nFIRST FREEZE THE TARGET\n\nFrom primary literature, identify the current published worst-case approximation\nconstant for polynomial-time metric TSP, including the exact theorem statement,\ncomputational model, scope, publication, assumptions, and guarantee type\n(deterministic, expected, or high probability). Record it as c_current in\nresearch/target.md before launching the main search. Public literature search is\nrequired to establish c_current, map prior approaches, and avoid presenting a known\nresult as new. Record the search cutoff date, publication status, and primary sources.\nDo not retrieve private evaluation answers, unpublished artifacts supplied for this\nrun, or benchmark-specific hidden solutions.\n\nUnless the target theorem specifies otherwise, a metric TSP instance is a complete\nundirected graph on at least three vertices with nonnegative symmetric rational edge\ncosts encoded in binary and satisfying the triangle inequality. OPT(I) is the minimum\ncost of a Hamiltonian cycle. Algorithm A must output a Hamiltonian cycle, and its\nrunning-time proof must account for bit complexity, optimization oracles, sampling,\nand decomposition procedures.\n\nAn improvement must give a guarantee at least as strong as c_current in the same\ncomputational model. For deterministic A, require\n\n    cost(A(I)) <= alpha * OPT(I)\n\nfor every fixed instance. For randomized A, require\n\n    E_r[cost(A(I; r))] <= alpha * OPT(I)\n\nfor every fixed instance, where the expectation is only over A's internal randomness.\nAny failure-probability qualification must be explicit and must match or strengthen\nthe target theorem. In every case alpha is one fixed constant strictly below\nc_current; restricted instance families do not count.\n\nCOMPLETE SUCCESS\n\nReturn a result only if it contains:\n\n1. executable pseudocode for A, including tie handling and every randomized step;\n2. a polynomial running-time proof;\n3. an explicit alpha < c_current;\n4. a modular proof of the ratio for every metric instance, with each lemma's premises\n   and conclusion stated locally; and\n5. independent adversarial reviews that find no unresolved theorem-strength gap.\n\nRESULTS THAT DO NOT COUNT\n\n- A better ratio only for a special metric family or only in expectation over inputs.\n- An average-case, smoothed, empirical, finite-size, or asymptotic observation.\n- A conditional theorem that depends on an unproved conjecture.\n- A reduction to a lemma or open problem equivalent in strength to the target.\n- An integrality-gap bound without an algorithm attaining the claimed ratio.\n- A randomized guarantee silently rewritten as a deterministic one.\n- A bound with an additive term, hidden dependence on instance size, or uninstantiated\n  epsilon or o(1) term that does not imply one fixed alpha < c_current.\n- An existential distribution, tree, decomposition, or fractional object without a\n  polynomial-time construction or sampler.\n- An algorithm returning a multigraph, walk, fractional solution, or disconnected\n  structure without a proved polynomial-time conversion to a Hamiltonian cycle that\n  preserves the claimed bound.\n- A proof sketch containing an isolated missing lemma, a \"routine\" compatibility\n  claim, or a best-effort explanation of why the problem is difficult.\n\nPARALLEL SEARCH POLICY\n\nBegin with independent workers exploring genuinely different idea families: LP/SDP\nrelaxations, best-of-many Christofides variants, entropy or random-sampling methods,\nlocal-search analyses, decomposition and flow arguments, and new formulations not on\nthis list. Do not tell most first-round workers which route looks most promising.\n\nMaintain research/approach-registry.md. Group routes by mathematical mechanism, not\nby wording, and record for each route its invariant, concrete artifact, strongest\nproved statement, and exact gap. Redirect workers away from crowded families. A route\nthat merely reformulates the target or ends at an equally hard lemma is not progress.\nMark such routes blocked in research/blocked-routes.md; reopen one only when a worker\nsupplies a materially new mechanism.\n\nPreserve independent development until each active family produces a concrete\nartifact or an evidence-backed blocker. Retire falsified routes immediately.\nCross-pollinate only after surviving routes have recorded their premises, strongest\nresult, and exact gap. Every worker assignment must state its objective, required\noutput (lemma, construction, counterexample, or calculation), allowed sources/tools,\nand boundaries. Reject status reports and confidence claims without a mathematical\nartifact.\n\nADVERSARIAL VERIFICATION\n\nFor every candidate, launch fresh-context reviewers who did not develop it. Give them\nthe target theorem, algorithm, and modular proof, but not the builders' discussion.\nAssign explicit attacks:\n\n- find hidden restrictions on the metric or instance class;\n- recompute every constant and inequality, especially boundary cases;\n- check whether \"with high probability,\" expectation, and worst-case claims were\n  interchanged;\n- separate integrality-gap facts from algorithmic guarantees;\n- detect circular use of a statement equivalent to the claimed improvement;\n- verify feasibility of every intermediate and final object;\n- check that every existential object is constructible or samplable in polynomial\n  time;\n- audit conditioning, independence, and correlation assumptions in randomized\n  arguments;\n- reject hidden additive, asymptotic, precision, or failure-probability\n  qualifications;\n- expand every compatibility or feasibility step labeled obvious or routine; and\n- test the algorithm on small adversarial instances to falsify claims, without\n  treating finite testing as proof.\n\nUnanimous worker agreement is not evidence of correctness. Treat rapid consensus as\na possible diversity failure and audit the content itself. Each reviewer must return\nnumbered objections classified as blocking or non-blocking. Every blocking objection\nmust be resolved by a specific proof revision and rechecked by a fresh reviewer.\nMaintain research/open-objections.md; it must contain zero unresolved blocking\nobjections at return.\n\nRETURN RULE\n\nReturn only the complete algorithm-and-proof package after every theorem-strength\nclaim survives the adversarial checklist. Do not return merely because workers are\nconfident or because one approach dominates the registry.\n\nIf the externally enforced compute budget ends before complete success, label the\nresult INCOMPLETE and return the strongest rigorously proved statements, the approach\nregistry, blocked routes, and each exact remaining gap. Do not claim that no\nimprovement exists; failure of this search is not an impossibility proof.",
+      "deltas": [
+        {
+          "dim": "Diversity policy",
+          "text": "'Share frequently, vote, converge quickly, pour resources into the best idea' is a textbook diversity-collapse recipe (claim-long-horizon-diversity-collapse). The brief replaces it with early independence, an idea-keyed registry, blocked-route bookkeeping, and late cross-pollination."
+        },
+        {
+          "dim": "Return condition",
+          "text": "'Until the team is confident' / 'the team agrees the proof is correct' uses unanimity as the halt signal. The brief makes the return a predicate over an artifact that survives fresh-context adversarial audit."
+        },
+        {
+          "dim": "Non-counting outcomes",
+          "text": "Adds the domain's real near misses: reductions to equally hard problems, conditional results, special-metric bounds, integrality-gap conflation."
+        },
+        {
+          "dim": "Auditor checklist",
+          "text": "Generic 'be rigorous' becomes a six-item hunt list including the circularity analogue (a bound equivalent to the target)."
+        }
+      ],
+      "residual": "This is the domain where the verification bottleneck bites hardest: LLM judges of proofs are systematically lenient (claim-long-horizon-verification-gap), so even a fresh-context adversarial audit is not a proof of correctness. A real ratio-improvement claim still needs external human or formal verification; the brief maximizes candidate quality, it does not close the theorem.",
+      "scores": {
+        "before": {
+          "predicate": 1,
+          "definitions": 0,
+          "non_counting": 0,
+          "auditor": 0,
+          "persistence_gate": 0,
+          "return_condition": 0,
+          "diversity": 0,
+          "reporting": 1,
+          "contamination": 0,
+          "harness": 0
+        },
+        "after": {
+          "predicate": 2,
+          "definitions": 2,
+          "non_counting": 2,
+          "auditor": 2,
+          "persistence_gate": 2,
+          "return_condition": 2,
+          "diversity": 2,
+          "reporting": 2,
+          "contamination": 2,
+          "harness": 2
+        }
+      },
+      "score_summary": {
+        "before": {
+          "total": 2,
+          "max": 20,
+          "pct": 10
+        },
+        "after": {
+          "total": 20,
+          "max": 20,
+          "pct": 100
+        },
+        "gain_pp": 90
+      }
+    },
+    {
+      "id": "systems-debug",
+      "title": "Long-horizon distributed-systems RCA",
+      "domain": "Distributed systems / concurrency",
+      "topology": "Multi-session primary agent + fresh-context reviewer",
+      "horizon": "Days, multi-session, spans context windows",
+      "summary": "A rare, non-deterministic data-corruption bug. Without a reproduction as the success predicate, 'find the root cause' collapses into a plausible narrative the agent cannot be held to.",
+      "before_techniques": [
+        "Senior-engineer persona and precise symptom description",
+        "Explicit sources to inspect (code, history, logs)",
+        "Hypothesis-with-reasoning request and an exhaustive checklist",
+        "Persistence and progress-update cadence"
+      ],
+      "before": "You are a senior distributed-systems engineer. We have an intermittent\ndata-corruption bug: roughly once every few million writes, a record in our sharded\nkey-value store ends up holding a value from a different key. It is rare,\nnon-deterministic, and we have not reproduced it reliably.\n\nInvestigate thoroughly and find the root cause, then fix it. Dig into the codebase\n(/srv/kvstore), the commit history, the logs in /var/log/kvstore, and the concurrency\nmodel. Form hypotheses, and for each explain your reasoning. Be exhaustive - consider\nrace conditions, memory issues, serialization bugs, clock skew, retries, and network\npartitions.\n\nThis is important and hard, so be persistent and keep working until you understand\nwhat is happening. Give me regular progress updates as you go. When finished, write a\ndetailed post-mortem explaining the root cause and your fix.",
+      "after": "You own an intermittent data-corruption incident in our sharded key-value\nstore. Work in /srv/kvstore and use the logs in /var/log/kvstore. Under concurrent\nwrites, roughly once every few million operations, a record is observed with a value\nthat was written for a different key. Your task is to reproduce that cross-key bleed,\nidentify the exact code mechanism, implement the fix, and leave a regression test\nthat would have caught it.\n\nDo not optimize for a plausible post-mortem. Optimize for a causal demonstration.\n\nWHAT COUNTS AS SOLVED\n\nThe incident is solved only when all of these artifacts exist:\n\n1. A deterministic test or fault-injection harness that triggers cross-key bleed on\n   a clean checkout in 20 of 20 runs under a controlled schedule. The schedule must\n   be legal under the deployed runtime and memory model, reachable without test-only\n   state mutation, and match the production incident in code path, shard state,\n   ownership epoch, retry state, and observed failure mode.\n2. A code-level causal explanation connecting the triggering schedule and state\n   transition to the wrong key/value association.\n3. A minimal fix that eliminates the reproduced failure.\n4. An external reproducer that fails 20/20 on the pinned parent commit and passes\n   100/100 on the fixed commit under the identical recorded schedule, plus a\n   predeclared four-thread-count by three-seed stress matrix with every cell passing.\n5. A fresh-context review that keeps the reproducer unchanged, reverts only the\n   production-code fix, recovers the 20/20 failure, and confirms that the fix removes\n   the cause rather than hiding the symptom.\n\nIf the verified cause is outside the repository (for example a runtime, filesystem,\nhardware, or operational mechanism), completion may substitute an externally\nreplayable causal demonstration plus an owned-system configuration or containment\nchange. The same before/after/revert evidence is required, and fault injection must\nexercise the verified non-code cause in regression.\n\n\"Root cause\" means the specific mechanism whose activation is sufficient to reproduce\nthe corruption and whose correction prevents that same reproduction. \"Fixed\" does\nnot mean the observed frequency became lower. Retries, checksums, dropped writes, or\nextra validation that merely masks the bad association are not fixes. The fixed build\nmust execute the same workload and reach the same precondition while preserving\nacknowledged writes, concurrency, retries, and shard movement. It must introduce no\nnew errors or timeouts and must pass the unchanged availability, durability,\nthroughput, and latency acceptance gates. Preventing the trigger from running does\nnot count as a fix.\n\nNON-SOLUTIONS\n\nDo not return any of the following as completion:\n\n- a hypothesis list, probability ranking, or narrative without a triggering test;\n- \"probably a race,\" \"network issue,\" \"clock skew,\" or \"data drift\" without the\n  responsible code path and state transition;\n- a stress test that sometimes fails but cannot control the failing interleaving;\n- a mitigation that reduces incidence while the deterministic reproduction remains;\n- a mechanism explaining only a different corruption mode; or\n- a post-mortem without the reproduction, patch, and regression evidence.\n\nINVESTIGATION POLICY\n\nStart by pinning the current commit and turning the symptom into an executable\ninvariant. In the reproducer, every write uses a globally unique payload encoding its\nkey ID, request ID, and write generation. At the visibility point guaranteed by the\nstore's documented consistency model, after a defined quiescence barrier, cross-key\nbleed occurs if the API response or durable record for key K contains a payload whose\nencoded key is not K. Preserve key, payload provenance, shard, request ID, retry\ngeneration, ownership epoch, and thread/task identity in the trace. Identify the first\nlayer where key and payload provenance diverge: API lookup, cache, serialization,\nrouting, or durable storage. A different latent defect with the same outward symptom\ndoes not count as reproduction of this incident.\n\nBuild investigation/verified-ledger.md. Every entry must link to a command, log,\ntrace, test result, or diff from the current session. Record both supporting and\nfalsifying evidence. At the start of every later session, read the ledger and, if a\nreproducer exists, rerun the smallest verified reproducer before doing new work.\n\nExplore independent mechanism families: buffer or object reuse, serialization and\nkey/value framing, shard routing and ownership transfer, retry/idempotency behavior,\nABA or generation reuse, and unsynchronized publication. Use deterministic schedulers,\nbarriers, fault injection, and targeted tracing to turn timing hypotheses into\ncontrolled interleavings. Do not keep pushing one theory after evidence falsifies it.\nBefore declaring the investigation blocked, produce evidence on at least four\nmaterially different mechanism families.\n\nADVERSARIAL REVIEW\n\nThe runtime must launch the final reviewer in a separate context with read-only access\nto candidate artifacts and no access to the investigation history. Give it the pinned\nparent commit, original production log spans and traces, the predeclared incident\nsignature, reproducer, candidate trace, causal explanation, fix, and regression test.\nRequire the reviewer to:\n\n- reproduce the failure 20/20 before the fix;\n- apply the fix and observe 0/100 under the identical failing schedule, then pass\n  every cell of the separate thread-count by scheduling-seed matrix;\n- revert only the fix and recover the failure;\n- check for ABA, lost-update, retry, and memory-lifetime explanations that the patch\n  may merely perturb rather than correct;\n- verify that the test detects cross-key bleed rather than a generic timeout or\n  dropped write; and\n- compare the candidate trace with the original production evidence and reject a\n  reproducer whose code path, shard state, ownership epoch, retry state, or first\n  divergence layer does not match; and\n- trace every post-mortem claim to a run, log span, code location, or diff.\n\nDELIVERABLES AND RETURN RULE\n\nReturn only after the reproduction, causal mechanism, minimal patch, regression\nmatrix, and fresh-context audit all pass. The final response must link to those\nartifacts and explain the causal chain from triggering interleaving to the incorrect\nkey/value association at the API, cache, serialization, routing, or storage layer\nwhere it first occurs, in enough detail for another engineer to reproduce it.\n\nIf the external runtime budget ends first, label the result INCOMPLETE. Return the\nverified ledger, smallest reproducer achieved, falsified hypotheses, and exact next\nexperiment. Do not promote a likely explanation to root cause.\n\nExternal search is limited to documented language, runtime, storage-engine, and\nlibrary semantics. A similar public bug is background evidence only; it is not the\nanswer unless its mechanism is reproduced in this codebase.",
+      "deltas": [
+        {
+          "dim": "Success predicate",
+          "text": "'Find the root cause' becomes 'a mechanism with a deterministic reproduction that disappears when neutralized', which an adversarial reader can actually check."
+        },
+        {
+          "dim": "Reporting contract",
+          "text": "'Regular progress updates' + 'detailed post-mortem' is status theater. The brief requires a reproduction, a diff, and a regression test, with every claim traced to a log line or run (claim-long-horizon-evidence-audit)."
+        },
+        {
+          "dim": "Return condition",
+          "text": "'Until you understand what is happening' (confidence) becomes an artifact predicate: repro + fix + passing regression test that survive audit."
+        },
+        {
+          "dim": "State ledger (persistence)",
+          "text": "Adds a re-injected verified-progress ledger for the multi-session run, the countermeasure PushBench found rescued long tasks that prompt-only setups failed (claim-long-horizon-state-ledger)."
+        }
+      ],
+      "residual": "A controlled reproducer can still expose a different latent defect with the same outward symptom; matching the production signature remains a human judgment. Hardware-originated faults may also resist deterministic software reproduction. Re-injecting the verified ledger across sessions is a harness job, not something this prompt can enforce by itself.",
+      "scores": {
+        "before": {
+          "predicate": 1,
+          "definitions": 0,
+          "non_counting": 0,
+          "auditor": 0,
+          "persistence_gate": 0,
+          "return_condition": 0,
+          "diversity": "na",
+          "reporting": 0,
+          "contamination": 0,
+          "harness": 0
+        },
+        "after": {
+          "predicate": 2,
+          "definitions": 2,
+          "non_counting": 2,
+          "auditor": 2,
+          "persistence_gate": 2,
+          "return_condition": 2,
+          "diversity": "na",
+          "reporting": 2,
+          "contamination": 2,
+          "harness": 2
+        }
+      },
+      "score_summary": {
+        "before": {
+          "total": 1,
+          "max": 18,
+          "pct": 6
+        },
+        "after": {
+          "total": 18,
+          "max": 18,
+          "pct": 100
+        },
+        "gain_pp": 94
+      }
+    },
+    {
+      "id": "security-audit",
+      "title": "Autonomous security audit / red-team",
+      "domain": "Application security",
+      "topology": "Orchestrator with parallel workers per attack surface",
+      "horizon": "Long, unattended, against a staging target",
+      "summary": "Persistence plus a category checklist plus 'list every vulnerability' produces an inflated report of unconfirmed findings. The optimized prompt makes an independently reproduced proof of concept the unit of a finding.",
+      "before_techniques": [
+        "Offensive-security persona and named targets",
+        "Comprehensive attack-surface checklist",
+        "Severity-rating scheme and professional report format",
+        "Attacker-mindset persistence framing"
+      ],
+      "before": "You are an elite offensive-security researcher. Audit our web application\n(source in /app, staging at https://staging.internal) and find security\nvulnerabilities.\n\nLook everywhere: authentication, authorization, injection (SQL, command, template),\nSSRF, deserialization, secrets in code, dependency CVEs, business-logic flaws, and\naccess control. Use your full expertise. For each issue, rate severity\n(Critical/High/Medium/Low) and explain the risk.\n\nBe extremely thorough and persistent - a real attacker would be, so you should be\ntoo. Do not stop until you have done a comprehensive sweep. Produce a professional\npentest report listing every vulnerability you find, sorted by severity, with\nremediation advice.",
+      "after": "You are leading an authorized security assessment of our web application. The\nonly active application target is the source tree at /app and the staging origin\nhttps://staging.internal. An assessor-controlled callback origin may be added as the\nsole in-scope exception for SSRF confirmation only when the runtime explicitly\nallowlists and records it in the rules-of-engagement snapshot. Do not target any\nother host, third-party service, employee account, or production system.\nDo not perform denial of service, destructive writes, persistence, social engineering,\nor data exfiltration beyond the minimum synthetic record needed to prove impact.\nTest SSRF only against an assessor-controlled callback explicitly allowlisted by the\nruntime. If none exists, stop at source-level reachability and mark active validation\nblocked; never target loopback, link-local, cloud-metadata, private internal, or\nthird-party addresses. For command-execution tests, use only a fixed side-effect-free\ncommand that emits a nonce. Do not write files, open a shell, access secrets, or\nestablish persistence. Stop active testing if staging routes to production or exposes\nnon-synthetic data.\n\nYour objective is to produce independently reproducible, evidence-backed findings,\nnot a long list of possible weaknesses.\n\nWHAT COUNTS AS A FINDING\n\nA confirmed vulnerability must include:\n\n1. an in-scope affected component and exact preconditions;\n2. a minimal proof of concept that independently succeeds in two restored baseline\n   environments or against two separately provisioned synthetic objects, without\n   reusing cookies, tokens, mutated records, or another worker's state; for a\n   race-sensitive defect, use a controlled concurrency harness with trigger traces\n   and a negative control;\n3. concrete demonstrated impact such as unauthorized access to a synthetic record,\n   privilege escalation in a test account, or controlled code execution;\n4. complete request/response or execution captures with tokens, secrets, personal\n   data, and unrelated payload content redacted;\n5. the responsible code, configuration, dependency call site, or deployment setting;\n6. a severity rating under the project rubric, or, if none exists, a CVSS v4.0 vector\n   plus separate business-impact rationale and explicit environmental assumptions;\n   and\n7. a reviewable patch or precise remediation. If an isolated patch-and-deploy path is\n   explicitly authorized, include evidence that the PoC fails after remediation while\n   intended behavior passes. Otherwise label remediation validation NOT EXECUTED;\n   lack of deployment authority does not invalidate a reproduced vulnerability.\n\nA scanner alert, suspicious code pattern, dependency advisory, missing header, or\ntheoretical attack path is not a confirmed vulnerability until the application's\nactual usage is shown exploitable under these rules.\n\nRESULTS THAT DO NOT COUNT\n\n- Raw scanner, linter, SAST, or dependency output.\n- A known CVE that is present in a lockfile but not exploitable through this\n  application's configuration and reachable code path.\n- A proof that depends on seeded privileged data, an already compromised account, or\n  access outside the stated preconditions.\n- Informational hardening advice presented as a security finding.\n- Multiple findings that are only different symptoms of one root cause.\n- A severity label without reproduced impact.\n- Any out-of-scope or rules-of-engagement violation, even if technically interesting.\n\nSEARCH AND ORCHESTRATION\n\nBefore active testing, write audit/roe-snapshot.md with the source git SHA, staging\nbuild identifier, evidence that the deployed build corresponds to that source,\nresolved target origin, enforced rate limits, available test identities and roles,\nand synthetic-data namespace. If source provenance or safe fixtures cannot be\nestablished, do not substitute real accounts or data; mark affected tests blocked.\n\nMap the application's trust boundaries from source and observed staging behavior\nbefore testing. Cover authentication and session lifecycle, authorization and IDOR,\nSQL/command/template injection, SSRF, deserialization, secrets and credential paths,\ndependency reachability, and business-logic invariants. Explicitly disposition\nbrowser-side XSS, CSRF and CORS; OAuth, password-reset and MFA flows; file upload,\npath traversal and XML parsing; API or GraphQL mass assignment; tenant isolation;\nreplay, race and idempotency defects; and proxy, cache, or request-smuggling\nboundaries where present.\n\nUse parallel workers only for independent attack surfaces. Keep first-round workers\nblind to unrelated promising findings so the team does not collapse onto one class.\nMaintain audit/coverage.md keyed by attack surface and audit/findings-registry.md\nkeyed by root cause. Each worker assignment must include its objective, in-scope\ntarget, allowed tools, prohibited actions, and required artifact. Reject status\nreports that do not contain a request, trace, script, code path, or falsified\nhypothesis. Give each worker a distinct test identity and namespaced synthetic data.\nSerialize operations that mutate shared application state. Every artifact records\nthe staging build, identity, namespace, request ID, and timestamp.\n\nDo not stop after the first strong finding. Derive a coverage inventory from every\nroute, RPC, background job, trust-boundary crossing, role, tenant/object/action\ncombination, parser or sink, upload/download path, and outbound-request site found in\nsource or staging. Mark each item tested, unreachable, out of scope, or blocked, with\nevidence. Coverage is complete only when every item is dispositioned and every\nreachable authorization boundary has both an allowed and denied control. Mark a route\nblocked when progress requires an out-of-scope action or unavailable prerequisite;\nreopen it only for a materially different safe test.\n\nINDEPENDENT REPRODUCTION\n\nFor each candidate finding, launch a fresh-context reviewer who did not discover it.\nProvide only the scope, clean staging instructions, candidate PoC, relevant source\nsnapshot, and claimed impact. Require the reviewer to:\n\n- start from a new account or anonymous session as specified by the preconditions;\n- reproduce the PoC twice and preserve sanitized evidence;\n- confirm the effect is not seeded test behavior, intended authorization, or a stale\n  session, proxy, WAF, debug-fixture, or other worker's mutation;\n- run an unexploited negative-control request;\n- verify the root-cause mapping and collapse duplicate symptoms;\n- challenge the severity against actual privileges and impact; and\n- inspect the remediation and, only in an explicitly authorized isolated deployment,\n  apply it and run the PoC plus intended-workflow regression tests.\n\nDELIVERABLES AND RETURN RULE\n\nReturn a final assessment only after every included vulnerability survives independent\nreproduction. Assign monotonically increasing identifiers and put each finding under\naudit/findings/F-NNN/ (for example F-001), with a report, PoC, sanitized evidence,\nroot-cause reference, severity rationale, and remediation check. Include the coverage\nledger separately; unconfirmed hypotheses belong there, clearly labeled, and must\nnot be counted as vulnerabilities.\n\nIf no candidate survives verification, return zero confirmed findings plus the\ncoverage ledger. Do not claim the application is secure; state only what was tested.\nIf the externally enforced budget ends before coverage is complete, label the\nassessment INCOMPLETE and identify the untested surfaces.\n\nCVE databases, framework documentation, and public writeups may be used as background.\nNever copy a public claim into the report without proving exploitability here. Prompt\ninstructions do not enforce scope: the network allowlist, credentials, rate limits,\nand destructive-action blocks must remain enforced by the runtime throughout. Never\nauthenticate with a discovered credential against production or a third party. Record\nonly its source location, type, and cryptographic fingerprint; do not copy the secret\ninto an artifact. Treat validity and external impact as unverified unless established\nentirely within staging.",
+      "deltas": [
+        {
+          "dim": "Non-counting outcomes",
+          "text": "The highest-leverage change: theoretical findings, scanner output, and unexploited dependency CVEs are excluded by name, killing report-padding as a way to satisfy the letter."
+        },
+        {
+          "dim": "Persistence-verification pairing",
+          "text": "'Do not stop until comprehensive' with no confirmation gate rewards fabricated/inflated findings. The brief pairs it with independent PoC re-verification per finding."
+        },
+        {
+          "dim": "Contamination guards",
+          "text": "Blocks laundering known CVEs from the dependency list as 'findings' without a PoC, and pins retrieval to background only."
+        },
+        {
+          "dim": "Harness separation",
+          "text": "RoE, the in-scope allowlist, and destructive-action prohibitions are moved to network/runtime enforcement; the prompt states them only for planning."
+        }
+      ],
+      "residual": "Scope and destructive-action limits stated in a prompt are advisory under optimization pressure. If the network policy does not actually fence the target allowlist, a persistent agent can still reach out of scope. The brief reduces report-padding, but confirming impact without ever causing harm on a live target is a RoE/harness problem the words cannot solve.",
+      "scores": {
+        "before": {
+          "predicate": 1,
+          "definitions": 0,
+          "non_counting": 0,
+          "auditor": 0,
+          "persistence_gate": 0,
+          "return_condition": 0,
+          "diversity": 1,
+          "reporting": 0,
+          "contamination": 0,
+          "harness": 0
+        },
+        "after": {
+          "predicate": 2,
+          "definitions": 2,
+          "non_counting": 2,
+          "auditor": 2,
+          "persistence_gate": 2,
+          "return_condition": 2,
+          "diversity": 2,
+          "reporting": 2,
+          "contamination": 2,
+          "harness": 2
+        }
+      },
+      "score_summary": {
+        "before": {
+          "total": 2,
+          "max": 20,
+          "pct": 10
+        },
+        "after": {
+          "total": 20,
+          "max": 20,
+          "pct": 100
+        },
+        "gain_pp": 90
+      }
+    }
+  ]
+}

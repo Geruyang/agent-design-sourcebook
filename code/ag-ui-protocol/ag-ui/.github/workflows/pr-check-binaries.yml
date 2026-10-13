@@ -1,0 +1,111 @@
+name: Check for binary artifacts
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for binary and build artifacts
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          VIOLATIONS=0
+
+          # Get list of added/modified files in the PR
+          CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD")
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No changed files detected."
+            exit 0
+          fi
+
+          # Check for binary file extensions
+          BINARY_FILES=$(echo "$CHANGED_FILES" | grep -iE '\.(exe|dll|so|dylib|o|obj|a|lib|wasm)$' || true)
+          if [ -n "$BINARY_FILES" ]; then
+            echo "::error::Binary files detected in PR:"
+            echo "$BINARY_FILES"
+            VIOLATIONS=1
+          fi
+
+          # Check for build directories
+          BUILD_FILES=$(echo "$CHANGED_FILES" | grep -E '/build/' || true)
+          if [ -n "$BUILD_FILES" ]; then
+            echo "::error::Files in build directories detected in PR:"
+            echo "$BUILD_FILES"
+            VIOLATIONS=1
+          fi
+
+          # Check for dSYM directories
+          DSYM_FILES=$(echo "$CHANGED_FILES" | grep -E '\.dSYM/' || true)
+          if [ -n "$DSYM_FILES" ]; then
+            echo "::error::dSYM debug symbol directories detected in PR:"
+            echo "$DSYM_FILES"
+            VIOLATIONS=1
+          fi
+
+          # Check for large files (>1MB) among changed files
+          # Exclude known generated files that are committed intentionally
+          LARGE_FILE_EXCLUDES="apps/dojo/src/files.json"
+          LARGE_FILES=""
+          while IFS= read -r file; do
+            if [ -f "$file" ] && ! echo "$LARGE_FILE_EXCLUDES" | grep -qF "$file"; then
+              SIZE=$(wc -c < "$file" | tr -d ' ')
+              if [ "$SIZE" -gt 1048576 ]; then
+                LARGE_FILES="${LARGE_FILES}${file} ($(( SIZE / 1024 )) KB)\n"
+              fi
+            fi
+          done <<< "$CHANGED_FILES"
+
+          if [ -n "$LARGE_FILES" ]; then
+            echo "::error::Files over 1 MB detected in PR:"
+            echo -e "$LARGE_FILES"
+            VIOLATIONS=1
+          fi
+
+          if [ "$VIOLATIONS" -eq 1 ]; then
+            echo ""
+            echo "This PR contains binary artifacts, build outputs, or oversized files."
+            echo "Please remove them and update your .gitignore if needed."
+            exit 1
+          fi
+
+          echo "No binary artifacts or oversized files detected."
+
+  check-config-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check build config allowlist
+        run: bash .github/scripts/check-config-allowlist.sh
+
+  check-lfs-pointers:
+    name: Git LFS pointers
+    runs-on: ubuntu-latest
+    steps:
+      # lfs: false is deliberate. The check reads blobs from the index, where
+      # LFS-tracked files are always pointers, so it neither needs nor wants
+      # the objects hydrated.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          lfs: false
+          persist-credentials: false
+
+      - name: Check Git LFS pointers match .gitattributes
+        run: bash .github/scripts/check-lfs-pointers.sh

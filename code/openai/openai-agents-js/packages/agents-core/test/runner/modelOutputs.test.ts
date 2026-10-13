@@ -1,0 +1,4183 @@
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { setDefaultModelProvider, setTracingDisabled } from '../../src';
+import { Agent } from '../../src/agent';
+import { ModelBehaviorError, UserError } from '../../src/errors';
+import { handoff } from '../../src/handoff';
+import logger from '../../src/logger';
+import {
+  RunCompactionItem as CompactionItem,
+  RunHandoffCallItem as HandoffCallItem,
+  RunMessageOutputItem as MessageOutputItem,
+  RunReasoningItem as ReasoningItem,
+  RunToolCallItem as ToolCallItem,
+  RunToolCallOutputItem as ToolCallOutputItem,
+  RunToolSearchCallItem as ToolSearchCallItem,
+  RunToolSearchOutputItem as ToolSearchOutputItem,
+} from '../../src/items';
+import { ModelResponse } from '../../src/model';
+import {
+  processModelResponse,
+  processModelResponseAsync,
+} from '../../src/runner/modelOutputs';
+import { RunContext } from '../../src/runContext';
+import { RunState } from '../../src/runState';
+import {
+  attachClientToolSearchExecutor,
+  computerTool,
+  applyPatchTool,
+  hostedMcpTool,
+  shellTool,
+  tool,
+  toolNamespace,
+  type ClientToolSearchExecutorArgs,
+  type HostedTool,
+} from '../../src/tool';
+import {
+  FUNCTION_TOOL_NAMESPACE,
+  FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
+} from '../../src/toolIdentity';
+import { Usage } from '../../src/usage';
+import {
+  FakeEditor,
+  ScriptedModelProvider,
+  FakeShell,
+  TEST_AGENT,
+  TEST_MODEL_FUNCTION_CALL,
+  TEST_MODEL_MESSAGE,
+  TEST_MODEL_RESPONSE_WITH_FUNCTION,
+  TEST_TOOL,
+} from '../stubs';
+import * as protocol from '../../src/types/protocol';
+import { z } from 'zod';
+
+beforeAll(() => {
+  setTracingDisabled(true);
+  setDefaultModelProvider(new ScriptedModelProvider());
+});
+
+const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
+  type: 'hosted_tool',
+  name: 'programmatic_tool_calling',
+  providerData: { type: 'programmatic_tool_calling' },
+};
+
+function createLegacyNamespacedTool<T extends Record<string, any>>(
+  tool: T,
+  namespace: string,
+  description: string,
+): T {
+  return Object.defineProperties(tool, {
+    [FUNCTION_TOOL_NAMESPACE]: {
+      value: namespace,
+      enumerable: false,
+      configurable: true,
+    },
+    [FUNCTION_TOOL_NAMESPACE_DESCRIPTION]: {
+      value: description,
+      enumerable: false,
+      configurable: true,
+    },
+  });
+}
+
+describe('processModelResponse', () => {
+  it.each(['sync', 'async'] as const)(
+    'routes same-name bare and deferred tools by wire category in %s processing',
+    async (mode) => {
+      const bare = tool({
+        name: 'lookup',
+        description: 'Immediate lookup.',
+        parameters: z.object({}),
+        execute: async () => 'bare',
+      });
+      const deferred = tool({
+        name: 'lookup',
+        description: 'Deferred lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'deferred',
+      });
+      const response: ModelResponse = {
+        output: [
+          {
+            type: 'function_call',
+            callId: 'call_bare',
+            name: 'lookup',
+            arguments: '{}',
+          },
+          {
+            type: 'function_call',
+            callId: 'call_deferred',
+            name: 'lookup',
+            namespace: 'lookup',
+            arguments: '{}',
+          },
+        ],
+        usage: new Usage(),
+      };
+      const priorItems = [
+        new ToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_lookup',
+            status: 'completed',
+            tools: [
+              {
+                type: 'tool_reference',
+                functionName: 'lookup',
+                namespace: 'lookup',
+              },
+            ],
+          } as any,
+          TEST_AGENT,
+        ),
+      ];
+
+      const result =
+        mode === 'sync'
+          ? processModelResponse(
+              response,
+              TEST_AGENT,
+              [bare, deferred],
+              [],
+              priorItems,
+            )
+          : await processModelResponseAsync(
+              response,
+              TEST_AGENT,
+              [bare, deferred],
+              [],
+              new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+              priorItems,
+            );
+
+      expect(result.functions.map((functionRun) => functionRun.tool)).toEqual([
+        bare,
+        deferred,
+      ]);
+    },
+  );
+
+  it('classifies program calls and outputs as ordered run items', () => {
+    const result = processModelResponse(
+      {
+        output: [
+          {
+            type: 'program',
+            id: 'prog_1',
+            callId: 'call_prog_1',
+            code: 'text("ok")',
+            fingerprint: 'fp_1',
+          },
+          {
+            type: 'program_output',
+            id: 'prog_out_1',
+            callId: 'call_prog_1',
+            output: 'ok',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [PROGRAMMATIC_TOOL_CALLING_TOOL],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.toolsUsed).toEqual(['programmatic_tool_calling']);
+  });
+
+  it('rejects program calls when programmaticToolCallingTool is unavailable in sync and async processing', async () => {
+    const programCall: protocol.ProgramCallItem = {
+      type: 'program',
+      id: 'prog_unavailable',
+      callId: 'call_prog_unavailable',
+      code: 'text("ok")',
+      fingerprint: 'fp_unavailable',
+    };
+    const response: ModelResponse = {
+      output: [programCall],
+      usage: new Usage(),
+    };
+
+    expect(() => processModelResponse(response, TEST_AGENT, [], [])).toThrow(
+      /without programmaticToolCallingTool\(\)/,
+    );
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_program',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_program',
+        execution: 'client',
+      },
+    };
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, programCall],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [clientToolSearch],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(/without programmaticToolCallingTool\(\)/);
+  });
+
+  it('accepts program calls when a prompt may supply programmaticToolCallingTool in sync and async processing', async () => {
+    const programCall: protocol.ProgramCallItem = {
+      type: 'program',
+      id: 'prog_prompt_supplied',
+      callId: 'call_prog_prompt_supplied',
+      code: 'text("ok")',
+      fingerprint: 'fp_prompt_supplied',
+    };
+    const response: ModelResponse = {
+      output: [programCall],
+      usage: new Usage(),
+    };
+    const processingOptions = { allowPromptSuppliedTools: true };
+
+    const syncResult = processModelResponse(
+      response,
+      TEST_AGENT,
+      [],
+      [],
+      [],
+      'raise_error',
+      processingOptions,
+    );
+    expect(syncResult.toolsUsed).toEqual(['programmatic_tool_calling']);
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_prompt_program',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_prompt_program',
+        execution: 'client',
+      },
+    };
+    const asyncResult = await processModelResponseAsync(
+      {
+        output: [toolSearchCall, programCall],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [clientToolSearch],
+      [],
+      new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+      [],
+      'raise_error',
+      processingOptions,
+    );
+    expect(asyncResult.toolsUsed).toEqual([
+      'tool_search',
+      'programmatic_tool_calling',
+    ]);
+  });
+
+  it('rejects function and handoff calls from disallowed callers', () => {
+    const programOnlyFunction = tool({
+      name: 'program_only',
+      description: 'Program-only function.',
+      parameters: z.object({}),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'ok',
+    });
+    const directFunctionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_direct',
+      name: 'program_only',
+      arguments: '{}',
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [directFunctionCall], usage: new Usage() },
+        TEST_AGENT,
+        [programOnlyFunction],
+        [],
+      ),
+    ).toThrow(/caller direct/);
+
+    const programFunctionCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programFunctionCall], usage: new Usage() },
+        TEST_AGENT,
+        [TEST_TOOL],
+        [],
+      ),
+    ).toThrow(/caller programmatic/);
+
+    const target = new Agent({ name: 'Target' });
+    const targetHandoff = handoff(target);
+    const programHandoffCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_handoff',
+      name: targetHandoff.toolName,
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programHandoffCall], usage: new Usage() },
+        TEST_AGENT,
+        [],
+        [targetHandoff],
+      ),
+    ).toThrow(/caller programmatic/);
+  });
+
+  it('rejects direct Code Interpreter calls for programmatic-only tools in sync and async processing', async () => {
+    const codeInterpreter: HostedTool = {
+      type: 'hosted_tool',
+      name: 'code_interpreter',
+      providerData: {
+        type: 'code_interpreter',
+        container: { type: 'auto' },
+        allowed_callers: ['programmatic'],
+      },
+    };
+    const directCodeInterpreterCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'ci_direct',
+      name: 'code_interpreter_call',
+      status: 'completed',
+      providerData: {
+        type: 'code_interpreter_call',
+        code: 'print("hello")',
+        outputs: [],
+      },
+    };
+    const response: ModelResponse = {
+      output: [directCodeInterpreterCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [codeInterpreter], []),
+    ).toThrow(/caller direct/);
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_ci',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_ci',
+        execution: 'client',
+      },
+    };
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, directCodeInterpreterCall],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [clientToolSearch, codeInterpreter],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(/caller direct/);
+  });
+
+  it.each(['mcp_call', 'mcp_list_tools'] as const)(
+    'rejects direct %s items for programmatic-only MCP servers in sync and async processing',
+    async (mcpCallType) => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'server',
+        serverUrl: 'https://mcp.example.com/server',
+        requireApproval: 'never',
+        allowedCallers: ['programmatic'],
+      });
+      const directMcpCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: `${mcpCallType}_direct`,
+        name: mcpCallType,
+        status: 'completed',
+        providerData:
+          mcpCallType === 'mcp_call'
+            ? {
+                type: mcpCallType,
+                id: 'mcp_call_direct',
+                server_label: 'server',
+                name: 'lookup',
+                arguments: '{}',
+              }
+            : {
+                type: mcpCallType,
+                id: 'mcp_list_tools_direct',
+                server_label: 'server',
+                tools: [],
+              },
+      };
+
+      expect(() =>
+        processModelResponse(
+          { output: [directMcpCall], usage: new Usage() },
+          TEST_AGENT,
+          [mcpTool],
+          [],
+        ),
+      ).toThrow(/caller direct/);
+
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        async () => [],
+      );
+      const toolSearchCall: protocol.ToolSearchCallItem = {
+        type: 'tool_search_call',
+        id: `ts_before_${mcpCallType}`,
+        status: 'completed',
+        arguments: { paths: [] },
+        providerData: {
+          call_id: `call_ts_before_${mcpCallType}`,
+          execution: 'client',
+        },
+      };
+
+      await expect(
+        processModelResponseAsync(
+          {
+            output: [toolSearchCall, directMcpCall],
+            usage: new Usage(),
+          },
+          TEST_AGENT,
+          [clientToolSearch, mcpTool],
+          [],
+          new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+          [],
+        ),
+      ).rejects.toThrow(/caller direct/);
+    },
+  );
+
+  it.each(['mcp_call', 'mcp_approval_request'] as const)(
+    'rejects programmatic %s items after listing a deferred MCP server without loading it',
+    async (mcpCallType) => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'server',
+        serverUrl: 'https://mcp.example.com/server',
+        requireApproval: 'always',
+        deferLoading: true,
+        allowedCallers: ['programmatic'],
+      });
+      const programmaticMcpCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: `${mcpCallType}_programmatic`,
+        name: mcpCallType,
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_program' },
+        providerData: {
+          type: mcpCallType,
+          id: `${mcpCallType}_programmatic`,
+          server_label: 'server',
+          name: 'lookup',
+          arguments: '{}',
+        },
+      };
+      const listing: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'mcp_listing',
+        name: 'mcp_list_tools',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_program' },
+        providerData: {
+          type: 'mcp_list_tools',
+          server_label: 'server',
+          tools: [],
+        },
+      };
+
+      expect(() =>
+        processModelResponse(
+          { output: [listing, programmaticMcpCall], usage: new Usage() },
+          TEST_AGENT,
+          [mcpTool],
+          [],
+        ),
+      ).toThrow(
+        /deferred MCP call server before it was loaded via tool_search/,
+      );
+
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        async () => [],
+      );
+      const toolSearchCall: protocol.ToolSearchCallItem = {
+        type: 'tool_search_call',
+        id: `ts_before_unloaded_${mcpCallType}`,
+        status: 'completed',
+        arguments: { paths: [] },
+        providerData: {
+          call_id: `call_ts_before_unloaded_${mcpCallType}`,
+          execution: 'client',
+        },
+      };
+
+      await expect(
+        processModelResponseAsync(
+          {
+            output: [toolSearchCall, listing, programmaticMcpCall],
+            usage: new Usage(),
+          },
+          TEST_AGENT,
+          [clientToolSearch, mcpTool],
+          [],
+          new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+          [],
+        ),
+      ).rejects.toThrow(
+        /deferred MCP call server before it was loaded via tool_search/,
+      );
+    },
+  );
+
+  it('accepts programmatic calls after a deferred MCP server is loaded', () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      serverUrl: 'https://mcp.example.com/server',
+      requireApproval: 'never',
+      deferLoading: true,
+      allowedCallers: ['programmatic'],
+    });
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_server',
+          status: 'completed',
+          tools: [mcpTool.providerData],
+        },
+        TEST_AGENT,
+      ),
+    ];
+    const programmaticMcpCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'mcp_call_programmatic',
+      name: 'mcp_call',
+      status: 'completed',
+      caller: { type: 'program', callerId: 'call_program' },
+      providerData: {
+        type: 'mcp_call',
+        id: 'mcp_call_programmatic',
+        server_label: 'server',
+        name: 'lookup',
+        arguments: '{}',
+      },
+    };
+
+    const result = processModelResponse(
+      { output: [programmaticMcpCall], usage: new Usage() },
+      TEST_AGENT,
+      [mcpTool],
+      [],
+      priorItems,
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+  });
+
+  it('rejects shell and apply_patch calls from disallowed callers', () => {
+    const programShellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programShellCall], usage: new Usage() },
+        TEST_AGENT,
+        [shellTool({ shell: new FakeShell() })],
+        [],
+      ),
+    ).toThrow(/caller programmatic/);
+
+    const directApplyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: { type: 'delete_file', path: 'temp.txt' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [directApplyPatchCall], usage: new Usage() },
+        TEST_AGENT,
+        [
+          applyPatchTool({
+            editor: new FakeEditor(),
+            allowedCallers: ['programmatic'],
+          }),
+        ],
+        [],
+      ),
+    ).toThrow(/caller direct/);
+  });
+
+  it('queues function, shell, and apply_patch calls from allowed program callers', () => {
+    const programFunction = tool({
+      name: 'program_function',
+      description: 'Program-callable function.',
+      parameters: z.object({}),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'ok',
+    });
+    const programShell = shellTool({
+      shell: new FakeShell(),
+      allowedCallers: ['programmatic'],
+    });
+    const programApplyPatch = applyPatchTool({
+      editor: new FakeEditor(),
+      allowedCallers: ['programmatic'],
+    });
+    const caller = { type: 'program' as const, callerId: 'call_program' };
+
+    const result = processModelResponse(
+      {
+        output: [
+          {
+            type: 'function_call',
+            callId: 'call_function',
+            name: 'program_function',
+            arguments: '{}',
+            caller,
+          },
+          {
+            type: 'shell_call',
+            callId: 'call_shell',
+            action: { commands: ['echo hi'] },
+            caller,
+          },
+          {
+            type: 'apply_patch_call',
+            callId: 'call_patch',
+            status: 'completed',
+            operation: { type: 'delete_file', path: 'temp.txt' },
+            caller,
+          },
+        ],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [programFunction, programShell, programApplyPatch],
+      [],
+    );
+
+    expect(result.functions).toHaveLength(1);
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.applyPatchActions).toHaveLength(1);
+  });
+
+  it('processes message outputs and tool calls', () => {
+    const modelResponse: ModelResponse = TEST_MODEL_RESPONSE_WITH_FUNCTION;
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.newItems[0].rawItem).toEqual(
+      TEST_MODEL_RESPONSE_WITH_FUNCTION.output[0],
+    );
+    expect(result.toolsUsed).toEqual(['test']);
+    expect(result.functions).toContainEqual({
+      tool: TEST_TOOL,
+      mcpToolBinding: null,
+      toolCall: TEST_MODEL_RESPONSE_WITH_FUNCTION.output[0],
+    });
+    expect(result.newItems[1]).toBeInstanceOf(MessageOutputItem);
+    expect(result.newItems[1].rawItem).toEqual(
+      TEST_MODEL_RESPONSE_WITH_FUNCTION.output[1],
+    );
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('classifies compaction items as run items in provider order', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'ciphertext',
+    };
+    const modelResponse: ModelResponse = {
+      output: [compaction, TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
+      'message_output_item',
+    ]);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toEqual(compaction);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('rejects malformed compaction before synchronous output processing', () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_sync_output',
+    } as protocol.CompactionItem;
+
+    expect(() =>
+      processModelResponse(
+        {
+          output: [malformedCompaction, TEST_MODEL_MESSAGE],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [],
+        [],
+      ),
+    ).toThrow('Compaction item missing encrypted_content');
+  });
+
+  it('rejects compaction with a malformed id before synchronous output processing', () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 7,
+      encrypted_content: 'ciphertext',
+    } as unknown as protocol.CompactionItem;
+
+    expect(() =>
+      processModelResponse(
+        {
+          output: [malformedCompaction, TEST_MODEL_MESSAGE],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [],
+        [],
+      ),
+    ).toThrow('Compaction item missing encrypted_content');
+  });
+
+  it('classifies compaction items on the custom client tool_search async path', async () => {
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      vi.fn().mockResolvedValue([]),
+    );
+    const toolSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_async',
+      status: 'completed',
+      arguments: {},
+      providerData: {
+        call_id: 'call_tool_search_async',
+        execution: 'client',
+      },
+    } as unknown as protocol.ToolSearchCallItem;
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_async',
+      encrypted_content: 'ciphertext',
+    };
+    const agent = new Agent({ name: 'CompactionAsyncAgent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [toolSearchCall, compaction, TEST_MODEL_MESSAGE],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'tool_search_call_item',
+      'tool_search_output_item',
+      'compaction_item',
+      'message_output_item',
+    ]);
+    expect(result.newItems[2]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[2].rawItem).toEqual(compaction);
+  });
+
+  it('rejects malformed compaction before async client tool_search execution', async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      execute,
+    );
+    const toolSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_malformed_compaction',
+      status: 'completed',
+      arguments: {},
+      providerData: {
+        call_id: 'call_malformed_compaction',
+        execution: 'client',
+      },
+    } as unknown as protocol.ToolSearchCallItem;
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_async_output',
+    } as protocol.CompactionItem;
+    const agent = new Agent({ name: 'MalformedCompactionAsyncAgent' });
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, malformedCompaction],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        new RunState(new RunContext(), 'hello', agent, 3),
+        [],
+      ),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('classifies tool search items as run items and records tool usage', () => {
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: ['crm'],
+            query: 'profile',
+          },
+        },
+        {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolSearchOutputItem);
+    expect(result.toolsUsed).toEqual(['tool_search']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('auto-executes built-in client tool_search calls for deferred tools', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+      execute: async () => 'tomorrow',
+    });
+    const shippingCredit = tool({
+      name: 'get_shipping_credit_balance',
+      description: 'Look up a shipping credit balance.',
+      parameters: z.object({
+        customerId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 125,
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: ['get_shipping_eta', 'missing_tool', 'get_shipping_eta'],
+            query: 'shipping ETA',
+          },
+          providerData: {
+            call_id: 'call_ts_1',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [shippingEta, shippingCredit],
+      [],
+    );
+
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolSearchOutputItem);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipping ETA.',
+          deferLoading: true,
+        },
+      ],
+      providerData: {
+        call_id: 'call_ts_1',
+        execution: 'client',
+      },
+    });
+    expect(
+      (result.newItems[1] as ToolSearchOutputItem).rawItem.tools[0],
+    ).not.toHaveProperty('providerData');
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('auto-executes built-in client tool_search calls for deferred namespaces', () => {
+    const crmTools = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => 'account',
+        }),
+        tool({
+          name: 'list_recent_tickets',
+          description: 'List recent tickets.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => ['ticket'],
+        }),
+        tool({
+          name: 'ping',
+          description: 'Immediate CRM ping.',
+          parameters: z.object({}),
+          execute: async () => 'pong',
+        }),
+      ],
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: ['crm', 'missing_tool', 'crm'],
+            query: 'crm tools',
+          },
+          providerData: {
+            call_id: 'call_ts_namespace',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      crmTools,
+      [],
+    );
+
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolSearchOutputItem);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              deferLoading: true,
+            },
+            {
+              type: 'function',
+              name: 'list_recent_tickets',
+              description: 'List recent tickets.',
+              deferLoading: true,
+            },
+          ],
+        },
+      ],
+      providerData: {
+        call_id: 'call_ts_namespace',
+        execution: 'client',
+      },
+    });
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('auto-executes built-in client tool_search calls for deferred namespace members', () => {
+    const crmTools = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => 'account',
+        }),
+        tool({
+          name: 'list_recent_tickets',
+          description: 'List recent tickets.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => ['ticket'],
+        }),
+      ],
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: ['crm.lookup_account'],
+            query: 'account lookup',
+          },
+          providerData: {
+            call_id: 'call_ts_member',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      crmTools,
+      [],
+    );
+
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              deferLoading: true,
+            },
+          ],
+        },
+      ],
+      providerData: {
+        call_id: 'call_ts_member',
+        execution: 'client',
+      },
+    });
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('coalesces multiple deferred namespace members into a single namespace output', () => {
+    const crmTools = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => 'account',
+        }),
+        tool({
+          name: 'list_recent_tickets',
+          description: 'List recent tickets.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => ['ticket'],
+        }),
+      ],
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: [
+              'crm.lookup_account',
+              'crm.list_recent_tickets',
+              'crm.lookup_account',
+            ],
+          },
+          providerData: {
+            call_id: 'call_ts_member_batch',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      crmTools,
+      [],
+    );
+
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              deferLoading: true,
+            },
+            {
+              type: 'function',
+              name: 'list_recent_tickets',
+              description: 'List recent tickets.',
+              deferLoading: true,
+            },
+          ],
+        },
+      ],
+      providerData: {
+        call_id: 'call_ts_member_batch',
+        execution: 'client',
+      },
+    });
+  });
+
+  it('auto-executes built-in client tool_search calls for deferred hosted MCP servers', () => {
+    const shopify = hostedMcpTool({
+      serverLabel: 'shopify',
+      serverUrl: 'https://mcp.example.com/shopify',
+      serverDescription: 'Orders and customer records.',
+      deferLoading: true,
+      requireApproval: 'always',
+    });
+    const clientToolSearch = {
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+      },
+    } as any;
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_mcp',
+          status: 'completed',
+          arguments: {
+            paths: ['shopify'],
+            query: 'shopify tools',
+          },
+          providerData: {
+            call_id: 'call_ts_mcp',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [clientToolSearch, shopify],
+      [],
+    );
+
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          server_description: 'Orders and customer records.',
+          defer_loading: true,
+          require_approval: 'always',
+        },
+      ],
+      providerData: {
+        call_id: 'call_ts_mcp',
+        execution: 'client',
+      },
+    });
+  });
+
+  it('preserves the original hosted MCP tool when prior search results match it', () => {
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const shopify = hostedMcpTool({
+      serverLabel: 'shopify',
+      serverUrl: 'https://mcp.example.com/shopify',
+      serverDescription: 'Orders and customer records.',
+      deferLoading: true,
+      requireApproval: 'always',
+      onApproval,
+    });
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_shopify',
+          status: 'completed',
+          tools: [
+            {
+              type: 'mcp',
+              server_label: 'shopify',
+              server_url: 'https://mcp.example.com/shopify',
+              server_description: 'Orders and customer records.',
+              defer_loading: true,
+              require_approval: 'always',
+            },
+          ],
+        } as any,
+        TEST_AGENT,
+      ),
+    ];
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'hosted_tool_call',
+          id: 'approval-1',
+          name: 'mcp_approval_request',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_approval_request',
+            server_label: 'shopify',
+            name: 'list_orders',
+            id: 'approval-1',
+            arguments: '{}',
+          },
+        } as any,
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [shopify],
+      [],
+      priorItems,
+    );
+
+    expect(result.mcpApprovalRequests).toHaveLength(1);
+    expect(result.mcpApprovalRequests[0].mcpTool).toBe(shopify);
+    expect(result.mcpApprovalRequests[0].mcpTool.providerData.on_approval).toBe(
+      onApproval,
+    );
+  });
+
+  it('rejects ambiguous built-in client tool_search paths that match both a deferred tool and a namespace', () => {
+    const topLevelCrm = tool({
+      name: 'crm',
+      description: 'Top-level CRM loader.',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: async () => 'top-level crm',
+    });
+    const crmTools = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({
+            customerId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => 'account',
+        }),
+      ],
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            paths: ['crm'],
+            query: 'crm tools',
+          },
+          providerData: {
+            call_id: 'call_ts_namespace_ambiguous',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [topLevelCrm, ...crmTools],
+        [],
+      ),
+    ).toThrow(/cannot disambiguate built-in client tool_search path "crm"/);
+  });
+
+  it('throws when asked to auto-execute custom client tool_search schemas', () => {
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: { namespaceHints: ['crm'] },
+          providerData: {
+            call_id: 'call_ts_1',
+            execution: 'client',
+          },
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [], []),
+    ).toThrow(UserError);
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [], []),
+    ).toThrow(/only auto-execute built-in client tool_search calls/);
+  });
+
+  it('auto-executes custom client tool_search callbacks before later function calls in the same response', async () => {
+    const lookupAccount = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'account',
+    });
+    const execute = vi.fn().mockResolvedValue(lookupAccount);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespaceHints: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['namespaceHints'],
+            additionalProperties: false,
+          },
+        },
+      },
+      execute,
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_call_lookup',
+      status: 'completed',
+      arguments: {
+        namespaceHints: ['crm'],
+      },
+      providerData: {
+        call_id: 'call_tool_search_lookup',
+        execution: 'client',
+      },
+    } as any;
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_lookup_account',
+      callId: 'call_lookup_account',
+      name: 'lookup_account',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [toolSearchCall, functionCall],
+      usage: new Usage(),
+    };
+    const agent = new Agent({
+      name: 'CustomClientToolSearchAgent',
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      modelResponse,
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'tool_search_call_item',
+      'tool_search_output_item',
+      'tool_call_item',
+    ]);
+    expect(result.functions).toEqual([
+      {
+        toolCall: functionCall,
+        tool: lookupAccount,
+        mcpToolBinding: null,
+      },
+    ]);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      providerData: {
+        call_id: 'call_tool_search_lookup',
+        execution: 'client',
+      },
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+        },
+      ],
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([lookupAccount]);
+  });
+
+  it.each(['between', 'after'] as const)(
+    'matches one explicit repeated-id tool_search output to one occurrence when it appears %s calls',
+    async (outputPosition) => {
+      const execute = vi.fn(async (_args: ClientToolSearchExecutorArgs) => []);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const createCall = (
+        id: string,
+        phase: string,
+      ): protocol.ToolSearchCallItem =>
+        ({
+          type: 'tool_search_call',
+          id,
+          status: 'completed',
+          arguments: { phase },
+          providerData: {
+            call_id: 'repeated_provider_call_id',
+            execution: 'client',
+          },
+        }) as protocol.ToolSearchCallItem;
+      const firstCall = createCall('ts_repeated_first', 'first');
+      const secondCall = createCall('ts_repeated_second', 'second');
+      const explicitOutput = {
+        type: 'tool_search_output',
+        id: 'ts_repeated_output',
+        status: 'completed',
+        tools: [],
+        providerData: {
+          call_id: 'repeated_provider_call_id',
+          execution: 'client',
+        },
+      } as protocol.ToolSearchOutputItem;
+      const agent = new Agent({ name: `Repeated output ${outputPosition}` });
+      const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+      await processModelResponseAsync(
+        {
+          output:
+            outputPosition === 'between'
+              ? [firstCall, explicitOutput, secondCall]
+              : [firstCall, secondCall, explicitOutput],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]?.[0].toolCall.arguments).toEqual({
+        phase: outputPosition === 'between' ? 'second' : 'first',
+      });
+    },
+  );
+
+  it('stops client tool_search callbacks after the first invalid result', async () => {
+    const conflictingLookup = tool({
+      name: 'lookup',
+      description: 'Conflicting lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'lookup',
+    });
+    let callbackCount = 0;
+    const execute = vi.fn(async () => {
+      callbackCount++;
+      return callbackCount === 1 ? conflictingLookup : [];
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const target = new Agent({ name: 'Lookup handoff target' });
+    const lookupHandoff = handoff(target, { toolNameOverride: 'lookup' });
+    const createCall = (id: string): protocol.ToolSearchCallItem =>
+      ({
+        type: 'tool_search_call',
+        id,
+        status: 'completed',
+        arguments: {},
+        providerData: { call_id: id, execution: 'client' },
+      }) as protocol.ToolSearchCallItem;
+    const agent = new Agent({ name: 'Invalid search result agent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [createCall('search_first'), createCall('search_second')],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [lookupHandoff],
+        state,
+        [],
+      ),
+    ).rejects.toThrow(
+      'returned a bare function tool that conflicts with an available handoff',
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it('omits disabled functions from generated client tool_search output', async () => {
+    const disabledLookup = tool({
+      name: 'disabled_lookup',
+      description: 'Disabled lookup result.',
+      parameters: z.object({}).strict(),
+      isEnabled: false,
+      execute: async () => 'disabled',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => disabledLookup,
+    );
+    const agent = new Agent({
+      name: 'DisabledClientToolSearchOutputAgent',
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_disabled_output',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'call_tool_search_disabled_output',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      tools: [],
+      providerData: {
+        call_id: 'call_tool_search_disabled_output',
+        execution: 'client',
+      },
+    });
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it.each(['configured function', 'handoff'] as const)(
+    'ignores disabled client tool_search collisions with an enabled %s',
+    async (collisionOwner) => {
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup result.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const configuredLookup = tool({
+        name: 'lookup',
+        description: 'Configured lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'configured',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => disabledLookup,
+      );
+      const agent = new Agent({
+        name: `Disabled collision ${collisionOwner}`,
+      });
+      const lookupHandoff = handoff(
+        new Agent({ name: 'Disabled collision target' }),
+        { toolNameOverride: 'lookup' },
+      );
+      const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+      const result = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: `ts_disabled_${collisionOwner}`,
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: `call_disabled_${collisionOwner}`,
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        collisionOwner === 'configured function'
+          ? [configuredLookup, clientToolSearch]
+          : [clientToolSearch],
+        collisionOwner === 'handoff' ? [lookupHandoff] : [],
+        state,
+        [],
+      );
+
+      expect(
+        (result.newItems[1] as ToolSearchOutputItem).rawItem,
+      ).toMatchObject({
+        type: 'tool_search_output',
+        tools: [],
+      });
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+    },
+  );
+
+  it('does not dispatch a disabled function returned by client tool_search', async () => {
+    const disabledLookup = tool({
+      name: 'disabled_lookup',
+      description: 'Disabled lookup result.',
+      parameters: z.object({}).strict(),
+      isEnabled: false,
+      execute: async () => 'disabled',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => disabledLookup,
+    );
+    const agent = new Agent({
+      name: 'DisabledClientToolSearchAgent',
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+    const response: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_disabled_lookup',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: 'call_tool_search_disabled_lookup',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        {
+          type: 'function_call',
+          id: 'fc_disabled_lookup',
+          callId: 'call_disabled_lookup',
+          name: 'disabled_lookup',
+          status: 'completed',
+          arguments: '{}',
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    await expect(
+      processModelResponseAsync(
+        response,
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      ),
+    ).rejects.toThrow('Tool disabled_lookup not found');
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it.each(['disabled', 'empty', 'different'] as const)(
+    'removes a replaced client tool_search handler when the final result is %s',
+    async (replacement) => {
+      const firstLookup = tool({
+        name: 'lookup',
+        description: 'First lookup result.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'first',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled replacement.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const alternateLookup = tool({
+        name: 'alternate_lookup',
+        description: 'Alternate replacement.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'alternate',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async ({ toolCall }) => {
+          const phase = (toolCall.arguments as { phase?: string }).phase;
+          if (phase === 'first') {
+            return firstLookup;
+          }
+          if (replacement === 'disabled') {
+            return disabledLookup;
+          }
+          if (replacement === 'different') {
+            return alternateLookup;
+          }
+          return [];
+        },
+      );
+      const agent = new Agent({
+        name: `Replacement ${replacement} agent`,
+      });
+      const state = new RunState(new RunContext(), 'hello', agent, 3);
+      const replacementCallId = 'call_tool_search_replacement';
+      const createToolSearchCall = (
+        id: string,
+        phase: string,
+      ): protocol.ToolSearchCallItem =>
+        ({
+          type: 'tool_search_call',
+          id,
+          status: 'completed',
+          arguments: { phase },
+          providerData: {
+            call_id: replacementCallId,
+            execution: 'client',
+          },
+        }) as protocol.ToolSearchCallItem;
+      const response: ModelResponse = {
+        output: [
+          createToolSearchCall('ts_call_replacement_first', 'first'),
+          createToolSearchCall('ts_call_replacement_final', 'final'),
+          {
+            type: 'function_call',
+            id: 'fc_replaced_lookup',
+            callId: 'call_replaced_lookup',
+            name: 'lookup',
+            status: 'completed',
+            arguments: '{}',
+          },
+        ],
+        usage: new Usage(),
+      };
+
+      await expect(
+        processModelResponseAsync(
+          response,
+          agent,
+          [clientToolSearch],
+          [],
+          state,
+          [],
+        ),
+      ).rejects.toThrow('Tool lookup not found');
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual(
+        replacement === 'different' ? [alternateLookup] : [],
+      );
+    },
+  );
+
+  it('retains same-name bare and deferred tools returned by custom client tool_search', async () => {
+    const bareLookup = tool({
+      name: 'lookup',
+      description: 'Immediate lookup.',
+      parameters: z.object({}),
+      execute: async () => 'bare',
+    });
+    const deferredLookup = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [bareLookup, deferredLookup],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_call_same_name',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_tool_search_same_name',
+        execution: 'client',
+      },
+    } as any;
+    const bareCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_bare_lookup',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    const deferredCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_deferred_lookup',
+      name: 'lookup',
+      namespace: 'lookup',
+      arguments: '{}',
+    };
+    const agent = new Agent({ name: 'Category-aware tool search agent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [toolSearchCall, bareCall, deferredCall],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.functions.map((functionRun) => functionRun.tool)).toEqual([
+      bareLookup,
+      deferredLookup,
+    ]);
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([
+      bareLookup,
+      deferredLookup,
+    ]);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem.tools).toEqual([
+      expect.objectContaining({ name: 'lookup', deferLoading: false }),
+      expect.objectContaining({ name: 'lookup', deferLoading: true }),
+    ]);
+  });
+
+  it.each([false, true])(
+    'rejects duplicate routed identities within one replacement tool_search result (same object: %s)',
+    async (repeatSameObject) => {
+      const previous = tool({
+        name: 'lookup',
+        description: 'Previously loaded lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'previous',
+      });
+      const first = tool({
+        name: 'lookup',
+        description: 'First replacement.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'first',
+      });
+      const second = tool({
+        name: 'lookup',
+        description: 'Second replacement.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'second',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => (repeatSameObject ? [first, first] : [first, second]),
+      );
+      const agent = new Agent({ name: 'Replacement validation agent' });
+      const state = new RunState(new RunContext(), 'hello', agent, 2);
+      state.recordToolSearchRuntimeTools(
+        agent,
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          tools: [],
+        } as protocol.ToolSearchOutputItem,
+        [previous],
+      );
+
+      await expect(
+        processModelResponseAsync(
+          {
+            output: [
+              {
+                type: 'tool_search_call',
+                id: 'ts_call_duplicate_replacement',
+                status: 'completed',
+                arguments: { paths: [] },
+                providerData: {
+                  call_id: 'call_duplicate_replacement',
+                  execution: 'client',
+                },
+              } as protocol.ToolSearchCallItem,
+            ],
+            usage: new Usage(),
+          },
+          agent,
+          [clientToolSearch],
+          [],
+          state,
+          [],
+        ),
+      ).rejects.toThrow(
+        'Client tool_search execute() returned multiple tools with the same routed identity.',
+      );
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual([previous]);
+    },
+  );
+
+  it.each([
+    ['an enabled and a disabled result', true],
+    ['two disabled results', false],
+  ] as const)(
+    'filters disabled duplicate identities before validating %s',
+    async (_description, includeEnabledResult) => {
+      const enabledLookup = tool({
+        name: 'lookup',
+        description: 'Enabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'enabled',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const otherDisabledLookup = tool({
+        name: 'lookup',
+        description: 'Other disabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        isEnabled: false,
+        execute: async () => 'other disabled',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => [
+          includeEnabledResult ? enabledLookup : otherDisabledLookup,
+          disabledLookup,
+        ],
+      );
+      const agent = new Agent({ name: 'Raw duplicate validation agent' });
+      const state = new RunState(new RunContext(), 'hello', agent, 2);
+
+      const result = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_raw_duplicate',
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: 'call_raw_duplicate',
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      expect(
+        (result.newItems[1] as ToolSearchOutputItem).rawItem.tools,
+      ).toHaveLength(includeEnabledResult ? 1 : 0);
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual(
+        includeEnabledResult ? [enabledLookup] : [],
+      );
+    },
+  );
+
+  it('filters disabled same-name namespace results before validation', async () => {
+    const namespacedLookup = createLegacyNamespacedTool(
+      tool({
+        name: 'lookup',
+        description: 'Nested lookup.',
+        parameters: z.object({}),
+        isEnabled: false,
+        execute: async () => 'lookup',
+      }),
+      'lookup',
+      'Reserved lookup namespace.',
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => namespacedLookup,
+    );
+    const agent = new Agent({ name: 'Reserved namespace result agent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 2);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_reserved_namespace',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'call_reserved_namespace',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+    );
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem.tools).toEqual(
+      [],
+    );
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it('redacts configured tool identities from client tool_search conflicts', async () => {
+    const sensitiveName = 'secret_customer_lookup';
+    const configuredLookup = tool({
+      name: sensitiveName,
+      description: 'Configured lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'configured',
+    });
+    const runtimeLookup = tool({
+      name: sensitiveName,
+      description: 'Runtime lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'runtime',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => runtimeLookup,
+    );
+    const agent = new Agent({ name: 'Redacted runtime conflict agent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 2);
+    const redaction = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const result = processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_redacted_conflict',
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: 'call_redacted_conflict',
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [configuredLookup, clientToolSearch],
+        [],
+        state,
+        [],
+      );
+
+      await expect(result).rejects.toThrow(
+        'Client tool_search execute() returned a tool that conflicts with an existing available tool.',
+      );
+      await expect(result).rejects.not.toThrow(sensitiveName);
+    } finally {
+      redaction.mockRestore();
+    }
+  });
+
+  it('rejects a bare runtime function that conflicts with an available handoff', async () => {
+    const lookupAccount = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({}),
+      execute: async () => 'account',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => lookupAccount,
+    );
+    const lookupHandoff = handoff(new Agent({ name: 'Lookup target' }), {
+      toolNameOverride: 'lookup_account',
+    });
+    const agent = new Agent({ name: 'CustomClientToolSearchAgent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_lookup_conflict',
+              status: 'completed',
+              arguments: { paths: [] },
+              providerData: {
+                call_id: 'call_tool_search_lookup_conflict',
+                execution: 'client',
+              },
+            },
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [lookupHandoff],
+        state,
+        [],
+      ),
+    ).rejects.toThrow(
+      'Client tool_search execute() returned a bare function tool that conflicts with an available handoff.',
+    );
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it('rejects disallowed callers for tools loaded by custom client tool_search', async () => {
+    const programOnlyLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({ accountId: z.string() }),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'account',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespaceHints: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['namespaceHints'],
+            additionalProperties: false,
+          },
+        },
+      },
+      async () => programOnlyLookup,
+    );
+    const agent = new Agent({ name: 'CustomClientToolSearchAgent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_lookup',
+              status: 'completed',
+              arguments: { namespaceHints: ['crm'] },
+              providerData: {
+                call_id: 'call_tool_search_lookup',
+                execution: 'client',
+              },
+            },
+            {
+              type: 'function_call',
+              callId: 'call_lookup_account',
+              name: 'lookup_account',
+              arguments: '{"accountId":"acct_42"}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      ),
+    ).rejects.toThrow(/caller direct/);
+  });
+
+  it('does not auto-execute tool_search calls that explicitly request server execution', () => {
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          execution: 'server',
+          status: 'completed',
+          arguments: { namespaceHints: ['crm'] },
+        } as any,
+      ],
+      usage: new Usage(),
+    };
+    const clientToolSearch = {
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+      },
+    } as any;
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [clientToolSearch], []),
+    ).not.toThrow();
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [clientToolSearch],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('does not let server tool_search outputs without call_id resolve pending client searches', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_client',
+          status: 'completed',
+          arguments: {
+            paths: ['get_shipping_eta'],
+          },
+          providerData: {
+            execution: 'client',
+          },
+        },
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_server',
+          execution: 'server',
+          status: 'completed',
+          tools: [],
+        } as any,
+      ],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [shippingEta],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(3);
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolSearchOutputItem);
+    expect(result.newItems[2]).toBeInstanceOf(ToolSearchOutputItem);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      providerData: {
+        execution: 'client',
+      },
+      tools: [
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+        },
+      ],
+    });
+    expect((result.newItems[2] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      execution: 'server',
+      tools: [],
+    });
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('reads top-level execution and call_id on raw SDK tool_search items', () => {
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_a',
+          call_id: 'call_ts_a',
+          execution: 'client',
+          status: 'completed',
+          arguments: { namespaceHints: ['crm'] },
+        } as any,
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_b',
+          call_id: 'call_ts_b',
+          execution: 'client',
+          status: 'completed',
+          arguments: { namespaceHints: ['billing'] },
+        } as any,
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_b',
+          call_id: 'call_ts_b',
+          execution: 'client',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_invoice',
+              namespace: 'billing',
+            },
+          ],
+        } as any,
+      ],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [], []),
+    ).toThrow(/call_ts_a/);
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [], []),
+    ).not.toThrow(/call_ts_b/);
+  });
+
+  it('resolves completed client tool_search calls without explicit call_id', () => {
+    const modelResponse: ModelResponse = {
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: { namespaceHints: ['crm'] },
+          providerData: {
+            execution: 'client',
+          },
+        },
+        {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        },
+      ],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [], []),
+    ).not.toThrow();
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+    expect(result.newItems[0]).toBeInstanceOf(ToolSearchCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolSearchOutputItem);
+  });
+
+  it('uses namespace-qualified names to resolve duplicate function tools', () => {
+    const crmLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account in CRM.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'crm',
+    });
+    const billingLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account in billing.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'billing',
+    });
+    const crmNamespace = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [crmLookup],
+    });
+    const billingNamespace = toolNamespace({
+      name: 'billing',
+      description: 'Billing tools',
+      tools: [billingLookup],
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_namespace',
+      callId: 'call_namespace',
+      name: 'lookup_account',
+      namespace: 'billing',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [...crmNamespace, ...billingNamespace],
+      [],
+    );
+
+    expect(result.functions).toHaveLength(1);
+    expect(result.functions[0]).toEqual({
+      toolCall: functionCall,
+      tool: billingNamespace[0],
+      mcpToolBinding: null,
+    });
+    expect(result.toolsUsed).toEqual(['billing.lookup_account']);
+  });
+
+  it('rejects top-level deferred tool calls before tool_search loads them', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [shippingEta], []),
+    ).toThrow(
+      /deferred function call get_shipping_eta before it was loaded via tool_search/,
+    );
+  });
+
+  it('falls back to the bare tool name for top-level deferred tool calls after tool_search loads them', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_shipping_eta',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+              namespace: 'get_shipping_eta',
+            },
+          ],
+        } as any,
+        TEST_AGENT,
+      ),
+    ];
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [shippingEta],
+      [],
+      priorItems,
+    );
+
+    expect(result.functions).toHaveLength(1);
+    expect(result.functions[0]).toEqual({
+      toolCall: functionCall,
+      tool: shippingEta,
+      mcpToolBinding: null,
+    });
+    expect(result.toolsUsed).toEqual(['get_shipping_eta']);
+  });
+
+  it('does not treat tool_search outputs from other agents as loaded for the current agent', () => {
+    const otherAgent = new Agent({ name: 'OtherAgent' });
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_other_agent',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+              namespace: 'get_shipping_eta',
+            },
+          ],
+        } as any,
+        otherAgent,
+      ),
+    ];
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [shippingEta],
+        [],
+        priorItems,
+      ),
+    ).toThrow(
+      /deferred function call get_shipping_eta before it was loaded via tool_search/,
+    );
+  });
+
+  it('treats later tool_search outputs with the same call_id as replacements for loaded deferred tools', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const shippingCredit = tool({
+      name: 'get_shipping_credit_balance',
+      description: 'Look up a shipping credit balance.',
+      parameters: z.object({
+        customerId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 125,
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_credit',
+      callId: 'call_shipping_credit',
+      name: 'get_shipping_credit_balance',
+      namespace: 'get_shipping_credit_balance',
+      status: 'completed',
+      arguments: '{"customerId":"cust_123"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_shipping_full',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+              namespace: 'get_shipping_eta',
+            },
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_credit_balance',
+              namespace: 'get_shipping_credit_balance',
+            },
+          ],
+          providerData: {
+            call_id: 'call_ts_shipping',
+          },
+        } as any,
+        TEST_AGENT,
+      ),
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_shipping_eta_only',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+              namespace: 'get_shipping_eta',
+            },
+          ],
+          providerData: {
+            call_id: 'call_ts_shipping',
+          },
+        } as any,
+        TEST_AGENT,
+      ),
+    ];
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [shippingEta, shippingCredit],
+        [],
+        priorItems,
+      ),
+    ).toThrow(
+      /deferred function call get_shipping_credit_balance before it was loaded via tool_search/,
+    );
+  });
+
+  it('auto-loads built-in client tool_search results before later deferred tool calls in the same response', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_call_shipping_eta',
+      status: 'completed',
+      arguments: {
+        paths: ['get_shipping_eta'],
+      },
+      providerData: {
+        execution: 'client',
+      },
+    } as any;
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [toolSearchCall, functionCall],
+      usage: new Usage(),
+    };
+    const clientToolSearch = {
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+      },
+    } as any;
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [clientToolSearch, shippingEta],
+      [],
+    );
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'tool_search_call_item',
+      'tool_search_output_item',
+      'tool_call_item',
+    ]);
+    expect(result.functions).toEqual([
+      {
+        toolCall: functionCall,
+        tool: shippingEta,
+        mcpToolBinding: null,
+      },
+    ]);
+  });
+
+  it('prefers namespaced function tools over bare-name handoffs', () => {
+    const target = new Agent({ name: 'EscalationTarget' });
+    const h = handoff(target, {
+      toolNameOverride: 'lookup_account',
+    });
+    const crmLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account in CRM.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          execute: async () => 'crm',
+        }),
+      ],
+    })[0];
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_crm_lookup',
+      callId: 'call_crm_lookup',
+      name: 'lookup_account',
+      namespace: 'crm',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [crmLookup],
+      [h],
+    );
+
+    expect(result.functions).toEqual([
+      {
+        toolCall: {
+          ...functionCall,
+          name: 'lookup_account',
+          namespace: 'crm',
+        },
+        tool: crmLookup,
+        mcpToolBinding: null,
+      },
+    ]);
+    expect(result.handoffs).toEqual([]);
+    expect(result.toolsUsed).toEqual(['crm.lookup_account']);
+  });
+
+  it.each(['sync', 'async'] as const)(
+    'resolves an unambiguous flattened qualified namespace call in %s processing',
+    async (mode) => {
+      const crmLookup = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools',
+        tools: [
+          tool({
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: z.object({
+              accountId: z.string(),
+            }),
+            execute: async () => 'crm',
+          }),
+        ],
+      })[0];
+      const functionCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: 'fc_flattened_crm_lookup',
+        callId: 'call_flattened_crm_lookup',
+        name: 'crm.lookup_account',
+        status: 'completed',
+        arguments: '{"accountId":"acct_42"}',
+      };
+      const modelResponse: ModelResponse = {
+        output: [functionCall],
+        usage: new Usage(),
+      };
+
+      const result =
+        mode === 'sync'
+          ? processModelResponse(modelResponse, TEST_AGENT, [crmLookup], [])
+          : await processModelResponseAsync(
+              modelResponse,
+              TEST_AGENT,
+              [crmLookup],
+              [],
+              new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+            );
+
+      expect(result.functions).toEqual([
+        {
+          toolCall: {
+            ...functionCall,
+            name: 'lookup_account',
+            namespace: 'crm',
+          },
+          tool: crmLookup,
+          mcpToolBinding: null,
+        },
+      ]);
+      expect(result.handoffs).toEqual([]);
+      expect(result.toolsUsed).toEqual(['crm.lookup_account']);
+    },
+  );
+
+  it('rejects namespaces reserved for deferred top-level tools', () => {
+    const topLevelLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up a top-level account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'top-level',
+    });
+    const namespacedLookup = createLegacyNamespacedTool(
+      tool({
+        name: 'lookup_account',
+        description: 'Look up an account in a matching namespace.',
+        parameters: z.object({
+          accountId: z.string(),
+        }),
+        deferLoading: true,
+        execute: async () => 'namespaced',
+      }),
+      'lookup_account',
+      'Nested lookup tools',
+    );
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_same_name_namespace',
+      callId: 'call_same_name_namespace',
+      name: 'lookup_account',
+      namespace: 'lookup_account',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_same_name_namespace',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'lookup_account',
+            },
+          ],
+        } as any,
+        TEST_AGENT,
+      ),
+    ];
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [topLevelLookup, namespacedLookup],
+        [],
+        priorItems,
+      ),
+    ).toThrow(
+      'Responses tool search reserves same-name namespaces for deferred top-level function tools.',
+    );
+  });
+
+  it('prefers an exact dotted handoff over a flattened namespace tool call', () => {
+    const target = new Agent({ name: 'EscalationTarget' });
+    const h = handoff(target, {
+      toolNameOverride: 'crm.lookup_account',
+    });
+    const crmLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account in CRM.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          execute: async () => 'crm',
+        }),
+      ],
+    })[0];
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_crm_lookup',
+      callId: 'call_crm_lookup',
+      name: 'crm.lookup_account',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [crmLookup],
+      [h],
+    );
+
+    expect(result.functions).toEqual([]);
+    expect(result.handoffs).toEqual([
+      {
+        toolCall: functionCall,
+        handoff: h,
+      },
+    ]);
+    expect(result.toolsUsed).toEqual(['crm.lookup_account']);
+  });
+
+  it('distinguishes a deferred top-level function from an equal handoff name', () => {
+    const deferredLookup = tool({
+      name: 'lookup_account',
+      description: 'Deferred account lookup.',
+      parameters: z.object({ accountId: z.string() }),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const h = handoff(new Agent({ name: 'LookupTarget' }), {
+      toolNameOverride: 'lookup_account',
+    });
+    const bareCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_lookup_handoff',
+      callId: 'call_lookup_handoff',
+      name: 'lookup_account',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const deferredCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_lookup_deferred',
+      callId: 'call_lookup_deferred',
+      name: 'lookup_account',
+      namespace: 'lookup_account',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_lookup',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+            },
+          ],
+        } as any,
+        TEST_AGENT,
+      ),
+    ];
+
+    const handoffResult = processModelResponse(
+      { output: [bareCall], usage: new Usage() },
+      TEST_AGENT,
+      [deferredLookup],
+      [h],
+    );
+    const deferredResult = processModelResponse(
+      { output: [deferredCall], usage: new Usage() },
+      TEST_AGENT,
+      [deferredLookup],
+      [h],
+      priorItems,
+    );
+
+    expect(handoffResult.handoffs).toEqual([
+      { toolCall: bareCall, handoff: h },
+    ]);
+    expect(handoffResult.functions).toEqual([]);
+    expect(deferredResult.handoffs).toEqual([]);
+    expect(deferredResult.functions).toEqual([
+      { toolCall: deferredCall, tool: deferredLookup, mcpToolBinding: null },
+    ]);
+  });
+
+  it('still resolves dotted handoff overrides when no matching function tool exists', () => {
+    const target = new Agent({ name: 'EscalationTarget' });
+    const h = handoff(target, {
+      toolNameOverride: 'crm.lookup_account',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_crm_lookup',
+      callId: 'call_crm_lookup',
+      name: 'crm.lookup_account',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], [h]);
+
+    expect(result.functions).toEqual([]);
+    expect(result.handoffs).toEqual([
+      {
+        toolCall: functionCall,
+        handoff: h,
+      },
+    ]);
+    expect(result.toolsUsed).toEqual(['crm.lookup_account']);
+  });
+
+  it('still resolves explicit namespace function calls when a dotted handoff override shares the qualified name', () => {
+    const target = new Agent({ name: 'EscalationTarget' });
+    const h = handoff(target, {
+      toolNameOverride: 'crm.lookup_account',
+    });
+    const crmLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account in CRM.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          execute: async () => 'crm',
+        }),
+      ],
+    })[0];
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_crm_lookup_explicit_namespace',
+      callId: 'call_crm_lookup_explicit_namespace',
+      name: 'lookup_account',
+      namespace: 'crm',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [crmLookup],
+      [h],
+    );
+
+    expect(result.functions).toEqual([
+      {
+        toolCall: functionCall,
+        tool: crmLookup,
+        mcpToolBinding: null,
+      },
+    ]);
+    expect(result.handoffs).toEqual([]);
+    expect(result.toolsUsed).toEqual(['crm.lookup_account']);
+  });
+
+  it('queues shell actions when shell tool registered', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({ shell: new FakeShell() });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.shellActions[0]?.toolCall).toEqual(shellCall);
+    expect(result.shellActions[0]?.shell).toBe(shell);
+    expect(result.toolsUsed).toEqual(['shell']);
+  });
+
+  it('treats shell tools without environment as local for backward compatibility', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const legacyShellTool = {
+      type: 'shell',
+      name: 'shell',
+      shell: new FakeShell(),
+      needsApproval: async () => false,
+    } as any;
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [legacyShellTool],
+      [],
+    );
+
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.shellActions[0]?.toolCall).toEqual(shellCall);
+    expect(result.shellActions[0]?.shell).toBe(legacyShellTool);
+    expect(result.toolsUsed).toEqual(['shell']);
+  });
+
+  it('does not queue local shell execution for hosted container shell', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('keeps hosted shell calls pending while still in progress', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('keeps hosted shell calls pending when status is omitted', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('does not keep hosted shell calls pending when incomplete', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'incomplete',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('does not keep hosted shell calls pending on unknown status values', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'queued' as any,
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('preserves hosted shell output items in processed run items', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'ok',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('keeps hosted shell pending when shell_call_output status is in progress', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'in_progress',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('does not keep hosted shell pending on unknown shell_call_output status values', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'queued',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('throws when shell action emitted without shell tool', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('throws when local shell tool has no shell implementation', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const invalidLocalShellTool = {
+      type: 'shell',
+      name: 'shell',
+      environment: { type: 'local' },
+      needsApproval: async () => false,
+    } as any;
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [invalidLocalShellTool],
+        [],
+      ),
+    ).toThrow(/without a local shell implementation/);
+  });
+
+  it('queues apply_patch actions when editor tool registered', () => {
+    const applyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [applyPatchCall],
+      usage: new Usage(),
+    };
+
+    const editor = applyPatchTool({ editor: new FakeEditor() });
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [editor],
+      [],
+    );
+
+    expect(result.applyPatchActions).toHaveLength(1);
+    expect(result.applyPatchActions[0]?.toolCall).toEqual(applyPatchCall);
+    expect(result.applyPatchActions[0]?.applyPatch).toBe(editor);
+    expect(result.toolsUsed).toEqual(['apply_patch']);
+  });
+
+  it('throws when apply_patch action emitted without editor tool', () => {
+    const applyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: {
+        type: 'delete_file',
+        path: 'temp.txt',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [applyPatchCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('throws when hosted MCP approval references missing server', () => {
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_123',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'missing',
+        name: 'mcp_approval_request',
+        id: 'mcpr_123',
+        arguments: {},
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('preserves callers on hosted MCP approval items in sync and async processing', async () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      allowedCallers: ['programmatic'],
+    });
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_program',
+      status: 'in_progress',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'mcpr_program',
+        arguments: '{}',
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    const syncResult = processModelResponse(
+      response,
+      TEST_AGENT,
+      [mcpTool],
+      [],
+    );
+    const asyncResult = await processModelResponseAsync(
+      response,
+      TEST_AGENT,
+      [mcpTool],
+      [],
+      new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+      [],
+    );
+
+    for (const result of [syncResult, asyncResult]) {
+      expect(
+        (
+          result.mcpApprovalRequests[0].requestItem
+            .rawItem as protocol.HostedToolCallItem
+        ).caller,
+      ).toEqual({
+        type: 'program',
+        callerId: 'call_prog_1',
+      });
+    }
+  });
+
+  it('rejects direct MCP approvals for programmatic-only servers', async () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      allowedCallers: ['programmatic'],
+    });
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_direct',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'mcpr_direct',
+        arguments: '{}',
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [mcpTool], []),
+    ).toThrow(ModelBehaviorError);
+    await expect(
+      processModelResponseAsync(
+        response,
+        TEST_AGENT,
+        [mcpTool],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+  });
+
+  it('resolves hosted MCP approval requests from tool_search-loaded servers', () => {
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shopify',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          require_approval: 'always',
+          allowed_callers: ['programmatic'],
+        },
+      ],
+    } as any;
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_shopify',
+      status: 'in_progress',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'shopify',
+        name: 'mcp_approval_request',
+        id: 'mcpr_shopify',
+        arguments: {},
+      },
+    };
+    const response: ModelResponse = {
+      output: [toolSearchOutput, hostedCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(response, TEST_AGENT, [], []);
+
+    expect(result.mcpApprovalRequests).toHaveLength(1);
+    expect(result.mcpApprovalRequests[0].mcpTool.providerData).toMatchObject({
+      type: 'mcp',
+      server_label: 'shopify',
+      server_url: 'https://mcp.example.com/shopify',
+      require_approval: 'always',
+      allowed_callers: ['programmatic'],
+    });
+  });
+
+  it('rejects invalid hosted MCP approval policies from tool_search output', () => {
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shopify',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          require_approval: {
+            always: { tool_names: ['delete'] },
+            never: { tool_names: ['delete'] },
+          },
+        },
+      ],
+    } as any;
+    const response: ModelResponse = {
+      output: [toolSearchOutput],
+      usage: new Usage(),
+    };
+
+    expect(() => processModelResponse(response, TEST_AGENT, [], [])).toThrow(
+      UserError,
+    );
+  });
+
+  it('accepts read-only hosted MCP approval filters from tool_search output', () => {
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shopify',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          require_approval: {
+            always: { read_only: false },
+            never: { tool_names: ['search'], read_only: true },
+          },
+        },
+      ],
+    } as any;
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_shopify',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'shopify',
+        name: 'mcp_approval_request',
+        id: 'mcpr_shopify',
+        arguments: {},
+      },
+    };
+    const response: ModelResponse = {
+      output: [toolSearchOutput, hostedCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(response, TEST_AGENT, [], []);
+
+    expect(result.mcpApprovalRequests[0].mcpTool.providerData).toMatchObject({
+      type: 'mcp',
+      server_label: 'shopify',
+      server_url: 'https://mcp.example.com/shopify',
+      require_approval: {
+        always: { read_only: false },
+        never: { tool_names: ['search'], read_only: true },
+      },
+    });
+  });
+
+  it('captures reasoning items', () => {
+    const reasoning: protocol.ReasoningItem = {
+      id: 'r1',
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    };
+    const response: ModelResponse = { output: [reasoning], usage: new Usage() };
+    const result = processModelResponse(response, TEST_AGENT, [TEST_TOOL], []);
+
+    expect(result.newItems[0]).toBeInstanceOf(ReasoningItem);
+    expect(result.toolsUsed).toEqual([]);
+  });
+});
+
+describe('processModelResponse edge cases', () => {
+  it('throws when model references unknown tool', () => {
+    const badCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      name: 'missing_tool',
+    };
+    const response: ModelResponse = {
+      output: [badCall],
+      usage: new Usage(),
+    } as any;
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('collects unknown function tool calls when opted in', () => {
+    const missingCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      name: 'missing_tool',
+      callId: 'call_missing',
+      arguments: '{}',
+    };
+    const response: ModelResponse = {
+      output: [missingCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      response,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+      [],
+      'return_error_to_model',
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.functions).toEqual([]);
+    expect(result.toolsUsed).toEqual(['missing_tool']);
+    expect(result.functionToolsNotFound).toEqual([
+      {
+        toolCall: missingCall,
+        toolName: 'missing_tool',
+      },
+    ]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('throws when computer action emitted without computer tool', () => {
+    const compCall: protocol.ComputerUseCallItem = {
+      id: 'c1',
+      type: 'computer_call',
+      callId: 'c1',
+      status: 'completed',
+      action: { type: 'click', x: 1, y: 1, button: 'left' },
+    };
+    const response: ModelResponse = {
+      output: [compCall],
+      usage: new Usage(),
+    } as any;
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('classifies functions, handoffs and computer actions', () => {
+    const target = new Agent({ name: 'B' });
+    const h = handoff(target);
+    const computer = computerTool({
+      computer: {
+        environment: 'mac',
+        dimensions: [10, 10],
+        screenshot: vi.fn(async () => 'img'),
+        click: vi.fn(async () => {}),
+        doubleClick: vi.fn(async () => {}),
+        drag: vi.fn(async () => {}),
+        keypress: vi.fn(async () => {}),
+        move: vi.fn(async () => {}),
+        scroll: vi.fn(async () => {}),
+        type: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    });
+
+    const funcCall = { ...TEST_MODEL_FUNCTION_CALL, callId: 'f1' };
+    const compCall: protocol.ComputerUseCallItem = {
+      id: 'c1',
+      type: 'computer_call',
+      callId: 'c1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const handCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      name: h.toolName,
+      callId: 'h1',
+    };
+    const response: ModelResponse = {
+      output: [funcCall, compCall, handCall, TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(
+      response,
+      TEST_AGENT,
+      [TEST_TOOL, computer],
+      [h],
+    );
+
+    expect(result.functions[0]?.toolCall).toBe(funcCall);
+    expect(result.computerActions[0]?.toolCall).toBe(compCall);
+    expect(result.handoffs[0]?.toolCall).toBe(handCall);
+    expect(result.toolsUsed).toEqual(['test', computer.name, h.toolName]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+    expect(result.newItems[3]).toBeInstanceOf(MessageOutputItem);
+  });
+
+  it('only serializes the first handoff when multiple handoffs are requested', () => {
+    const targetB = new Agent({ name: 'B' });
+    const targetC = new Agent({ name: 'C' });
+    const handoffToB = handoff(targetB);
+    const handoffToC = handoff(targetC);
+    const handoffCallB: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'h1',
+      name: handoffToB.toolName,
+      callId: 'hb1',
+    };
+    const handoffCallC: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'h2',
+      name: handoffToC.toolName,
+      callId: 'hc1',
+    };
+    const response: ModelResponse = {
+      output: [handoffCallB, handoffCallC],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(
+      response,
+      TEST_AGENT,
+      [],
+      [handoffToB, handoffToC],
+    );
+
+    expect(result.handoffs).toEqual([
+      { toolCall: handoffCallB, handoff: handoffToB },
+      { toolCall: handoffCallC, handoff: handoffToC },
+    ]);
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(HandoffCallItem);
+    expect((result.newItems[0] as HandoffCallItem).rawItem.callId).toBe(
+      handoffCallB.callId,
+    );
+  });
+});
+
+describe('hasToolsOrApprovalsToRun method', () => {
+  it('returns true when handoffs are pending', () => {
+    const target = new Agent({ name: 'Target' });
+    const h = handoff(target);
+    const response: ModelResponse = {
+      output: [{ ...TEST_MODEL_FUNCTION_CALL, name: h.toolName }],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [], [h]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns true when function calls are pending', () => {
+    const result = processModelResponse(
+      TEST_MODEL_RESPONSE_WITH_FUNCTION,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns true when computer actions are pending', () => {
+    const computer = computerTool({
+      computer: {
+        environment: 'mac',
+        dimensions: [10, 10],
+        screenshot: vi.fn(async () => 'img'),
+        click: vi.fn(async () => {}),
+        doubleClick: vi.fn(async () => {}),
+        drag: vi.fn(async () => {}),
+        keypress: vi.fn(async () => {}),
+        move: vi.fn(async () => {}),
+        scroll: vi.fn(async () => {}),
+        type: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    });
+    const compCall: protocol.ComputerUseCallItem = {
+      id: 'c1',
+      type: 'computer_call',
+      callId: 'c1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const response: ModelResponse = {
+      output: [compCall],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [computer], []);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns false when no tools or approvals are pending', () => {
+    const response: ModelResponse = {
+      output: [TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [], []);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+});

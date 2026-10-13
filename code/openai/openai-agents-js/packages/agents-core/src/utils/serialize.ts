@@ -1,0 +1,120 @@
+import { JsonObjectSchema } from '../types';
+import { Handoff } from '../handoff';
+import { Tool } from '../tool';
+import { AgentOutputType } from '../agent';
+import { SerializedHandoff, SerializedTool } from '../model';
+import { UserError } from '../errors';
+import type { Computer } from '../computer';
+import {
+  getExplicitFunctionToolNamespace,
+  getFunctionToolNamespaceDescription,
+} from '../toolIdentity';
+
+const REQUIRED_COMPUTER_METHODS = [
+  'screenshot',
+  'click',
+  'doubleClick',
+  'drag',
+  'keypress',
+  'move',
+  'scroll',
+  'type',
+  'wait',
+] as const;
+
+function isComputerInstance(value: unknown): value is Computer {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return REQUIRED_COMPUTER_METHODS.every(
+    (methodName) => typeof record[methodName] === 'function',
+  );
+}
+
+function hasComputerDisplayMetadata(
+  computer: Computer,
+): computer is Computer & {
+  environment: NonNullable<Computer['environment']>;
+  dimensions: NonNullable<Computer['dimensions']>;
+} {
+  return (
+    typeof computer.environment === 'string' &&
+    Array.isArray(computer.dimensions) &&
+    computer.dimensions.length === 2 &&
+    computer.dimensions.every((value) => typeof value === 'number')
+  );
+}
+
+export function serializeTool(tool: Tool<any>): SerializedTool {
+  if (tool.type === 'function') {
+    const namespace = getExplicitFunctionToolNamespace(tool);
+    return {
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters as JsonObjectSchema<any>,
+      strict: tool.strict,
+      deferLoading: tool.deferLoading,
+      providerData: tool.providerData,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
+      ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+      ...(namespace ? { namespace } : {}),
+      ...(namespace
+        ? {
+            namespaceDescription: getFunctionToolNamespaceDescription(tool),
+          }
+        : {}),
+    };
+  }
+  if (tool.type === 'computer') {
+    // When a computer is created lazily via an initializer, serializeTool can be called before initialization (e.g., manual serialize without running the agent).
+    if (!isComputerInstance(tool.computer)) {
+      throw new UserError(
+        'Computer tool is not initialized for serialization. Call resolveComputer({ tool, runContext }) first (for example, when building a model payload outside Runner.run).',
+      );
+    }
+    return {
+      type: 'computer',
+      name: tool.name,
+      ...(hasComputerDisplayMetadata(tool.computer)
+        ? {
+            environment: tool.computer.environment,
+            dimensions: tool.computer.dimensions,
+          }
+        : {}),
+    };
+  }
+  if (tool.type === 'shell') {
+    return {
+      type: 'shell',
+      name: tool.name,
+      environment: tool.environment,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
+    };
+  }
+  if (tool.type === 'apply_patch') {
+    return {
+      type: 'apply_patch',
+      name: tool.name,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
+    };
+  }
+  return {
+    type: 'hosted_tool',
+    name: tool.name,
+    providerData: tool.providerData,
+  };
+}
+
+export function serializeHandoff<TContext, TOutput extends AgentOutputType>(
+  h: Handoff<TContext, TOutput>,
+): SerializedHandoff {
+  return {
+    toolName: h.toolName,
+    toolDescription: h.toolDescription,
+    inputJsonSchema: h.inputJsonSchema as JsonObjectSchema<any>,
+    strictJsonSchema: h.strictJsonSchema,
+  };
+}

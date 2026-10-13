@@ -1,0 +1,152 @@
+import { Agent } from '../agent';
+import { RunItem, RunToolApprovalItem, RunToolCallItem } from '../items';
+import { RunState } from '../runState';
+import { FunctionToolResult } from '../tool';
+import {
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalRequestKey,
+} from '../toolIdentity';
+import * as ProviderData from '../types/providerData';
+import * as protocol from '../types/protocol';
+import type { ToolRunMCPApprovalRequest } from './types';
+import { getHostedMcpApprovalToolName } from '../toolInvocation';
+
+type ResolveApproval = (
+  rawItem: protocol.HostedToolCallItem,
+) => boolean | undefined;
+type ResolveRejectionMessage = (
+  rawItem: protocol.HostedToolCallItem,
+) => string | undefined;
+
+type HandleHostedMcpApprovalsParams<TContext> = {
+  requests: ToolRunMCPApprovalRequest[];
+  agent: Agent<TContext, any>;
+  state: RunState<TContext, Agent<TContext, any>>;
+  functionResults: FunctionToolResult<TContext>[];
+  appendIfNew: (item: RunItem) => void;
+  resolveApproval?: ResolveApproval;
+  resolveRejectionMessage?: ResolveRejectionMessage;
+};
+
+export type HandleHostedMcpApprovalsResult = {
+  pendingApprovals: Set<RunToolApprovalItem>;
+  pendingApprovalKeys: Set<string>;
+};
+
+/**
+ * Normalizes hosted MCP approval flows so streaming and non-streaming loops share identical
+ * behavior. Handles synchronous approvals, previously decided approvals, and pending approvals.
+ */
+export async function handleHostedMcpApprovals<TContext>({
+  requests,
+  agent,
+  state,
+  functionResults,
+  appendIfNew,
+  resolveApproval,
+  resolveRejectionMessage,
+}: HandleHostedMcpApprovalsParams<TContext>): Promise<HandleHostedMcpApprovalsResult> {
+  const pendingApprovals = new Set<RunToolApprovalItem>();
+  const pendingApprovalKeys = new Set<string>();
+
+  for (const approvalRequest of requests) {
+    const rawItem = approvalRequest.requestItem.rawItem;
+    if (rawItem.type !== 'hosted_tool_call') {
+      continue;
+    }
+
+    const providerData = rawItem.providerData as
+      ProviderData.HostedMCPApprovalRequest | undefined;
+    if (!providerData) {
+      continue;
+    }
+
+    const toolData = approvalRequest.mcpTool.providerData as
+      ProviderData.HostedMCPTool<TContext> | undefined;
+    const approvalIdentity = getHostedMcpApprovalRequestIdentity(rawItem);
+    const approvalRequestId = approvalIdentity?.requestId;
+
+    const approvalDecision =
+      typeof resolveApproval === 'function'
+        ? resolveApproval(rawItem)
+        : undefined;
+
+    if (typeof approvalDecision !== 'undefined' && approvalRequestId) {
+      const rejectionReason =
+        approvalDecision === false
+          ? typeof resolveRejectionMessage === 'function'
+            ? resolveRejectionMessage(rawItem)
+            : state._context._getToolInvocationRejectionMessage(
+                agent,
+                getHostedMcpApprovalToolName(rawItem.name, rawItem),
+                rawItem,
+              )
+          : undefined;
+      const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
+        approve: approvalDecision,
+        approval_request_id: approvalRequestId,
+        reason: rejectionReason,
+      };
+      appendIfNew(
+        new RunToolCallItem(
+          {
+            type: 'hosted_tool_call',
+            name: 'mcp_approval_response',
+            providerData: approvalResponseData,
+            ...(rawItem.caller ? { caller: rawItem.caller } : {}),
+          },
+          agent as Agent<unknown, 'text'>,
+        ),
+      );
+      continue;
+    }
+
+    if (toolData?.on_approval && approvalRequestId) {
+      const approvalResult = await toolData.on_approval(
+        state._context,
+        approvalRequest.requestItem,
+      );
+      if (approvalResult.approve) {
+        state.approve(approvalRequest.requestItem);
+      } else {
+        state.reject(approvalRequest.requestItem, {
+          message: approvalResult.reason,
+        });
+      }
+      const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
+        approve: approvalResult.approve,
+        approval_request_id: approvalRequestId,
+        reason: approvalResult.reason,
+      };
+      appendIfNew(
+        new RunToolCallItem(
+          {
+            type: 'hosted_tool_call',
+            name: 'mcp_approval_response',
+            providerData: approvalResponseData,
+            ...(rawItem.caller ? { caller: rawItem.caller } : {}),
+          },
+          agent as Agent<unknown, 'text'>,
+        ),
+      );
+      continue;
+    }
+
+    functionResults.push({
+      type: 'hosted_mcp_tool_approval',
+      tool: approvalRequest.mcpTool,
+      runItem: approvalRequest.requestItem,
+    });
+    appendIfNew(approvalRequest.requestItem);
+
+    pendingApprovals.add(approvalRequest.requestItem);
+    const approvalRequestKey = approvalIdentity
+      ? getHostedMcpApprovalRequestKey(approvalIdentity)
+      : undefined;
+    if (approvalRequestKey) {
+      pendingApprovalKeys.add(approvalRequestKey);
+    }
+  }
+
+  return { pendingApprovals, pendingApprovalKeys };
+}

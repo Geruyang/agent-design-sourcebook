@@ -1,0 +1,317 @@
+const tsConfigPaths = require("tsconfig-paths")
+const fs = require("fs")
+const path = require("path")
+const Module = require("module")
+const mochaExportNames = Object.keys(require("mocha"))
+
+const baseUrl = path.resolve(__dirname)
+
+const tsConfig = JSON.parse(fs.readFileSync(path.join(baseUrl, "tsconfig.json"), "utf-8"))
+
+/**
+ * The aliases point towards the `src` directory.
+ * However, `tsc` doesn't compile paths by itself
+ * (https://www.typescriptlang.org/docs/handbook/modules/reference.html#paths-does-not-affect-emit)
+ * So we need to use tsconfig-paths to resolve the aliases when running tests,
+ * but pointing to `out` instead.
+ */
+const outPaths = {}
+Object.keys(tsConfig.compilerOptions.paths).forEach((key) => {
+	const value = tsConfig.compilerOptions.paths[key]
+	outPaths[key] = value.map((path) => path.replace("src", "out/src"))
+})
+
+tsConfigPaths.register({
+	baseUrl: baseUrl,
+	paths: outPaths,
+})
+
+// Mock the @google/genai module to avoid ESM compatibility issues in tests
+// The module is ES6 only, but the integration tests are compiled to commonJS.
+const originalRequire = Module.prototype.require
+Module.prototype.require = function (id) {
+	// Serve `mocha` imports from the runner's own interface. The runner
+	// (@vscode/test-cli) constructs its Mocha instance from its own copy of
+	// the package; a test file that `require("mocha")`s a second copy gets an
+	// un-setup module whose `currentContext` is never set, and crashes with
+	// "Cannot read properties of undefined (reading 'describe')" at import.
+	// The runner's bdd UI installs describe/it/hooks on globalThis before each
+	// test file is required, so delegating to the globals gives every test the
+	// live runner interface regardless of how "mocha" resolves.
+	if (id === "mocha") {
+		const mochaInterface = {
+			after: globalThis.after,
+			afterEach: globalThis.afterEach,
+			before: globalThis.before,
+			beforeEach: globalThis.beforeEach,
+			describe: globalThis.describe,
+			it: globalThis.it,
+		}
+		// Diagnose unsupported package exports without trapping interop or
+		// tooling probes such as __esModule, then, toJSON or symbols. Enumerable
+		// getters preserve the diagnostic through compiled namespace imports.
+		for (const name of mochaExportNames) {
+			if (!Object.hasOwn(mochaInterface, name)) {
+				Object.defineProperty(mochaInterface, name, {
+					enumerable: true,
+					get() {
+						throw new Error(`Mocha export "${name}" is not provided by test-setup.js mocha shim`)
+					},
+				})
+			}
+		}
+		return mochaInterface
+	}
+
+	// Intercept requires for @google/genai
+	if (id === "@google/genai") {
+		// Return the mock instead
+		const mockPath = path.join(baseUrl, "out/src/test/fixtures/google-genai-mock.js")
+		return originalRequire.call(this, mockPath)
+	}
+
+	// The SDK packages are ESM-only and expose only an `import` condition.
+	// Integration tests run the tsc-built `out/` tree as CommonJS in VS Code's
+	// extension host, so `require("@cline/core")` fails before tests start.
+	// Mock the small surface needed by legacy VS Code integration tests.
+	if (id === "@cline/core") {
+		const createNoopTelemetry = () => ({
+			setDistinctId() {},
+			setMetadata() {},
+			updateMetadata() {},
+			setCommonProperties() {},
+			updateCommonProperties() {},
+			isEnabled: () => false,
+			capture() {},
+			captureRequired() {},
+			recordCounter() {},
+			recordHistogram() {},
+			recordGauge() {},
+			flush: async () => {},
+			dispose: async () => {},
+		})
+
+		class ProviderSettingsManager {
+			constructor(_options) {
+				this.state = { providers: {}, lastUsedProvider: undefined }
+			}
+
+			read() {
+				return this.state
+			}
+
+			getLastUsedProviderSettings() {
+				return undefined
+			}
+
+			getProviderSettings(_provider) {
+				return undefined
+			}
+
+			saveProviderSettings(_settings, _options) {}
+		}
+
+		const getProviderAuthStorageId = (providerId) => {
+			const normalized = String(providerId || "")
+				.trim()
+				.toLowerCase()
+			if (normalized === "cline" || normalized === "cline-pass") return "cline"
+			if (normalized === "oca" || normalized === "openai-codex") return normalized
+			return undefined
+		}
+		const formatClineApiKey = (token) => {
+			const trimmed = String(token || "").trim()
+			return trimmed.toLowerCase().startsWith("workos:") ? trimmed : `workos:${trimmed}`
+		}
+		const getProviderAuthHandler = (providerId) => {
+			const storageProviderId = getProviderAuthStorageId(providerId)
+			if (!storageProviderId) return undefined
+			return {
+				providerId,
+				storageProviderId,
+				getApiKey(settings) {
+					const accessToken = settings?.auth?.accessToken?.trim?.()
+					if (accessToken) return storageProviderId === "cline" ? formatClineApiKey(accessToken) : accessToken
+					return settings?.apiKey?.trim?.() || settings?.auth?.apiKey?.trim?.() || undefined
+				},
+			}
+		}
+		const resolveProviderApiKeyFromSettings = (manager, providerId) => {
+			const handler = getProviderAuthHandler(providerId)
+			const storageProviderId = handler?.storageProviderId ?? providerId
+			const settings = manager.getProviderSettings(storageProviderId)
+			return handler?.getApiKey(settings) ?? settings?.apiKey?.trim?.()
+		}
+		const listLocalProviders = async (manager) => ({ providers: [], settingsPath: manager.getFilePath?.() ?? "" })
+
+		return {
+			createClineTelemetryServiceConfig: (config = {}) => ({
+				enabled: false,
+				metadata: {
+					extension_version: "test",
+					cline_type: "test",
+					platform: "test",
+					platform_version: "test",
+					os_type: "test",
+					os_version: "test",
+				},
+				...config,
+			}),
+			createConfiguredTelemetryHandle: () => ({
+				telemetry: createNoopTelemetry(),
+				flush: async () => {},
+				dispose: async () => {},
+			}),
+			ClineCore: class {
+				constructor() {
+					this.runtimeAddress = undefined
+					this.pendingPrompts = {
+						list: async () => [],
+						update: async () => ({ updated: false }),
+						delete: async () => ({ updated: false }),
+					}
+				}
+
+				static async create() {
+					return new this()
+				}
+
+				async start() {
+					return { sessionId: "test-session" }
+				}
+
+				async send() {
+					return undefined
+				}
+
+				async getAccumulatedUsage() {
+					return { usage: undefined }
+				}
+
+				async abort() {}
+				async stop() {}
+				async dispose() {}
+				async get() {
+					return undefined
+				}
+				async list() {
+					return []
+				}
+				async listHistory() {
+					return []
+				}
+				async delete() {
+					return false
+				}
+				async readMessages() {
+					return []
+				}
+				async update() {
+					return { updated: false }
+				}
+				async ingestHookEvent() {}
+				async updateSessionModel() {}
+				subscribe() {
+					return () => {}
+				}
+			},
+			ProviderSettingsManager,
+			listLocalProviders,
+			resolveProviderConfig: async () => undefined,
+			getProviderConfigFields: () => [],
+			fetchClineRecommendedModels: async () => ({ recommended: [], free: [] }),
+			readGlobalSettings: () => ({ telemetryOptOut: false }),
+			setTelemetryOptOutGlobally: () => undefined,
+			prepareRemoteConfigCoreIntegration: () => undefined,
+			createDefaultExecutors: () => ({}),
+			createMcpTools: () => ({}),
+			createOAuthClientCallbacks: () => ({}),
+			getProviderAuthHandler,
+			getProviderAuthStorageId,
+			resolveProviderApiKeyFromSettings,
+			getValidClineCredentials: async () => undefined,
+			loginClineOAuth: async () => undefined,
+			loginOcaOAuth: async () => undefined,
+			loginOpenAICodex: async () => undefined,
+		}
+	}
+
+	if (id === "@cline/shared") {
+		// Mirrors USER_REJECTED_TOOL_REASON / TOOL_REJECTION_SUFFIX in
+		// sdk/packages/shared/src/llms/tools.ts (the ESM-only real package
+		// cannot be required from this CommonJS test host).
+		return {
+			buildClineSystemPrompt: () => "",
+			USER_REJECTED_TOOL_REASON: "This tool call was rejected by the user and not executed.",
+			TOOL_REJECTION_SUFFIX: "NOT a tool or system failure. Clarify with user before proceeding.",
+			createTool: (tool) => tool,
+			formatDisplayUserInput: (input) => (typeof input === "string" ? input : JSON.stringify(input)),
+		}
+	}
+
+	if (id === "@cline/shared/storage") {
+		return {
+			resolveGlobalSettingsPath: () => path.join(baseUrl, ".vscode-test", "shared-global-settings.json"),
+		}
+	}
+
+	if (id === "@cline/llms") {
+		return {
+			getAllProviders: async () => [],
+			getGeneratedModelsForProvider: () => ({}),
+			getProviderCollectionSync: () => undefined,
+			MODEL_COLLECTIONS_BY_PROVIDER_ID: {},
+		}
+	}
+
+	if (id === "vitest") {
+		const assert = require("node:assert/strict")
+		const makeMockFn = (implementation = () => undefined) => {
+			const fn = (...args) => implementation(...args)
+			fn.mock = { calls: [] }
+			const wrapped = (...args) => {
+				wrapped.mock.calls.push(args)
+				return implementation(...args)
+			}
+			wrapped.mock = fn.mock
+			wrapped.mockImplementation = (next) => {
+				implementation = next
+				return wrapped
+			}
+			wrapped.mockResolvedValue = (value) => wrapped.mockImplementation(() => Promise.resolve(value))
+			wrapped.mockReturnValue = (value) => wrapped.mockImplementation(() => value)
+			return wrapped
+		}
+		const expect = (actual) => ({
+			toBe: (expected) => assert.equal(actual, expected),
+			toEqual: (expected) => assert.deepEqual(actual, expected),
+			toBeDefined: () => assert.notEqual(actual, undefined),
+			toBeTruthy: () => assert.ok(actual),
+			toBeGreaterThanOrEqual: (expected) => assert.ok(actual >= expected),
+			toContain: (expected) => assert.ok(actual.includes(expected)),
+			toHaveLength: (expected) => assert.equal(actual.length, expected),
+			not: {
+				toBe: (expected) => assert.notEqual(actual, expected),
+				toContain: (expected) => assert.ok(!actual.includes(expected)),
+			},
+		})
+		return {
+			afterAll: globalThis.after ?? (() => undefined),
+			afterEach: globalThis.afterEach ?? (() => undefined),
+			beforeAll: globalThis.before ?? (() => undefined),
+			beforeEach: globalThis.beforeEach ?? (() => undefined),
+			describe: globalThis.describe ?? (() => undefined),
+			expect,
+			it: globalThis.it ?? (() => undefined),
+			vi: {
+				fn: makeMockFn,
+				mock: () => undefined,
+				mocked: (value) => value,
+				clearAllMocks: () => undefined,
+				restoreAllMocks: () => undefined,
+			},
+		}
+	}
+
+	return originalRequire.call(this, id)
+}

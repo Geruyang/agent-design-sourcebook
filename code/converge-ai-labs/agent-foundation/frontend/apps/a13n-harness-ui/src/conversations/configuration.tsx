@@ -1,0 +1,505 @@
+import { reasoningModeLabel } from "./reasoning-mode-picker";
+import { useState } from "react";
+import { Link } from "react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { applyThreadMutation } from "./thread-updates";
+import { refreshThread } from "./refresh";
+import { refreshActivity } from "./activity-updates";
+import { Button, ChoiceField } from "a13n-ui";
+import { useProjects, useSelectors, useTransport } from "../transport/context";
+import { result, type Schema } from "../transport/client";
+import { ErrorNotice } from "../shell/ui";
+import {
+  EnvironmentsEditor,
+  EnvironmentsSummary,
+  invalidEnvironments,
+} from "../configuration/environments";
+import styles from "./conversation.module.css";
+
+function ConfigurationSummary({
+  configuration,
+}: {
+  configuration: Schema<"ThreadConfiguration">;
+}) {
+  return (
+    <dl className={styles.detailGrid}>
+      <div>
+        <dt>Agent</dt>
+        <dd>{configuration.agent_source.id}</dd>
+      </div>
+      <div>
+        <dt>Default model</dt>
+        <dd>{configuration.default_model_id ?? "Follow Agent model"}</dd>
+      </div>
+      <div>
+        <dt>Environments</dt>
+        <dd>
+          <EnvironmentsSummary value={configuration} />
+        </dd>
+      </div>
+      <div>
+        <dt>Harness plugins</dt>
+        <dd>{configuration.harness_plugin_ids?.join(", ") || "None"}</dd>
+      </div>
+      <div>
+        <dt>Environment extensions</dt>
+        <dd>
+          {configuration.environment_run_extension_ids?.join(", ") || "None"}
+        </dd>
+      </div>
+      <div>
+        <dt>MCP servers</dt>
+        <dd>{configuration.mcp_server_ids?.join(", ") || "None"}</dd>
+      </div>
+    </dl>
+  );
+}
+export function ConversationConfiguration({
+  threadId,
+  reconcile,
+  readOnly = false,
+}: {
+  threadId: string;
+  readOnly?: boolean;
+  reconcile: () => void;
+}) {
+  const { client } = useTransport();
+  const inspection = useQuery({
+    queryKey: ["thread", threadId, "configuration"],
+    queryFn: ({ signal }) =>
+      result(
+        client.GET("/api/threads/{thread_id}/configuration", {
+          params: { path: { thread_id: threadId } },
+          signal,
+        }),
+      ),
+  });
+  const [reviewed, setReviewed] =
+    useState<Schema<"ProjectDefaultsPreview"> | null>(null);
+  const [applyEnvironments, setApplyEnvironments] = useState(false);
+  const preview = useMutation({
+    mutationFn: (environmentsOnly: boolean) =>
+      result(
+        client.GET(
+          environmentsOnly
+            ? "/api/threads/{thread_id}/project-environments"
+            : "/api/threads/{thread_id}/project-defaults",
+          {
+            params: { path: { thread_id: threadId } },
+          },
+        ),
+      ),
+    onSuccess: setReviewed,
+  });
+  const apply = useMutation({
+    mutationFn: () =>
+      result(
+        client.POST(
+          applyEnvironments
+            ? "/api/threads/{thread_id}/project-environments"
+            : "/api/threads/{thread_id}/project-defaults",
+          {
+            params: { path: { thread_id: threadId } },
+            body: {
+              expected_version: reviewed!.expected_version,
+              defaults_digest: reviewed!.defaults_digest,
+            },
+          },
+        ),
+      ),
+    onSuccess: () => {
+      setReviewed(null);
+      reconcile();
+    },
+    onError: reconcile,
+  });
+  const data = inspection.data;
+  return (
+    <div className={styles.form}>
+      <ErrorNotice
+        error={inspection.error || preview.error || apply.error}
+        retry={() => void inspection.refetch()}
+      />
+      {data && (
+        <>
+          <section>
+            <h3>
+              {data.capture_source === "active_operation"
+                ? "Current run configuration"
+                : "Selected continuation configuration"}
+            </h3>
+            {data.captured ? (
+              <>
+                <dl className={styles.detailGrid}>
+                  <div>
+                    <dt>Agent / Model</dt>
+                    <dd>
+                      {data.captured.agent.name} /{" "}
+                      {data.captured.agent.model_id || "Not captured"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Thinking (requested)</dt>
+                    <dd>
+                      {data.captured.agent.thinking_summary ?? "Not captured"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Reasoning mode (requested)</dt>
+                    <dd>
+                      {reasoningModeLabel(data.captured.agent.reasoning_mode)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Captured environments</dt>
+                    <dd>
+                      <EnvironmentsSummary
+                        value={{
+                          ...data.captured,
+                          local_roots: data.captured.project_roots,
+                        }}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Capabilities</dt>
+                    <dd>{data.captured.capability_ids.join(", ") || "None"}</dd>
+                  </div>
+                </dl>
+                <details className={styles.activity}>
+                  <summary>Captured configuration details</summary>
+                  <pre className={styles.code}>
+                    {JSON.stringify(data.captured, null, 2)}
+                  </pre>
+                </details>
+              </>
+            ) : (
+              <p>
+                {data.capture_source === "active_operation"
+                  ? "This operation is preparing. Its configuration has not been captured yet; the previous Run is not a substitute."
+                  : "No captured configuration is available."}
+              </p>
+            )}
+          </section>
+          {readOnly ? (
+            <section>
+              <h3>Automatic organization</h3>
+              <p>
+                Only this scope's memory tools are available. No Environment,
+                shared Agent tools, plugins, MCP servers or subagents are
+                attached.
+              </p>
+              <p>Next model: {data.next_model_id || "Not configured"}</p>
+            </section>
+          ) : (
+            <section>
+              <h3>Next Run selections</h3>
+              <p>
+                Changes here affect later Runs, not an already running Agent.
+                Shared resource content is resolved again at the next Run.
+              </p>
+              <ConfigurationSummary
+                configuration={data.next_run.configuration}
+              />
+              <p>Model: {data.next_model_id || "Not configured"}</p>
+              <details className={styles.activity}>
+                <summary>Selection origins and tool proxy</summary>
+                <pre className={styles.code}>
+                  {JSON.stringify(
+                    {
+                      provenance: data.next_run.provenance,
+                      tool_proxy: data.next_tool_proxy,
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+              </details>
+              {!readOnly && (
+                <ThreadSelections
+                  key={threadId}
+                  threadId={threadId}
+                  configuration={data.next_run.configuration}
+                />
+              )}
+              <Link to="/settings/resources">Manage shared resources</Link>
+            </section>
+          )}
+          {!readOnly && data.next_run.configuration.project_id && (
+            <section>
+              <h3>Apply Project defaults</h3>
+              <p>
+                Only settings specified by the Project are replaced. Unspecified
+                selections stay unchanged.
+              </p>
+              <Button
+                variant="outline"
+                loading={preview.isPending}
+                onClick={() => {
+                  setReviewed(null);
+                  apply.reset();
+                  setApplyEnvironments(false);
+                  preview.mutate(false);
+                }}
+              >
+                Preview defaults
+              </Button>
+              <Button
+                variant="outline"
+                loading={preview.isPending}
+                onClick={() => {
+                  setReviewed(null);
+                  apply.reset();
+                  setApplyEnvironments(true);
+                  preview.mutate(true);
+                }}
+              >
+                Preview Project environments
+              </Button>
+              <p>
+                Applying environments replaces local folders, local mode, remote
+                bindings and the default only. Agent, Model and other selections
+                stay unchanged.
+              </p>
+              {reviewed && (
+                <div className={styles.form}>
+                  <div className={styles.detailGrid}>
+                    <section>
+                      <h4>Before · version {reviewed.expected_version}</h4>
+                      <ConfigurationSummary configuration={reviewed.current} />
+                    </section>
+                    <section>
+                      <h4>After</h4>
+                      <ConfigurationSummary
+                        configuration={reviewed.replacement}
+                      />
+                    </section>
+                  </div>
+                  <Button
+                    loading={apply.isPending}
+                    disabled={
+                      !Object.keys(reviewed.patch).length || apply.isError
+                    }
+                    onClick={() => apply.mutate()}
+                  >
+                    {applyEnvironments
+                      ? "Apply reviewed environments"
+                      : "Apply reviewed defaults"}
+                  </Button>
+                  {apply.isError && (
+                    <p>
+                      Refresh the preview and review it again before applying.
+                      No changes were retried.
+                    </p>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+export function ThreadSelections({
+  threadId,
+  configuration: current,
+}: {
+  threadId: string;
+  configuration: Schema<"ThreadConfiguration">;
+}) {
+  const transport = useTransport();
+  const { client } = transport;
+  const queries = useQueryClient();
+  const selectors = useSelectors();
+  const projects = useProjects();
+  const [saved, setSaved] = useState<Schema<"ThreadConfiguration"> | null>(
+    null,
+  );
+  const latest = saved && saved.version > current.version ? saved : current;
+  const [base, setBase] = useState<Schema<"ThreadConfiguration"> | null>(null);
+  const configuration = base ?? latest;
+  const [patch, updatePatch] = useState<Schema<"ThreadConfigurationPatch">>({});
+  const setPatch = (next: Schema<"ThreadConfigurationPatch">) => {
+    setBase(configuration);
+    updatePatch(next);
+  };
+  const stale = base !== null && base.version !== latest.version;
+  const mutation = useMutation({
+    mutationFn: () =>
+      result(
+        client.PATCH("/api/threads/{thread_id}/configuration", {
+          params: { path: { thread_id: threadId } },
+          body: { expected_version: configuration.version, patch },
+        }),
+      ),
+    onSuccess: (updated) => {
+      applyThreadMutation(queries, updated);
+      setSaved(updated.configuration);
+      updatePatch({});
+      setBase(null);
+    },
+    onSettled: () => {
+      refreshThread(queries, threadId, "configuration");
+      refreshActivity(queries, transport, threadId);
+    },
+  });
+  return (
+    <details className={styles.activity}>
+      <summary>Change next Run selections</summary>
+      <fieldset
+        className={`${styles.form} ${styles.responseInputs}`}
+        disabled={mutation.isPending}
+      >
+        <ChoiceField
+          label="Project"
+          value={
+            patch.project_id === undefined
+              ? (configuration.project_id ?? "")
+              : (patch.project_id ?? "")
+          }
+          onValueChange={(value) =>
+            setPatch({ ...patch, project_id: value || null })
+          }
+          options={[
+            { value: "", label: "Without a project" },
+            ...(projects.data ?? []).map((project) => ({
+              value: project.project_id,
+              label: project.name,
+            })),
+          ]}
+        />
+        <ChoiceField
+          label="Agent"
+          value={patch.agent_id ?? configuration.agent_source.id}
+          onValueChange={(agent_id) => setPatch({ ...patch, agent_id })}
+          options={(selectors.data?.agents ?? []).map((agent) => ({
+            value: agent.agent_id,
+            label: agent.name,
+          }))}
+        />
+        <ChoiceField
+          label="Default model"
+          value={
+            patch.default_model_id === undefined
+              ? (configuration.default_model_id ?? "")
+              : (patch.default_model_id ?? "")
+          }
+          onValueChange={(value) =>
+            setPatch({ ...patch, default_model_id: value || null })
+          }
+          options={[
+            { value: "", label: "Follow Agent model" },
+            ...(selectors.data?.models ?? []).map((model) => ({
+              value: model.model_id,
+              label: model.name,
+            })),
+          ]}
+        />
+        <p>
+          Changing Project only changes grouping. Use Apply Project environments
+          to replace environment selections.
+        </p>
+        <EnvironmentsEditor
+          value={{ ...configuration, ...patch }}
+          profiles={selectors.data?.environments}
+          inheritedProfile={configuration.environment_profile_id}
+          inheritLabel="Keep conversation local mode"
+          onChange={(environments) => setPatch({ ...patch, ...environments })}
+        />
+        {(
+          [
+            {
+              key: "harness_plugin_ids",
+              label: "Harness plugins",
+              options: selectors.data?.harness_plugins,
+            },
+            {
+              key: "environment_run_extension_ids",
+              label: "Environment extensions",
+              options: selectors.data?.environment_run_extensions,
+            },
+            {
+              key: "mcp_server_ids",
+              label: "MCP servers",
+              options: selectors.data?.mcp_servers,
+            },
+          ] as const
+        ).map(({ key, label, options }) => (
+          <fieldset key={key} className={styles.question}>
+            <legend>{label}</legend>
+            {options?.map((option) => {
+              const selected = patch[key] ?? configuration[key] ?? [];
+              return (
+                <label className={styles.answerOption} key={option.resource_id}>
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(option.resource_id)}
+                    onChange={(event) =>
+                      setPatch({
+                        ...patch,
+                        [key]: event.target.checked
+                          ? [...selected, option.resource_id]
+                          : selected.filter((id) => id !== option.resource_id),
+                      })
+                    }
+                  />
+                  {option.name}
+                </label>
+              );
+            })}
+            {!options?.length && <p>No configured resources.</p>}
+          </fieldset>
+        ))}
+        <ErrorNotice
+          error={mutation.error || selectors.error || projects.error}
+        />
+        {(stale || mutation.isError) && (
+          <div className={styles.warning}>
+            <p>
+              Your edits are retained against version {configuration.version}.
+              Review the latest selections below before applying your changes.
+              No write was retried.
+            </p>
+            <h4>Latest selections · version {latest.version}</h4>
+            <ConfigurationSummary configuration={latest} />
+            <Button
+              variant="outline"
+              onClick={() => {
+                setBase(latest);
+                mutation.reset();
+              }}
+            >
+              Keep my edits against version {latest.version}
+            </Button>
+          </div>
+        )}
+        <Button
+          loading={mutation.isPending}
+          disabled={
+            !Object.keys(patch).length ||
+            mutation.isError ||
+            stale ||
+            invalidEnvironments({ ...configuration, ...patch })
+          }
+          onClick={() => mutation.mutate()}
+        >
+          Save next Run selections
+        </Button>
+        {!!Object.keys(patch).length && (
+          <Button
+            variant="ghost"
+            disabled={mutation.isPending}
+            onClick={() => {
+              updatePatch({});
+              setBase(null);
+              mutation.reset();
+            }}
+          >
+            Discard selection edits
+          </Button>
+        )}
+      </fieldset>
+    </details>
+  );
+}

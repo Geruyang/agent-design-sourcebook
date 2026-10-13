@@ -1,0 +1,550 @@
+.workarea {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  min-width: 0;
+}
+.workToolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 20px;
+  min-height: 54px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--a13n-border);
+}
+.workToolbar [aria-pressed="true"] {
+  background: var(--a13n-surface);
+}
+.workToolbar .workspaceTitle {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panelTools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.layout {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.center {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page,
+.editorPage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 24px;
+  overflow: auto;
+}
+.editorPage {
+  display: flex;
+  flex-direction: column;
+}
+.page[hidden] {
+  display: none;
+}
+.documentPage {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+  padding: 24px;
+}
+.pane {
+  flex: 0 0 var(--panel-width, 44%);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--a13n-border);
+  padding: 0;
+  background: var(--a13n-canvas);
+  overflow: auto;
+}
+.paneBody[hidden] {
+  display: none;
+}
+.resizeHandle {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.resizeHandle:hover,
+.resizeHandle:focus-visible {
+  background: var(--a13n-border);
+}
+@media (max-width: 999px) {
+  .resizeHandle {
+    display: none;
+  }
+}
+.changeGroup > summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding-block: 8px;
+}
+.expandedPane {
+  flex-basis: 70%;
+}
+.pane > .paneHeader {
+  padding: 8px 12px;
+  min-height: 46px;
+  border-bottom: 1px solid var(--a13n-border);
+  flex-shrink: 0;
+}
+.pane > .location,
+.pane > .paneBody {
+  margin: 0 12px;
+}
+.pane .editorPage {
+  padding: 12px;
+}
+.terminalDock {
+  display: contents;
+}
+.paneHeader,
+.fileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.paneHeader strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.paneHeader small {
+  display: block;
+}
+.pane small,
+.fileHeader span {
+  color: var(--a13n-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.pane strong {
+  font-weight: 500;
+}
+.pane h3 {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
+}
+.pane .authority {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 0 12px;
+}
+.paneBody {
+  overflow: auto;
+  min-height: 0;
+  padding: 0 0 12px;
+  flex: 1;
+}
+.location {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0 12px;
+  flex-shrink: 0;
+}
+.folderNavigation {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+.folderNavigation > button {
+  flex-shrink: 0;
+}
+.projectFolders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.projectFolders [aria-pressed="true"] {
+  background: var(--a13n-surface);
+}
+.address {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+.address > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.breadcrumbs {
+  min-width: 0;
+  max-height: 96px;
+  overflow: auto;
+}
+.breadcrumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.breadcrumbs li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+.breadcrumbs li > svg {
+  width: 12px;
+  height: 12px;
+  color: var(--a13n-secondary);
+  flex-shrink: 0;
+}
+.breadcrumbs button {
+  display: inline-flex;
+  max-width: 180px;
+  min-width: 0;
+  color: var(--a13n-secondary);
+  font-size: 12px;
+  padding-inline: 6px;
+}
+.breadcrumbs button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breadcrumbs button[aria-current] {
+  color: var(--a13n-text);
+  background: var(--a13n-surface);
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fileToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.viewControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--a13n-secondary);
+}
+.fileList {
+  min-height: 48px;
+}
+.fileRow {
+  display: flex;
+  align-items: center;
+  border-radius: 5px;
+}
+.fileLink,
+.changeRow {
+  border: 0;
+  background: transparent;
+  color: var(--a13n-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+  border-radius: 5px;
+}
+.fileLink span,
+.changeRow span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fileLink svg {
+  flex-shrink: 0;
+}
+.fileLink small,
+.changeRow small {
+  flex-shrink: 0;
+}
+.fileRow:hover,
+.changeRow:hover,
+.selected {
+  background: var(--a13n-surface);
+}
+.entryActions {
+  flex-shrink: 0;
+  position: relative;
+  font-size: 12px;
+}
+.entryActions summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 5px;
+}
+.entryActions[open] > div {
+  position: absolute;
+  z-index: 5;
+  width: 170px;
+  right: 0;
+  padding: 8px;
+  border: 1px solid var(--a13n-border);
+  border-radius: 6px;
+  background: var(--a13n-canvas);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.file {
+  flex: 1;
+  min-height: min-content;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+  min-width: 0;
+}
+.fileHeader {
+  font-size: 13px;
+}
+.fileHeader strong {
+  overflow-wrap: anywhere;
+}
+.path {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  color: var(--a13n-secondary);
+}
+.path small {
+  display: block;
+}
+.editor {
+  flex: 1 1 0;
+  min-height: 160px;
+  min-width: 0;
+  overflow: hidden;
+}
+.markdownPreview {
+  min-width: 0;
+  padding: 8px 4px 20px;
+}
+.file > :not(.editor, .markdownPreview) {
+  flex-shrink: 0;
+}
+.notice {
+  padding: 12px;
+  background: var(--a13n-surface);
+  border-radius: 6px;
+  display: grid;
+  gap: 12px;
+  font-size: 12px;
+}
+.notice details,
+.metadata,
+.repo details {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.notice summary,
+.metadata summary,
+.repo summary {
+  cursor: pointer;
+  color: var(--a13n-secondary);
+  padding: 4px 0;
+}
+.capture {
+  display: grid;
+  gap: 12px;
+}
+.compactCapture {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.compactCapture small {
+  color: var(--a13n-secondary);
+}
+.range {
+  display: flex;
+  gap: 12px;
+}
+.range > * {
+  flex: 1;
+  min-width: 0;
+}
+.empty {
+  padding: 18px 4px;
+  display: grid;
+  gap: 12px;
+}
+.buffers {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  background: var(--a13n-surface);
+  padding: 6px;
+  border-radius: 6px;
+}
+.buffers > small {
+  flex-basis: 100%;
+  padding: 4px;
+}
+.repo {
+  display: grid;
+  gap: 8px;
+}
+.changeGroup {
+  display: grid;
+  gap: 4px;
+}
+.changeGroup h3 {
+  display: flex;
+  justify-content: space-between;
+  color: var(--a13n-secondary);
+  margin-bottom: 4px;
+}
+.changeGroup h3 span {
+  font-size: 11px;
+}
+@media (max-width: 999px) {
+  .withPane .center {
+    display: none;
+  }
+  .pane {
+    flex: 1;
+    border-left: 0;
+  }
+}
+@media (max-width: 760px) {
+  .page,
+  .editorPage,
+  .documentPage {
+    padding: 16px;
+  }
+  .workToolbar {
+    padding-inline: 8px;
+  }
+}
+
+.location > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--a13n-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 0;
+}
+.locationFields {
+  display: grid;
+  gap: 12px;
+  padding: 6px 0 10px;
+}
+
+.fileTabs {
+  display: flex;
+  gap: 2px;
+  overflow: auto;
+  flex-shrink: 0;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--a13n-border);
+}
+.fileTabs > span {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+@media (max-width: 700px) {
+  .withTerminal .layout {
+    display: none;
+  }
+  .withTerminal .fileTabs {
+    display: none;
+  }
+}
+
+.diffSummary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--a13n-secondary);
+}
+.diffSummary small {
+  margin-left: auto;
+}
+.addedCount {
+  color: light-dark(#217346, #8ed6a1);
+}
+.deletedCount {
+  color: light-dark(#b04444, #f1a3a3);
+}
+.patchEditor {
+  --diff-added: light-dark(#e8f3e9, #183629);
+  --diff-deleted: light-dark(#fbe9e9, #402525);
+  --diff-hunk: light-dark(#edf2f8, #232f40);
+  border: 1px solid var(--a13n-border);
+  border-radius: 6px;
+  min-height: 220px;
+}
+
+.patchEditor,
+.diffSummary {
+  color-scheme: light;
+}
+:global(.dark) .patchEditor,
+:global(.dark) .diffSummary {
+  color-scheme: dark;
+}
+
+.panelTools svg {
+  width: 18px;
+  height: 18px;
+}
+
+.paneFeedback {
+  padding: 8px 12px;
+  flex-shrink: 0;
+}

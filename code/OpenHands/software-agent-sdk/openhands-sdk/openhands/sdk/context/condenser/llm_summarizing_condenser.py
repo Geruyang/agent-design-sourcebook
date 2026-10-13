@@ -1,0 +1,562 @@
+import os
+from collections.abc import Sequence
+from enum import Enum
+from typing import Final
+
+from pydantic import Field, model_validator
+
+from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
+    NoCondensationAvailableException,
+    RollingCondenser,
+)
+from openhands.sdk.context.condenser.utils import (
+    get_suffix_length_for_token_reduction,
+    get_total_token_count,
+)
+from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.view import View
+from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.llm_convertible import SystemPromptEvent
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import observe
+from openhands.sdk.utils import maybe_truncate
+
+
+logger = get_logger(__name__)
+
+
+def _leading_system_prompt_index(events: Sequence[LLMConvertibleEvent]) -> int | None:
+    """Index of the first ``SystemPromptEvent`` in ``events``, or ``None``.
+
+    The agent loop guarantees the ``SystemPromptEvent`` sits at the head of the
+    view (index 0), so condensation must never forget it -- otherwise the
+    condensed view would open with a non-system message and violate the
+    repo-wide "system before first user" invariant. Returns ``None`` when no
+    system prompt is present (e.g. unit-test views built without one).
+    """
+    for i, event in enumerate(events):
+        if isinstance(event, SystemPromptEvent):
+            return i
+    return None
+
+
+class Reason(Enum):
+    """Reasons for condensation."""
+
+    REQUEST = "request"
+    TOKENS = "tokens"
+    EVENTS = "events"
+
+
+class LLMSummarizingCondenser(RollingCondenser):
+    """LLM-based condenser that summarizes forgotten events.
+
+    Uses an independent LLM (stored in the `llm` attribute) for generating summaries
+    of forgotten events. The optional `agent_llm` parameter passed to condense() is
+    the LLM used by the agent for token counting purposes, and you should not assume
+    it is the same as the one defined in this condenser.
+    """
+
+    llm: LLM
+    max_size: int = Field(default=240, gt=0)
+    max_tokens: int | None = None
+
+    keep_first: int = Field(default=2, ge=0)
+    """Minimum number of events to preserve at the start of the view. The first
+    `keep_first` events in the conversation will never be condensed or summarized.
+    """
+
+    minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
+    """Minimum fraction of events that must be condensed (0.0-1.0). If fewer than
+    this proportion of events would be forgotten, condensation is treated as an error.
+    Default 0.1 means at least 10% of events must be condensed.
+    """
+    """Minimum ratio of the view to be condensed. Condensations below this threshold
+    are treated as errors.
+    """
+
+    hard_context_reset_max_retries: int = Field(default=5, gt=0)
+    """Number of attempts to perform hard context reset before raising an error."""
+
+    hard_context_reset_context_scaling: float = Field(default=0.8, gt=0.0, lt=1.0)
+    """When performing hard context reset, if the summarization fails, reduce the max
+    size of each event string by this factor and retry.
+    """
+
+    @model_validator(mode="after")
+    def validate_keep_first_vs_max_size(self):
+        events_from_tail = self.max_size // 2 - self.keep_first - 1
+        if events_from_tail <= 0:
+            raise ValueError(
+                "keep_first must be less than max_size // 2 to leave room for "
+                "condensation"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _disable_streaming_for_summary(self):
+        # Summaries are consumed whole with no on_token callback, which a
+        # streaming LLM requires. Disable streaming once so every summary path
+        # is covered. model_copy is non-mutating and shares usage_id/metrics,
+        # so summary tokens stay attributed to the conversation.
+        # Providers that require streaming are exempt: the Codex API requires
+        # stream=True, and the responses() method drains the stream internally
+        # without an on_token callback.
+        if self.llm.stream and not self.llm.requires_streaming:
+            self.llm = self.llm.model_copy(update={"stream": False})
+        return self
+
+    def handles_condensation_requests(self) -> bool:
+        return True
+
+    def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
+        """Return the effective token cap that triggers token-based condensation.
+
+        Takes the stricter (i.e. smaller) of the condenser's configured
+        ``max_tokens`` and the agent LLM's effective input limit. ``agent_llm``
+        is optional throughout the public API -- callers that only assess
+        request/event-count pressure may pass ``None`` -- in which case only the
+        condenser's own ``max_tokens`` applies.
+
+        Returns ``None`` when no limit is configured.
+        """
+        limits = [
+            limit
+            for limit in (
+                self.max_tokens,
+                agent_llm.effective_max_input_tokens if agent_llm is not None else None,
+            )
+            if limit is not None
+        ]
+        return min(limits) if limits else None
+
+    def get_condensation_reasons(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> set[Reason]:
+        """Determine the reasons why the view should be condensed.
+
+        Args:
+            view: The current view to evaluate.
+            agent_llm: The LLM used by the agent. Required if token counting is needed.
+
+        Returns:
+            A set of Reason enums indicating why condensation is needed.
+        """
+        reasons = set()
+
+        # Reason 1: Unhandled condensation request. The view handles the detection of
+        # these requests while processing the event stream.
+        if view.unhandled_condensation_request:
+            reasons.add(Reason.REQUEST)
+
+        # Reason 2: Token limit is provided and exceeded.
+        max_tokens = self._effective_max_tokens(agent_llm)
+        if max_tokens is not None and agent_llm is not None:
+            total_tokens = get_total_token_count(view.events, agent_llm)
+            if total_tokens > max_tokens:
+                logger.info(
+                    "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
+                    "events=%d",
+                    total_tokens,
+                    max_tokens,
+                    len(view),
+                )
+                reasons.add(Reason.TOKENS)
+
+        # Reason 3: View exceeds maximum size in number of events.
+        if len(view) > self.max_size:
+            reasons.add(Reason.EVENTS)
+
+        return reasons
+
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
+        reasons = self.get_condensation_reasons(view, agent_llm)
+
+        # No reasons => no condensation needed.
+        if reasons == set():
+            return None
+
+        # Token pressure is a hard requirement in benchmark runs that use a fixed
+        # local model context: sending the next request can fail before the recovery
+        # path has a chance to run. Treat event-count pressure as soft because that
+        # threshold is only a history-management heuristic.
+        if Reason.TOKENS in reasons:
+            return CondensationRequirement.HARD
+
+        # If the remaining reasons are for resource constraints, we can treat them as
+        # a soft requirement. We want to condense when we can, but there's still space
+        # in the context window or we'd also see Reason.REQUEST.
+        resource_reasons = {Reason.EVENTS}
+        if reasons.issubset(resource_reasons):
+            return CondensationRequirement.SOFT
+
+        # Requests -- whether they come from the user or the agent -- are always hard
+        # requirements. We need to condense now because:
+        # 1. the user expects it
+        # 2. the agent has no more room in the context window and can't continue
+        if Reason.REQUEST in reasons:
+            return CondensationRequirement.HARD
+
+    def _build_summary_messages(self, event_strings: Sequence[str]) -> list[Message]:
+        """Build the messages sent to the summarization LLM.
+
+        The summarization instructions are sent as a ``system`` message and the
+        events to summarize as a ``user`` message. Splitting roles keeps the
+        steering instructions in the provider's ``instructions``/``system`` slot
+        and the event payload in the ``input``/``user`` slot, which is the
+        canonical shape for both the Chat Completions and Responses APIs.
+        """
+        prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+        system_prompt = render_template(prompt_dir, "summarizing_system.j2")
+        events_prompt = render_template(
+            prompt_dir, "summarizing_events.j2", events=event_strings
+        )
+        return [
+            Message(role="system", content=[TextContent(text=system_prompt)]),
+            Message(role="user", content=[TextContent(text=events_prompt)]),
+        ]
+
+    def _generate_condensation(
+        self,
+        forgotten_events: Sequence[LLMConvertibleEvent],
+        summary_offset: int,
+        max_event_str_length: int | None = None,
+    ) -> Condensation:
+        """Generate a condensation by using the condenser's LLM to summarize forgotten
+        events.
+
+        Args:
+            forgotten_events: The list of events to be summarized.
+            summary_offset: The index where the summary event should be inserted.
+            max_event_str_length: Optional maximum length for each event string. If
+                provided, event strings longer than this will be truncated.
+
+        Returns:
+            Condensation: The generated condensation object.
+
+        Raises:
+            ValueError: If forgotten_events is empty (0 events to condense).
+        """
+        assert len(forgotten_events) > 0, "No events to condense."
+
+        # Convert events to strings for the template
+        event_strings = [
+            maybe_truncate(str(forgotten_event), truncate_after=max_event_str_length)
+            for forgotten_event in forgotten_events
+        ]
+
+        messages = self._build_summary_messages(event_strings)
+
+        # Do not pass extra_body explicitly. The LLM handles forwarding
+        # litellm_extra_body only when it is non-empty.
+        try:
+            llm_response = self.llm.generate(messages=messages, store=False)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
+        # Extract summary from the LLMResponse message
+        summary = None
+        if llm_response.message.content:
+            first_content = llm_response.message.content[0]
+            if isinstance(first_content, TextContent):
+                summary = first_content.text
+
+        return Condensation(
+            forgotten_event_ids={event.id for event in forgotten_events},
+            summary=summary,
+            summary_offset=summary_offset,
+            llm_response_id=llm_response.id,
+        )
+
+    def _get_forgotten_events(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> tuple[Sequence[LLMConvertibleEvent], int]:
+        """Identify events to be forgotten and the summary offset.
+
+        Relies on the condensation reasons to determine how many events we need to drop
+        in order to maintain our resource constraints. Uses manipulation indices to
+        ensure forgetting ranges respect atomic unit boundaries.
+
+        Args:
+            view: The current view from which to identify forgotten events.
+            agent_llm: The LLM used by the agent, required for token-based calculations.
+
+        Returns:
+            A tuple of (events to forget, summary_offset).
+        """
+        reasons = self.get_condensation_reasons(view, agent_llm=agent_llm)
+        assert reasons != set(), "No condensation reasons found."
+
+        suffix_events_to_keep: set[int] = set()
+
+        if Reason.REQUEST in reasons:
+            target_size = len(view) // 2
+            suffix_events_to_keep.add(target_size - self.keep_first - 1)
+
+        if Reason.EVENTS in reasons:
+            target_size = self.max_size // 2
+            suffix_events_to_keep.add(target_size - self.keep_first - 1)
+
+        if Reason.TOKENS in reasons:
+            # Compute the number of tokens we need to eliminate to be under half the
+            # effective max_tokens value. We know both are not None here because we
+            # cannot have Reason.TOKENS without them.
+            max_tokens = self._effective_max_tokens(agent_llm)
+            assert max_tokens is not None
+            assert agent_llm is not None
+
+            total_tokens = get_total_token_count(view.events, agent_llm)
+            tokens_to_reduce = total_tokens - (max_tokens // 2)
+
+            suffix_events_to_keep.add(
+                get_suffix_length_for_token_reduction(
+                    events=view.events[self.keep_first :],
+                    llm=agent_llm,
+                    token_reduction=tokens_to_reduce,
+                    base_events=view.events[: self.keep_first],
+                )
+            )
+
+        # We might have multiple reasons to condense, so pick the strictest condensation
+        # to ensure all resource constraints are met.
+        events_from_tail = min(suffix_events_to_keep)
+
+        # Calculate naive forgetting end (without considering atomic boundaries)
+        naive_end = len(view) - events_from_tail
+
+        # The leading SystemPromptEvent must never be forgotten, otherwise the
+        # condensed view would open with a non-system message. Floor the start
+        # of the forgetting range just past it (this also covers keep_first=0).
+        protected_prefix = self.keep_first
+        system_idx = _leading_system_prompt_index(view.events)
+        if system_idx is not None:
+            protected_prefix = max(protected_prefix, system_idx + 1)
+
+        # Find actual forgetting_start: smallest manipulation index >= protected_prefix
+        forgetting_start = view.manipulation_indices.find_next(protected_prefix)
+
+        # Find actual forgetting_end: smallest manipulation index >= naive_end
+        forgetting_end = view.manipulation_indices.find_next(naive_end)
+
+        # Extract events to forget using boundary-aware indices
+        forgotten_events = view[forgetting_start:forgetting_end]
+
+        # Summary offset is the same as forgetting_start
+        return forgotten_events, forgetting_start
+
+    @observe(ignore_inputs=["view", "agent_llm"])
+    def hard_context_reset(
+        self,
+        view: View,
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> Condensation | None:
+        """Perform a hard context reset by summarizing all events in the view.
+
+        Depending on how the hard context reset is triggered, this may fail (e.g., if
+        the view is too large for the summarizing LLM to handle). In that case, we keep
+        trimming down the contents until a summary can be generated.
+        """
+        # Preserve the leading SystemPromptEvent: it must stay at the head of the
+        # view so the request still opens with a system message. Summarize the
+        # events *after* it and insert the summary right behind it.
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
+        max_event_str_length: int | None = None
+        attempts_remaining: int = self.hard_context_reset_max_retries
+
+        while attempts_remaining > 0:
+            try:
+                return self._generate_condensation(
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
+                    max_event_str_length=max_event_str_length,
+                )
+            except Exception as e:
+                # If we haven't set a max_event_str_length yet, set it as the largest
+                # event string length.
+                if max_event_str_length is None:
+                    max_event_str_length = max(len(str(event)) for event in view.events)
+
+                # Since the summarization failed, reduce the max_event_str_length by 20%
+                assert max_event_str_length is not None
+                max_event_str_length = int(
+                    max_event_str_length * self.hard_context_reset_context_scaling
+                )
+
+                # Log the exception so we can track these failures
+                logger.warning(
+                    f"Hard context reset summarization failed with exception: {e}. "
+                    f"Reducing max event size to {max_event_str_length} and retrying."
+                )
+
+            attempts_remaining -= 1
+
+        logger.error("Hard context reset summarization failed after multiple attempts.")
+        return None
+
+    @observe(ignore_inputs=["view", "agent_llm"])
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        # The condensation is dependent on the events we want to drop and the previous
+        # summary. If we fail to find an appropriate set of events to forget raise an
+        # exception so the conversation can keep going until conditions change.
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except ValueError as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
+
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for forgetting "
+                "events. Consider adjusting keep_first or max_size parameters."
+            )
+
+        if len(forgotten_events) < len(view) * self.minimum_progress:
+            raise NoCondensationAvailableException(
+                "Cannot apply condensation: events forgotten below minimum progress "
+                "threshold."
+            )
+
+        return self._generate_condensation(
+            forgotten_events=forgotten_events,
+            summary_offset=summary_offset,
+        )
+
+    # ------------------------------------------------------------------
+    # Async variants
+    # ------------------------------------------------------------------
+
+    async def _agenerate_condensation(
+        self,
+        forgotten_events: Sequence[LLMConvertibleEvent],
+        summary_offset: int,
+        max_event_str_length: int | None = None,
+    ) -> Condensation:
+        """Async variant of :meth:`_generate_condensation`."""
+        assert len(forgotten_events) > 0, "No events to condense."
+
+        event_strings = [
+            maybe_truncate(str(fe), truncate_after=max_event_str_length)
+            for fe in forgotten_events
+        ]
+
+        messages = self._build_summary_messages(event_strings)
+
+        try:
+            llm_response = await self.llm.agenerate(messages=messages, store=False)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
+        summary = None
+        if llm_response.message.content:
+            first_content = llm_response.message.content[0]
+            if isinstance(first_content, TextContent):
+                summary = first_content.text
+
+        return Condensation(
+            forgotten_event_ids={event.id for event in forgotten_events},
+            summary=summary,
+            summary_offset=summary_offset,
+            llm_response_id=llm_response.id,
+        )
+
+    async def aget_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        """Async variant of :meth:`get_condensation`."""
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except ValueError as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
+
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for "
+                "forgetting events. Consider adjusting keep_first or max_size "
+                "parameters."
+            )
+
+        if len(forgotten_events) < len(view) * self.minimum_progress:
+            raise NoCondensationAvailableException(
+                "Cannot apply condensation: events forgotten below minimum "
+                "progress threshold."
+            )
+
+        return await self._agenerate_condensation(
+            forgotten_events=forgotten_events,
+            summary_offset=summary_offset,
+        )
+
+    async def ahard_context_reset(
+        self,
+        view: View,
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> Condensation | None:
+        """Async variant of :meth:`hard_context_reset`."""
+        # Preserve the leading SystemPromptEvent (see hard_context_reset).
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
+        max_event_str_length: int | None = None
+        attempts_remaining: int = self.hard_context_reset_max_retries
+
+        while attempts_remaining > 0:
+            try:
+                return await self._agenerate_condensation(
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
+                    max_event_str_length=max_event_str_length,
+                )
+            except Exception as e:
+                if max_event_str_length is None:
+                    max_event_str_length = max(len(str(ev)) for ev in view.events)
+                assert max_event_str_length is not None
+                max_event_str_length = int(
+                    max_event_str_length * self.hard_context_reset_context_scaling
+                )
+                logger.warning(
+                    f"Hard context reset summarization failed: {e}. "
+                    f"Reducing max event size to {max_event_str_length}."
+                )
+            attempts_remaining -= 1
+
+        logger.error("Hard context reset summarization failed after multiple attempts.")
+        return None
+
+
+# Sizing for the standard summarizing condenser. Kept here so the default agent and
+# spawned sub-agents stay in sync.
+_DEFAULT_MAX_SIZE: Final[int] = 80
+_DEFAULT_KEEP_FIRST: Final[int] = 4
+
+
+def default_condenser(llm: LLM) -> LLMSummarizingCondenser:
+    """Standard summarizing condenser used by the default agent and sub-agents."""
+    return LLMSummarizingCondenser(
+        llm=llm, max_size=_DEFAULT_MAX_SIZE, keep_first=_DEFAULT_KEEP_FIRST
+    )

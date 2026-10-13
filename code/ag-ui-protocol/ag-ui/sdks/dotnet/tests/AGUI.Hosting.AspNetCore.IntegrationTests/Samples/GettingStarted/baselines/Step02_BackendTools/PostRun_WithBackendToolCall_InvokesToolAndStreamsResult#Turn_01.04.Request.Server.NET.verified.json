@@ -1,0 +1,14 @@
+﻿{
+  "messages": [
+    {
+      "role": "user",
+      "contents": [
+        {
+          "$type": "text",
+          "text": "Find Italian restaurants in Seattle"
+        }
+      ],
+      "messageId": ""
+    }
+  ]
+}

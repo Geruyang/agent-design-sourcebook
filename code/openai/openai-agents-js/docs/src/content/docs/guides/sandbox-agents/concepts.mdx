@@ -1,0 +1,458 @@
+---
+title: Concepts
+description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import harnessWithCompute from '../../../../assets/images/harness_with_compute.png';
+import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+import developerOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
+import manifestExample from '../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
+import pathGrantsExample from '../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
+import sdkOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
+
+Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** can make use of specialized tools and shell commands to search over and manipulate large document sets, edit files, generate artifacts, and run commands. The sandbox provides the model with a persistent workspace that the agent can use to do work on your behalf. Sandbox Agents in the Agents SDK help you run agents paired with a sandbox environment, making it easy to get the right files on the filesystem and orchestrate sandboxes to start, stop, and resume tasks at scale.
+
+You define the workspace around the data the agent needs. A fresh workspace can be populated from GitHub repos, local files and directories, synthetic task files, remote filesystems such as S3 or Azure Blob Storage, and other sandbox inputs you provide.
+
+<figure class="sandbox-harness-image">
+  <img src={harnessWithCompute.src} alt="Sandbox agent harness with compute" />
+</figure>
+
+`SandboxAgent` extends `Agent`, so it is still an `Agent`. It keeps the usual agent surface such as `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, output types, guardrails, and hooks, and it still runs through the normal `run()` and `Runner` APIs. What changes is the execution boundary:
+
+- `SandboxAgent` defines the agent itself: the usual agent configuration plus sandbox-specific defaults like `defaultManifest`, `baseInstructions`, `runAs`, and capabilities such as filesystem tools, shell access, skills, memory, or compaction.
+- `Manifest` declares the desired starting contents and layout for a fresh sandbox workspace, including files, repos, mounts, and environment.
+- A sandbox session is the live execution environment where commands run and files change.
+- The `sandbox` run option decides how the run gets that sandbox session, for example by injecting one directly, reconnecting from serialized sandbox session state, or creating a fresh sandbox session through a sandbox client.
+- Saved sandbox state and snapshots let later runs reconnect to prior work or seed a fresh sandbox session from saved contents.
+
+`Manifest` defines the starting contents for a new sandbox workspace. It does not describe the current files in every live sandbox, because reused sessions, serialized session state, and snapshots can all provide or change the workspace at run time.
+
+Throughout this page, "sandbox session" means the live execution environment managed by a sandbox client. The exact boundary depends on the client and configuration: Unix-local sessions run host processes without adding OS-level confinement on macOS or Linux, while Docker and hosted clients use container or provider-managed execution environments. This is different from the SDK's conversational `Session` interfaces described in [Sessions](/openai-agents-js/guides/sessions).
+
+The outer runtime still owns approvals, tracing, handoffs, and resume bookkeeping. The sandbox session manages commands and file changes. The backend and configuration determine the isolation provided by the execution environment.
+
+### How the pieces fit together
+
+A sandbox run combines an agent definition with per-run sandbox configuration. The runner prepares the agent, binds it to a live sandbox session, and can save state for later runs.
+
+<div
+  class="sandbox-flow-diagram"
+  aria-label="SandboxAgent and sandbox run configuration flow into the runner, which uses a sandbox session and can save state or snapshots."
+>
+  <div>
+    <strong>SandboxAgent</strong>
+    <span>Agent plus sandbox defaults</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Runner</strong>
+    <span>Prepare instructions and bind capability tools</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Sandbox session</strong>
+    <span>Workspace where commands run and files change</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Saved state</strong>
+    <span>Resume later or seed a fresh workspace</span>
+  </div>
+</div>
+
+Sandbox-specific defaults stay on `SandboxAgent`. Per-run sandbox-session choices stay in the `sandbox` run option.
+
+Think about the lifecycle in three phases:
+
+1. Define the agent and starting workspace contents with `SandboxAgent`, `Manifest`, and capabilities.
+2. Execute a run by giving `run()` or `Runner` a `sandbox` run option that injects, resumes, or creates the sandbox session.
+3. Continue later from runner-managed `RunState`, explicit sandbox `sessionState`, or a saved workspace snapshot.
+
+If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace management, sandbox client choice, or sandbox-session resume behavior are part of the design.
+
+## When to use them
+
+Sandbox agents are a good fit for workspace-centric workflows, for example:
+
+- **Coding and debugging**: orchestrate automated fixes for issue reports in a GitHub repo and run targeted tests.
+- **Document processing and editing**: extract information from a user's financial documents and create a completed tax-form draft.
+- **File-grounded review or analysis**: check onboarding packets, generated reports, or artifact bundles before answering.
+- **Isolated multi-agent patterns**: give each reviewer or coding sub-agent its own workspace.
+- **Multi-step workspace tasks**: fix a bug in one run and add a regression test later, or resume from snapshot or sandbox session state.
+
+If you do not need access to files or a living filesystem, keep using `Agent`. If shell access is just one occasional capability, add hosted shell; if the workspace boundary itself is part of the feature, use sandbox agents.
+
+## Choose a sandbox client
+
+Use `UnixLocalSandboxClient` for trusted local development on macOS or Linux, or within an externally isolated environment. Unix-local workspaces, working directories, and the `HOME` environment variable do not provide OS-level confinement. For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted provider, or supply external isolation. On Windows, use Docker or a hosted provider. See [Unix-local execution limits](/openai-agents-js/guides/sandbox-agents/clients#local-clients).
+
+In most cases, the `SandboxAgent` definition stays the same while the sandbox client and its options change in the `sandbox` run option. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients) for local, Docker, hosted, and remote-mount options.
+
+## Core pieces
+
+| Layer | Main SDK pieces | What it answers |
+| --- | --- | --- |
+| Agent definition | `SandboxAgent`, `Manifest`, capabilities | What agent will run, and what fresh-session workspace contract should it start from? |
+| Sandbox execution | `sandbox` run option, the sandbox client, and the live sandbox session | How does this run get a live sandbox session, and where does the work execute? |
+| Saved sandbox state | `RunState` sandbox payload, `sessionState`, and snapshots | How does this workflow reconnect to prior sandbox work or seed a fresh sandbox session from saved contents? |
+
+The main SDK pieces map onto those layers like this:
+
+| Piece | What it owns | Ask this question |
+| --- | --- | --- |
+| `SandboxAgent` | The agent definition | What should this agent do, and which defaults should travel with it? |
+| `Manifest` | Fresh-session workspace files and folders | What files and folders should be present on the filesystem when the run starts? |
+| `Capability` | Sandbox-native behavior | Which tools, instruction fragments, or runtime behavior should attach to this agent? |
+| `sandbox` run option | Per-run sandbox client and sandbox-session source | Should this run inject, resume, or create a sandbox session? |
+| `RunState` | Runner-managed saved sandbox state | Am I resuming a prior runner-managed workflow and carrying its sandbox state forward automatically? |
+| `sandbox.sessionState` | Explicit serialized sandbox session state | Do I want to resume from sandbox state I already serialized outside `RunState`? |
+| `sandbox.snapshot` | Saved workspace contents for fresh sandbox sessions | Should a new sandbox session start from saved files and artifacts? |
+
+A practical design order is:
+
+1. Define the fresh-session workspace contract with a `Manifest` or manifest init object.
+2. Define the agent with `SandboxAgent`.
+3. Add built-in or custom capabilities.
+4. Decide how each run should obtain its sandbox session in `run(agent, input, { sandbox: ... })` or `new Runner({ sandbox: ... })`.
+
+## How a sandbox run is prepared
+
+At run time, the runner turns that definition into a concrete sandbox-backed run:
+
+1. It resolves the sandbox session from the `sandbox` run option.
+2. It determines the effective workspace inputs for the run.
+3. It lets capabilities process the resulting manifest.
+4. It builds the final instructions in a fixed order: the SDK's default sandbox prompt, or `baseInstructions` if you explicitly override it, then `instructions`, then capability instruction fragments, then any remote-mount policy text, then a rendered filesystem tree.
+5. It binds capability tools to the live sandbox session and runs the prepared agent through the normal `run()` and `Runner` APIs.
+
+Sandboxing does not change what a turn means. A turn is still a model step, not a single shell command or sandbox action. There is no fixed 1:1 mapping between sandbox-side operations and turns. As a practical rule, another turn is consumed only when the agent runtime needs another model response after sandbox work has happened.
+
+## `SandboxAgent` options
+
+These are the sandbox-specific options on top of the usual `Agent` fields:
+
+| Option | Best use |
+| --- | --- |
+| `defaultManifest` | The default workspace for fresh sandbox sessions created by the runner. |
+| `instructions` | Additional role, workflow, and success criteria appended after the SDK sandbox prompt. |
+| `baseInstructions` | Advanced escape hatch that replaces the SDK sandbox prompt. |
+| `capabilities` | Sandbox-native tools and behavior that should travel with this agent. |
+| `runAs` | User identity for model-facing sandbox tools such as shell commands, file reads, and patches. |
+
+Sandbox client choice, sandbox-session reuse, manifest override, and snapshot selection belong in the `sandbox` run option, not on the agent.
+
+### `defaultManifest`
+
+`defaultManifest` is the default workspace used when the runner creates a fresh sandbox session for this agent. Pass either a `Manifest` instance or the same init object you would pass to `new Manifest(...)`. Use it for the files, repos, helper material, output directories, and mounts the agent should usually start with.
+
+`defaultManifest` provides only the default workspace. A run can override `defaultManifest` with `sandbox.manifest`, and a reused or resumed sandbox session keeps its existing workspace state.
+
+<Code lang="typescript" code={manifestExample} title="Define a manifest" />
+
+### `instructions` and `baseInstructions`
+
+Use `instructions` for short rules that should survive different prompts. In a `SandboxAgent`, these instructions are appended after the SDK's sandbox base prompt, so you keep the built-in sandbox guidance and add your own role, workflow, and success criteria.
+
+Use `baseInstructions` only when you want to replace the SDK sandbox base prompt. Most agents should not set it.
+
+| Put it in... | Use it for | Examples |
+| --- | --- | --- |
+| `instructions` | Stable role, workflow rules, and success criteria for the agent. | "Inspect onboarding documents, then hand off.", "Write final files into `output/`." |
+| `baseInstructions` | A full replacement for the SDK sandbox base prompt. | Custom low-level sandbox wrapper prompts. |
+| the user prompt | The one-off request for this run. | "Summarize this workspace." |
+| workspace files in the manifest | Longer task specs, repo-local instructions, or bounded reference material. | `repo/task.md`, document bundles, sample packets. |
+
+Avoid copying the user's one-off task into `instructions`, embedding long reference material that belongs in the manifest, restating tool docs that built-in capabilities already inject, or mixing in local installation notes the model does not need at run time.
+
+### `capabilities`
+
+Capabilities attach sandbox-native behavior to a `SandboxAgent`. They can shape the workspace before a run starts, append sandbox-specific instructions, expose tools that bind to the live sandbox session, and adjust model behavior or input handling for that agent.
+
+Built-in capabilities include:
+
+| Capability | Add it when | Notes |
+| --- | --- | --- |
+| `shell()` | The agent needs shell access. | Adds `exec_command`, plus `write_stdin` when the sandbox client supports PTY interaction. |
+| `filesystem()` | The agent needs to edit files or inspect local images. | Adds `apply_patch` and `view_image`; relative paths start at the workspace root by default or at `sandbox.cwd` when configured. |
+| `skills()` | You want skill discovery and materialization in the sandbox. | Prefer this over mounting `.agents` or `.agents/skills` manually for sandbox-local `SKILL.md` skills. |
+| `memory()` | Follow-on runs should read or generate memory artifacts. | Requires `shell()`; live updates also require `filesystem()`. |
+| `compaction()` | Long-running flows need context trimming after compaction items. | Adjusts model sampling and input handling. |
+
+By default, `SandboxAgent.capabilities` uses `Capabilities.default()`, which includes `filesystem()`, `shell()`, and `compaction()`. If you pass `capabilities: [...]`, that list replaces the default, so include any default capabilities you still want.
+
+`view_image` accepts PNG, JPEG, GIF, WebP, BMP, TIFF, and SVG images up to 10 MB. The SDK detects raster formats from file signatures instead of trusting raster filename extensions, so a raster extension alone does not make unsupported bytes valid. The SDK recognizes SVG from its contents or an `.svg` or `.svgz` filename.
+
+`compaction()` uses `DynamicCompactionPolicy` by default. For a recognized model, the policy asks the Responses API to compact when the rendered context reaches 90% of that model's context window. If the model is missing or unknown, the policy uses a fallback threshold of 240,000 tokens. Pass a different ratio and fallback threshold to `new DynamicCompactionPolicy(thresholdRatio, fallbackThreshold)`, or use `new StaticCompactionPolicy(threshold)` when every supported model should use one fixed token threshold. A dynamic ratio must be a finite number from `0` through `1`.
+
+When server-side compaction produces a compaction item, the capability keeps that item and later input while dropping older replayed items. The compaction item is opaque model state rather than a human-readable summary, so pass it forward without editing it. These controls apply only to model transports that support Responses compaction.
+
+## Concepts
+
+### Manifest
+
+A `Manifest` describes the workspace for a fresh sandbox session. It can set the workspace `root`, declare files and directories, copy in local files, clone Git repos, attach remote storage mounts, set environment variables, define users or groups, and grant access to specific absolute paths outside the workspace.
+
+Manifest environment values are persisted by default. Use ephemeral entries such as `{ value: "...", ephemeral: true }` for API keys, access tokens, or other short-lived credentials that should not be saved with sandbox state.
+
+For secrets that must be looked up again when a manifest is materialized or resumed, subclass `EnvValueReference` and register it with `registerEnvValueReference()`. A reference persists only non-secret lookup metadata and resolves the current runtime value through `resolve()`. Each subclass must declare its own stable, non-empty static `type`, and `serialize()` must not include the reserved `value` field. Register the parser in every process before reconstructing manifests, and have the parser validate and allowlist lookup keys. Resuming persisted `RunState` environment references requires a current trusted manifest with corresponding reference entries; otherwise the SDK rejects the resume before restoring the session.
+
+Manifest entry paths are workspace-relative. They cannot be absolute paths or escape the workspace with `..`, which keeps the workspace contract portable across local, Docker, and hosted clients.
+
+Use manifest entries for the material the agent needs before work begins:
+
+| Manifest entry | Use it for |
+| --- | --- |
+| `file()`, `dir()` | Small synthetic inputs, helper files, or output directories. |
+| `localFile()`, `localDir()` | Host files or directories that should be materialized into the sandbox. |
+| `gitRepo()` | A repository that should be fetched into the workspace. |
+| mounts such as `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `s3FilesMount()` | External storage that should appear inside the sandbox. |
+
+For local materialization, `localFile()` and `localDir()` source paths must stay inside the local source base directory. The default base is the current working directory of your Node process, and local sandbox clients may provide a client-specific base when they materialize entries. If a source must come from another absolute host directory, add the smallest necessary `Manifest.extraPathGrants` entry.
+
+`extraPathGrants` is also used by local lazy skill discovery. A `localDirLazySkillSource()` that points outside the source base directory is ignored unless the manifest grants that directory. Prefer `readOnly: true` for input bundles such as shared skills, datasets, and reference repositories.
+
+Each path grant has a sandbox path and, when needed, a separate host path:
+
+- `path` is the absolute POSIX path visible inside the sandbox.
+- `hostPath` is an optional absolute native host path used when the host and sandbox paths differ. On Windows it must be drive-qualified; UNC and device paths are not supported.
+
+`UnixLocalSandboxClient` requires the host and sandbox paths to be the same, so omit `hostPath` there. `DockerSandboxClient` supports a separate `hostPath` when the grant is present in the manifest used to create the container. It cannot add or change that mapping on an already-running container. A Docker command can use a create-time granted sandbox path as its `workdir`; paths outside the workspace and configured grants remain rejected.
+
+For Unix-local sessions, these grants govern access to local sources through the SDK and paths accessed by SDK file APIs. A `readOnly: true` grant prevents SDK file API writes to the granted path. The grants do not constrain arbitrary shell commands on macOS or Linux: commands can access host paths allowed by the process's permissions and external isolation, even when those paths have no grant.
+
+<Code
+  lang="typescript"
+  code={pathGrantsExample}
+  title="Grant a shared local source"
+/>
+
+Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients#mounts-and-remote-storage) for mount options and provider support.
+
+### Permissions
+
+`Permissions` controls filesystem permissions for manifest entries. It is about the files the sandbox materializes, not model permissions, approval policy, or API credentials.
+
+Users are the sandbox identities that can execute work. Add a user to the manifest when you want that identity to exist in the sandbox, then set `SandboxAgent.runAs` when model-facing sandbox tools such as shell commands, file reads, and patches should run as that user.
+
+If you also need file-level sharing rules, combine users with manifest groups and entry `group` metadata. The `runAs` user controls who executes sandbox-native actions; `Permissions` controls which files that user can read, write, or execute once the sandbox has materialized the workspace.
+
+### SnapshotSpec
+
+`SnapshotSpec` tells a fresh sandbox session where saved workspace contents should be restored from and persisted back to. It is the snapshot policy for the sandbox workspace, while `sessionState` is the serialized connection state for resuming a specific sandbox backend.
+
+Use local snapshots for local durable snapshots and remote snapshots when your app provides a remote snapshot client. Mounted and ephemeral paths are not copied into snapshots as durable workspace contents. During hydration, the SDK rejects archive members that overlap any protected mounted or ephemeral path before writing the archive into the workspace. If the workspace root itself is ephemeral, only an empty archive can be hydrated.
+
+### Sandbox lifecycle
+
+There are two lifecycle modes: **SDK-owned** and **developer-owned**.
+
+<div
+  class="sandbox-lifecycle-diagram"
+  aria-label="SDK-owned lifecycle lets the runner create and close the sandbox. Developer-owned lifecycle keeps creation and cleanup in application code."
+>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>SDK-owned</strong>
+      <span>Runner owns the live sandbox.</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <span class="sandbox-lifecycle-step">
+          Pass <code>sandbox.client</code>.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <span class="sandbox-lifecycle-step">
+          Runner creates or resumes a sandbox session.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <span class="sandbox-lifecycle-step">
+          Agent runs and snapshot-backed workspace state can persist.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <span class="sandbox-lifecycle-step">
+          Runner closes runner-owned resources.
+        </span>
+      </li>
+    </ol>
+  </section>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>Developer-owned</strong>
+      <span>Your application owns the live sandbox.</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <span class="sandbox-lifecycle-step">
+          Create a <code>session</code>.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <span class="sandbox-lifecycle-step">
+          Pass <code>sandbox.session</code> into the run.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <span class="sandbox-lifecycle-step">
+          Agent uses the existing workspace.
+        </span>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <span class="sandbox-lifecycle-step">
+          Inspect, reuse, then close the session yourself.
+        </span>
+      </li>
+    </ol>
+  </section>
+</div>
+
+Use SDK-owned lifecycle when the sandbox only needs to live for one run. Pass a `client`, optional `manifest`, optional `snapshot`, and client `options`; the runner creates or resumes the sandbox, runs the agent, persists snapshot-backed workspace state, and lets the client clean up runner-owned resources.
+
+<Code
+  lang="typescript"
+  code={sdkOwnedLifecycleExample}
+  title="Let the runner manage the sandbox session"
+/>
+
+Use developer-owned lifecycle when you want to eagerly create a sandbox, reuse one live sandbox across multiple runs, inspect files after a run, stream over a sandbox you created yourself, or decide exactly when cleanup happens. Passing `session` tells the runner to use that live sandbox, but not to close it for you.
+
+<Code
+  lang="typescript"
+  code={developerOwnedLifecycleExample}
+  title="Manage the sandbox session yourself"
+/>
+
+### Observe sandbox operations
+
+Sandbox operation events provide process-wide observability for runner-managed sandbox work. Register a `SandboxEventSink` with `addSandboxEventSink()` to receive `sandbox_operation` events. Each operation emits a `start` phase followed by either `end` or `error`; terminal events include the duration, and error events include normalized error details such as a code or retryability when the provider exposes them.
+
+When a run configures `sandbox.cwd`, `sandbox.exec` event data reports the effective cwd-anchored `workdir`, and `sandbox.view_image` event data reports the effective cwd-anchored `path`. These values match the paths sent to the sandbox session.
+
+Use `createSandboxJsonlEventSink()` to write one event per JSONL line, `createSandboxHttpEventSink()` to send each event as an HTTP `POST`, or `createChainedSandboxEventSink()` to fan out to several sinks. `addSandboxEventSink()` returns a removal function; call it when the application no longer needs that sink, or use `clearSandboxEventSinks()` to remove all registered sinks.
+
+Event sinks are observational. The SDK waits for the registered sinks to settle, but a sink failure does not replace the sandbox operation's result or error. Handle delivery retries, buffering, and sink-specific failures inside the sink when your application requires stronger delivery guarantees.
+
+## `sandbox` run options
+
+The `sandbox` run option holds the per-run options that decide where the sandbox session comes from and how a fresh session should be initialized.
+
+### Sandbox source
+
+These options decide whether the runner should reuse, resume, or create the sandbox session:
+
+| Option | Use it when | Notes |
+| --- | --- | --- |
+| `client` | You want the runner to create, resume, and clean up sandbox sessions for you. | Required unless you provide a live sandbox `session`. |
+| `session` | You already created a live sandbox session yourself. | The caller owns lifecycle; the runner reuses that live sandbox session. |
+| `sessionState` | You have serialized sandbox session state but not a live sandbox session object. | Requires `client`; the runner resumes from that explicit state as an owning session. |
+
+### Working directory
+
+Set `cwd` on the `sandbox` run config to make a workspace-relative directory the working directory for that run. The built-in `exec_command`, `view_image`, and `apply_patch` tools resolve relative paths from this directory; other sandbox tools keep their own path contracts. The setting changes path resolution but does not isolate the run from the rest of the session workspace.
+
+The value must be a non-empty, workspace-relative POSIX path. Absolute paths, backslashes, and parent (`..`) segments are rejected. Before every model turn, the runner checks that the directory exists and is accessible for the sandbox agent's `runAs` identity. A custom or injected session used with `cwd` must implement `directoryExists()`.
+
+### Fresh-session inputs
+
+These options only matter when the runner is creating a fresh sandbox session:
+
+| Option | Use it when | Notes |
+| --- | --- | --- |
+| `manifest` | You want a one-off fresh-session workspace override. | Accepts a `Manifest` or manifest init object. Falls back to `agent.defaultManifest` when omitted. |
+| `snapshot` | A fresh sandbox session should be seeded from a snapshot. | Useful for resume-like flows or remote snapshot clients. |
+| `options` | The sandbox client needs creation-time options. | Common for Docker images, provider timeouts, and similar client-specific settings. |
+
+`concurrencyLimits` controls how much sandbox materialization work can run in parallel. Use `manifestEntries` and `localDirFiles` when large manifests or local directory copies need tighter resource control.
+
+### Materialization controls
+
+Materialization controls are intentionally per-run. Keep them near the `sandbox` run option so the same `SandboxAgent` can use conservative limits for large local directory copies and looser limits for small manifests.
+
+Use `concurrencyLimits.manifestEntries` when a manifest has many independent entries such as files, directories, repos, and mounts. Use `concurrencyLimits.localDirFiles` when `localDir()` entries contain many files and local copy pressure needs to be capped.
+
+### Archive safety limits
+
+Use `archiveLimits` to cap archive input bytes, extracted bytes, and member count during workspace hydration and resume. Passing an empty object enables the defaults: 1 GiB of archive input, 4 GiB extracted, and 100,000 members. Set an individual field to `null` to disable only that limit. Omitting `archiveLimits`, or setting the whole option to `null`, disables archive limits entirely.
+
+## Full example: coding task
+
+This coding-style example is a good default starting point:
+
+<Code lang="typescript" code={basicExample} title="Sandbox coding task" />
+
+## Common patterns
+
+Start from the full example above. In many cases, the same `SandboxAgent` can stay intact while only the sandbox client, sandbox-session source, or workspace source changes.
+
+### Switch sandbox clients
+
+Keep the agent definition the same and change only the run config. Use Docker when you want container isolation or image parity, or a hosted provider when you want provider-managed execution. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients) for examples and provider options.
+
+### Override the workspace
+
+Keep the agent definition the same and swap only the fresh-session manifest with `sandbox: { client, manifest }`. Use this when the same agent role should run against different repos, packets, or task bundles without rebuilding the agent.
+
+### Inject a sandbox session
+
+Inject a live sandbox session when you need explicit lifecycle control, post-run inspection, or output copying. Use `sandbox: { session }` for that run, and close the session in your application code.
+
+### Resume from session state
+
+If you already serialized sandbox state outside `RunState`, let the runner reconnect from that state with `sandbox: { client, sessionState }`. Use this when sandbox state lives in your own storage or job system and you want `Runner` to resume from it directly.
+
+### Start from a snapshot
+
+Seed a new sandbox from saved files and artifacts with `sandbox: { client, snapshot }`. Use this when a fresh run should start from saved workspace contents rather than only `agent.defaultManifest`.
+
+### Load skills from Git
+
+Swap the local skill source for a repository-backed one with `skills({ from: gitRepo(...) })`. Use this when the skills bundle has its own release cadence or should be shared across sandboxes.
+
+### Expose as tools
+
+Tool-agents can either get their own sandbox session or reuse a live sandbox from the parent run. Reuse is useful for an explorer agent that only needs to inspect the parent's workspace without paying to create, hydrate, or snapshot another sandbox. Sharing a session does not itself enforce read-only access.
+
+Give a tool-agent its own `runConfig` through `sandboxAgent.asTool(...)` when the tool-agent needs a separate workspace, backend, or image. For untrusted commands, choose a backend and configuration that provide the required isolation. A separate Unix-local session alone does not provide OS-level confinement.
+
+### Combine with local tools and MCP
+
+Keep the sandbox workspace while still using ordinary tools on the same agent. Sandbox capabilities can coexist with `tools`, `mcpServers`, handoffs, model settings, and output configuration.
+
+## Memory
+
+Use the `memory()` capability when future sandbox-agent runs should learn from prior runs. Memory is separate from the SDK's conversational `Session` memory: it distills lessons into files inside the sandbox workspace, then later runs can read those files.
+
+See [Agent memory](/openai-agents-js/guides/sandbox-agents/memory) for setup, read/generate behavior, multi-turn conversations, and layout isolation.
+
+## Composition patterns
+
+Once the single-agent pattern is clear, the next design question is where the sandbox boundary belongs in a larger system.
+
+Sandbox agents still compose with the rest of the SDK:
+
+- [Handoffs](/openai-agents-js/guides/handoffs): hand document-heavy work from a non-sandbox intake agent into a sandbox reviewer.
+- [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools): expose multiple sandbox agents as tools, usually by passing a sandbox run config on each `asTool(...)` call so each tool gets its own session. The backend and configuration determine the isolation provided by each session.
+- [MCP](/openai-agents-js/guides/mcp) and normal function tools: sandbox capabilities can coexist with `mcpServers` and ordinary tools.
+- [Running agents](/openai-agents-js/guides/running-agents): sandbox runs still use the normal `run()` and `Runner` APIs.
+
+With a handoff, there is still one top-level run and one top-level turn loop. The active agent changes, but the run does not become nested.
+
+With `asTool(...)`, the relationship is different. The outer orchestrator uses one outer turn to decide to call the tool, and that tool call starts a nested run for the sandbox agent. The nested run has its own turn loop, `maxTurns`, approvals, and usually its own sandbox run config. From the outer orchestrator's point of view, all of that work still sits behind one tool invocation, so the nested turns do not increment the outer run's turn counter.
+
+## Further reading
+
+- [Quickstart](/openai-agents-js/guides/sandbox-agents): get one sandbox agent running.
+- [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients): choose local, Docker, hosted, and mount options.
+- [Agent memory](/openai-agents-js/guides/sandbox-agents/memory): preserve and reuse lessons from prior sandbox runs.

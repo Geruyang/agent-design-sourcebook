@@ -1,0 +1,1884 @@
+[
+  {
+    "key": "adobe-experience-manager",
+    "name": "Adobe Experience Manager",
+    "description": "Manage your Adobe Experience Manager content",
+    "url": "https://mcp.adobeaemcloud.com/adobe/mcp/aem",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/adobe-experience-manager",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f24b64e8d71dfd92fdd8d2_Adobe_icon_RGB_red%20%283%29%20-%20Sarah%20Xu.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "airops",
+    "name": "AirOps",
+    "description": "Create and optimize content for AI search.",
+    "url": "https://app.airops.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.airops.com/mcp",
+    "logo_url": "https://integrations.sh/logo/airops.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "airtable",
+    "name": "Airtable",
+    "description": "Bases, records, comments, and workspace schemas",
+    "url": "https://mcp.airtable.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+    "logo_url": "https://cdn.simpleicons.org/airtable",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "airwallex",
+    "name": "Airwallex",
+    "description": "Access Airwallex platform APIs.",
+    "url": "https://mcp-demo.airwallex.com/developer",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/airwallex",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6977ee686ffe1cb730e94f07_Airwallex%20Mark%20-%20Colour%20-%20Square.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "aiwyn-tax",
+    "name": "Aiwyn Tax",
+    "description": "Estimate your federal & state taxes with Aiwyn's tax engine",
+    "url": "https://mcp.columnapi.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/aiwyn-tax",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69c05a2e0f10f41c8f005ee0_Aiwyn_Logo_Mark_Square%20%281%29.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "alltrails",
+    "name": "AllTrails",
+    "description": "Find your next hike",
+    "url": "https://www.alltrails.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/alltrails",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f517432a0d2180dc70610b_alltrails.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "amplitude",
+    "name": "Amplitude",
+    "description": "Analytics, experiments, cohorts, and tracking plans",
+    "url": "https://mcp.amplitude.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://amplitude.com/docs/amplitude-ai/amplitude-mcp",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690abdac9a60d37ccbb9f396_Amplitude.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "apollo-io",
+    "name": "Apollo.io",
+    "description": "Contacts, companies, sales engagement",
+    "url": "https://mcp.apollo.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://knowledge.apollo.io/hc/en-us/articles/43827318678541-Integrate-Apollo-with-Claude",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "asana",
+    "name": "Asana",
+    "description": "Work with tasks, projects, and portfolios.",
+    "url": "https://mcp.asana.com/v2/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+    "logo_url": "https://svgl.app/library/asana-logo.svg",
+    "requirements": "Create an Asana MCP app, register the displayed redirect URI, and distribute it to your workspace."
+  },
+  {
+    "key": "atlassian",
+    "name": "Atlassian",
+    "description": "Work with Jira and Confluence using an Atlassian API token.",
+    "url": "https://mcp.atlassian.com/v2/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server/",
+    "logo_url": "https://svgl.app/library/atlassian.svg",
+    "requirements": "Requires Jira or Confluence Cloud access. Your organization administrator may need to allow the connection."
+  },
+  {
+    "key": "attio",
+    "name": "Attio",
+    "description": "CRM records, notes, tasks",
+    "url": "https://mcp.attio.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.attio.com/mcp/overview",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "aurora",
+    "name": "Aurora",
+    "description": "Search your Consilio matters, docs, and more.",
+    "url": "https://mcp.ai.consilio.com",
+    "auth": "oauth",
+    "documentation_url": "https://mcp-docs.ai.consilio.com/docs/quickstart/",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b70a38d8e2b6e8fa1f71_consilio%20%281%29.svg",
+    "requirements": "Requires a Consilio Aurora account."
+  },
+  {
+    "key": "autodesk-product-help",
+    "name": "Autodesk Product Help",
+    "description": "Securely access Autodesk's help documentation",
+    "url": "https://developer.api.autodesk.com/knowledge/public/v1/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/autodesk-product-help",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f518707047601013a4983f_autodesk%20%281%29.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "base44",
+    "name": "Base44",
+    "description": "AI app building, backend, data",
+    "url": "https://app.base44.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.base44.com/developers/backend/overview/mcp-server",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "blockscout",
+    "name": "Blockscout",
+    "description": "Access and analyze blockchain data",
+    "url": "https://mcp.blockscout.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/blockscout",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69409abb57bdbb7a4d76fdda_blockscout.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "calendly",
+    "name": "Calendly",
+    "description": "Scheduling, events, and availability",
+    "url": "https://mcp.calendly.com",
+    "auth": "oauth",
+    "documentation_url": "https://help.calendly.com/hc/en-us/articles/36734570264855-Connect-Calendly-to-your-AI-tools-with-Calendly-MCP",
+    "logo_url": "https://svgl.app/library/calendly.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "campfire",
+    "name": "Campfire",
+    "description": "Search, analyze, and export ERP data",
+    "url": "https://api.meetcampfire.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.campfire.ai/guides/ai-integration",
+    "logo_url": "https://integrations.sh/logo/campfire.ai",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "candid",
+    "name": "Candid",
+    "description": "Research nonprofits, funders, and grants",
+    "url": "https://mcp.candid.org/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://support.claude.com/en/articles/12923235-using-the-candid-connector-in-claude",
+    "logo_url": "https://integrations.sh/logo/candid.org",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "canva",
+    "name": "Canva",
+    "description": "Designs, assets, exports, comments",
+    "url": "https://mcp.canva.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.canva.dev/docs/mcp/",
+    "logo_url": "https://svgl.app/library/canva.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "carta",
+    "name": "Carta",
+    "description": "Manage private capital data.",
+    "url": "https://mcp.app.carta.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/carta",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a04e2ce40eb4ecd77629d6d_Carta%20Logo%20%281%29%20-%20Annette%20Faynburd.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "cash-app",
+    "name": "Cash App",
+    "description": "Discover local food spots and order with a conversation",
+    "url": "https://connect.squareup.com/v2/mcp/cash-app",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/cash-app",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f5028e3442688ab17daa5c_cash-app-green-jewel.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "cdata-connect-ai",
+    "name": "CData Connect AI",
+    "description": "Managed MCP access to 350+ data sources",
+    "url": "https://mcp.cloud.cdata.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://cloud.cdata.com/docs/Claude-Client.html",
+    "logo_url": "https://integrations.sh/logo/cdata.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "circleback",
+    "name": "Circleback",
+    "description": "Meeting notes, transcripts, action items",
+    "url": "https://app.circleback.ai/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://circleback.ai/docs/mcp",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "clarify",
+    "name": "Clarify",
+    "description": "Search CRM data and create records.",
+    "url": "https://api.clarify.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/clarify",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/698d1004171e3fb37688cf6e_clarify.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "clarity-ai",
+    "name": "Clarity AI",
+    "description": "Simulate fund classifications under proposed SFDR 2.0",
+    "url": "https://clarity-sfdr20-mcp.pro.clarity.ai/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/clarity-ai",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69addd1fbd98572d829d496b_clarity_ai.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "clay",
+    "name": "Clay",
+    "description": "Prospecting, enrichment, GTM workflows",
+    "url": "https://api.clay.com/v3/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.clay.com/",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "clerk",
+    "name": "Clerk",
+    "description": "Look up Clerk SDK documentation and snippets.",
+    "url": "https://mcp.clerk.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://clerk.com/docs/guides/ai/mcp/clerk-mcp-server",
+    "logo_url": "https://svgl.app/library/clerk-icon-light.svg",
+    "requirements": "Public Clerk SDK documentation tools; no account required."
+  },
+  {
+    "key": "clickup",
+    "name": "ClickUp",
+    "description": "Manage tasks, projects, and team collaboration.",
+    "url": "https://mcp.clickup.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+    "logo_url": "https://svgl.app/library/clickup.svg",
+    "requirements": "Requires access to a ClickUp workspace."
+  },
+  {
+    "key": "close",
+    "name": "Close",
+    "description": "CRM leads, calls, and pipelines",
+    "url": "https://mcp.close.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.close.com/v1/docs/en/mcp-server",
+    "logo_url": "https://integrations.sh/logo/close.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "cloudflare",
+    "name": "Cloudflare",
+    "description": "Workers, D1, R2, DNS, account APIs",
+    "url": "https://mcp.cloudflare.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://github.com/cloudflare/mcp",
+    "logo_url": "https://svgl.app/library/cloudflare.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "codex-resets",
+    "name": "Codex Resets",
+    "description": "Codex usage-limit resets and history",
+    "url": "https://codex-resets.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://codex-resets.com/",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "coindesk",
+    "name": "CoinDesk",
+    "description": "Access Live & Historical Crypto Data, Indices",
+    "url": "https://mcp.coindesk.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/coindesk",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f51a009621ccc50f144459_CoinDesk%20Logo%20-%20Toby%20Winterflood%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "common-room",
+    "name": "Common Room",
+    "description": "Community signals, GTM intelligence",
+    "url": "https://mcp.commonroom.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.commonroom.io/docs/using-common-room/common-room-for-claude-connector-and-plugin/",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "conductor",
+    "name": "Conductor",
+    "description": "Cloud workspaces, coding agents, sessions",
+    "url": "https://api.conductor.build/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.conductor.build/docs/api/mcp",
+    "logo_url": "https://www.conductor.build/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "contentsquare",
+    "name": "Contentsquare",
+    "description": "Experience analytics platform for digital businesses",
+    "url": "https://api.contentsquare.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/contentsquare",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f185f9227e35cac1f35817_CSQ%20-%20Favicon%20Square.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "context7",
+    "name": "Context7",
+    "description": "Look up current library documentation with your Context7 API key.",
+    "url": "https://mcp.context7.com/mcp",
+    "auth": "bearer",
+    "documentation_url": "https://context7.com/docs/resources/all-clients",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/698690879ec0fe5a8ed0e319_context7-icon-green.png",
+    "requirements": "Create a Context7 API key. Anonymous access is also available with lower limits."
+  },
+  {
+    "key": "control-plane",
+    "name": "Control Plane",
+    "description": "Multi-cloud workloads, GVCs, infrastructure",
+    "url": "https://mcp.cpln.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.controlplane.com/ai/mcp",
+    "logo_url": "https://github.com/controlplane-com.png?size=128",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "cortellis-regulatory-intelligence",
+    "name": "Cortellis Regulatory Intelligence",
+    "description": "Drug regulatory guidance, Clarivate",
+    "url": "https://api.clarivate.com/lifesciences/mcp-regulatory/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://api.clarivate.com/lifesciences/mcp-regulatory/documentation",
+    "logo_url": "https://cdn.simpleicons.org/clarivate",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "coupler-io",
+    "name": "Coupler.io",
+    "description": "Access business data from hundreds of sources",
+    "url": "https://mcp.coupler.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/coupler-io",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690abef0d363c9893d2b1511_coupler.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "courtlistener",
+    "name": "CourtListener",
+    "description": "Legal research across millions of court records",
+    "url": "https://mcp.courtlistener.com/",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/courtlistener",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b6cead61021be70a7f62_courtlistener.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "courtroom5",
+    "name": "Courtroom5",
+    "description": "Civil legal guidance for self-represented litigants",
+    "url": "https://mcp.courtroom5.com/v1",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/courtroom5",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b7c9fe9d6c948b934dda_C5-Icons-Outline-Orange%20-%20Sonja%20Ebron.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "crossbeam",
+    "name": "Crossbeam",
+    "description": "Explore partner data and ecosystem insights.",
+    "url": "https://mcp.crossbeam.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/crossbeam",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6913f587fda5ed6a14574a0a_crossbeam.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "daloopa",
+    "name": "Daloopa",
+    "description": "Financial fundamental data and KPIs with hyperlinks",
+    "url": "https://mcp.daloopa.com/server/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/daloopa",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69b05bb16cd6ba7130dc119f_Daloopa.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "day-ai",
+    "name": "Day AI",
+    "description": "Explore CRM contacts, prospects, and customers.",
+    "url": "https://day.ai/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/day-ai",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69a881c53b0a0800bff6afc8_day-ai.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "deepwiki",
+    "name": "DeepWiki",
+    "description": "Explore documentation for public repositories.",
+    "url": "https://mcp.deepwiki.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://docs.devin.ai/work-with-devin/deepwiki-mcp",
+    "requirements": "Public repository documentation; no account required."
+  },
+  {
+    "key": "definely",
+    "name": "Definely",
+    "description": "Structured contract review tools for legal teams",
+    "url": "https://mcp.eu.definely.com/api/proxy/core-mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/definely",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b8dec4d7c5ef10a90ecc_Definely%20Logo%20Symbol_AW%20-%20Shima%20Rashidi.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "descrybe-legal-engine",
+    "name": "Descrybe Legal Engine",
+    "description": "Ground your work in clean, structured U.S. primary law",
+    "url": "https://mcp.descrybe.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/descrybe-legal-engine",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b7f2a55395e024e4ad7b_Descrybe_SVG.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "devrev",
+    "name": "DevRev",
+    "description": "Search and update your company's knowledge graph",
+    "url": "https://api.devrev.ai/mcp/v1",
+    "auth": "bearer",
+    "documentation_url": "https://support.devrev.ai/en-US/devrev/article/ART-21859-remote-mcp-server",
+    "logo_url": "https://integrations.sh/logo/devrev.ai",
+    "requirements": "Supply a DevRev personal access token with the required organization permissions."
+  },
+  {
+    "key": "dice",
+    "name": "Dice",
+    "description": "Search active technology jobs",
+    "url": "https://mcp.dice.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://www.dice.com/about/mcp",
+    "logo_url": "https://integrations.sh/logo/dice.com",
+    "requirements": "Public job search; no account required."
+  },
+  {
+    "key": "digits",
+    "name": "Digits",
+    "description": "Track and analyze your finances with Digits",
+    "url": "https://api.digits.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/digits",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15b8886a591bfc458852c_Digits_Server_Logo.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "dovetail",
+    "name": "Dovetail",
+    "description": "Turn feedback into decisions",
+    "url": "https://dovetail.com/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/dovetail",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f1529651e90583ac17b70c_dovetail.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "enterpret",
+    "name": "Enterpret",
+    "description": "Get answers from unified feedback of your customers.",
+    "url": "https://wisdom-api.enterpret.com/server/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/enterpret",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f1895c29b60a1fd0dd67d9_enterpret-logo.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "eraser",
+    "name": "Eraser",
+    "description": "Generate, manage, and update Eraser diagrams and files",
+    "url": "https://app.eraser.io/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/eraser",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f81d0f8a9556d1bf7a4a6c_eraser.io.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "exa",
+    "name": "Exa",
+    "description": "Web Search + Code Docs Search",
+    "url": "https://mcp.exa.ai/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/exa",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f18bcc1f3b9556c6c58ab9_exa.jpeg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "excalidraw-app-demo",
+    "name": "Excalidraw",
+    "description": "MCP for creating interactive hand-drawn diagrams in Excalidraw",
+    "url": "https://excalidraw-mcp-app.vercel.app/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/excalidraw-app-demo",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/698b6d382644a53ecb859c9b_idJpJtW9KY_logos.png",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "factset",
+    "name": "FactSet",
+    "description": "Financial data and analytics",
+    "url": "https://mcp.factset.com/content/v1",
+    "auth": "oauth",
+    "documentation_url": "https://developer.factset.com/mcp/factset-ai-ready-data-mcp#connect-proprietary-mcp-client",
+    "logo_url": "https://developer.factset.com/favicon.ico",
+    "requirements": "Requires a FactSet account with the relevant data entitlements."
+  },
+  {
+    "key": "fathom",
+    "name": "Fathom",
+    "description": "Search meeting transcripts and summaries.",
+    "url": "https://api.fathom.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/fathom",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15b40f93248911c5249bc_fathom%20-%20Mike%20Nason.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "fellow-ai",
+    "name": "Fellow.ai",
+    "description": "Meeting transcripts, insights, and action items",
+    "url": "https://fellow.app/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.fellow.ai/en/articles/12622641-fellow-s-mcp-server",
+    "logo_url": "https://integrations.sh/logo/fellow.ai",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "fever-event-discovery",
+    "name": "Fever Event Discovery",
+    "description": "Discover live entertainment events worldwide",
+    "url": "https://data-search.apigw.feverup.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/fever-event-discovery",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69b4bb49b243700a3cd55721_fever.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "fireflies",
+    "name": "Fireflies",
+    "description": "Meeting transcripts, summaries, search",
+    "url": "https://api.fireflies.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://guide.fireflies.ai/articles/8272956938-learn-about-the-fireflies-mcp-server-model-context-protocol",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "function-health",
+    "name": "Function Health",
+    "description": "Lab results, health answers, nutrition plans",
+    "url": "https://services.functionhealth.com/ai-chat/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://services.functionhealth.com/auth0/acul/claude_connector_docs.html",
+    "logo_url": "https://integrations.sh/logo/functionhealth.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "gainsight-staircase-ai",
+    "name": "Gainsight (Staircase AI)",
+    "description": "Power AI Workflows with Customer Context",
+    "url": "https://mcp.staircase.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/gainsight-staircase-ai",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69c41f9fe5b4a5ee526cc06d_Staircase_Stars_Saturated%20-%20Mike%20Barnes.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "github",
+    "name": "GitHub",
+    "description": "Access repositories, issues, and pull requests with a personal access token.",
+    "url": "https://api.githubcopilot.com/mcp/",
+    "auth": "bearer",
+    "documentation_url": "https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md",
+    "logo_url": "https://svgl.app/library/github_light.svg",
+    "requirements": "Supply a GitHub personal access token with access to the intended repositories."
+  },
+  {
+    "key": "gitlab",
+    "name": "GitLab",
+    "description": "Connect AI tools securely to your GitLab data",
+    "url": "https://gitlab.com/api/v4/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/gitlab",
+    "logo_url": "https://svgl.app/library/gitlab.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "gocardless",
+    "name": "GoCardless",
+    "description": "Build GoCardless payment API integrations",
+    "url": "https://mcp.gocardless.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/gocardless",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f189adf935b1f5a93bb112_GoCardless-Symbol-SQ-Positive-RGB-500px.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "godaddy",
+    "name": "GoDaddy",
+    "description": "Search domains and check availability",
+    "url": "https://api.godaddy.com/v1/domains/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/godaddy",
+    "logo_url": "https://svgl.app/library/godaddy.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "goodnotes",
+    "name": "Goodnotes",
+    "description": "Turn AI insights into documents",
+    "url": "https://claude-mcp-api.ml.goodnotes.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/goodnotes",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f18c733105c2804a595da5_goodnotes.jpeg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "granola",
+    "name": "Granola",
+    "description": "The AI notepad for meetings",
+    "url": "https://mcp.granola.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/granola",
+    "logo_url": "https://svgl.app/library/granola-light.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "granted",
+    "name": "Granted",
+    "description": "Discover grant opportunities.",
+    "url": "https://grantedai.com/api/mcp/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/granted",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69badf81ee3313955f22b01c_granted.png",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "graphos-tools",
+    "name": "GraphOS MCP Tools",
+    "description": "Search Apollo docs, specs, and best practices",
+    "url": "https://mcp.apollographql.com",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/graphos-tools",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/699cf0031601d73ff0fd742e_graphos.png",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "guidepoint",
+    "name": "Guidepoint",
+    "description": "Real-time access to trusted expert knowledge",
+    "url": "https://clapi.guidepoint.io/mcp-server/v1/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/guidepoint",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f81d5e802a0ea1197d6706_Guidepoint_MCP_favicon%20-%20Danny.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "guru",
+    "name": "Guru",
+    "description": "Company knowledge, cards, answers",
+    "url": "https://mcp.api.getguru.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.getguru.com/docs/connecting-gurus-mcp-server",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "hex",
+    "name": "Hex",
+    "description": "Answer questions with the Hex agent",
+    "url": "https://app.hex.tech/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/hex",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690abf6c6461f0fd29c63e59_Hex.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "honeycomb",
+    "name": "Honeycomb",
+    "description": "Query and explore observability data and SLOs",
+    "url": "https://mcp.honeycomb.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/honeycomb",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6923bf27e6d9dd347e34ca26_honeycomb.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "hubspot",
+    "name": "HubSpot",
+    "description": "Work with CRM records and business data.",
+    "url": "https://mcp.hubspot.com",
+    "auth": "oauth",
+    "documentation_url": "https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server",
+    "logo_url": "https://cdn.simpleicons.org/hubspot",
+    "requirements": "Create a HubSpot MCP Auth App with the displayed redirect URI. Select client secret in request body."
+  },
+  {
+    "key": "hugging-face",
+    "name": "Hugging Face",
+    "description": "Access the HF Hub and thousands of Gradio Apps",
+    "url": "https://huggingface.co/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://huggingface.co/docs/hub/en/mcp",
+    "logo_url": "https://svgl.app/library/hugging_face.svg",
+    "requirements": "Sign in to Hugging Face to use your configured tools and private resources. Public Hub tools are also available without sign-in."
+  },
+  {
+    "key": "ibisworld",
+    "name": "IBISWorld",
+    "description": "Financials, risk data and analysis on 50,000 industries",
+    "url": "https://mcp.ibisworld.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/ibisworld",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f3d3ca09d07f3b8457c390_Favicon%201%202%20-%20Jackie%20Toomey%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "ibkr",
+    "name": "IBKR",
+    "description": "Portfolios, research, trade instructions",
+    "url": "https://api.ibkr.com/v1/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.interactivebrokers.com/en/trading/ai-integrations.php",
+    "logo_url": "https://www.interactivebrokers.com/images/web/favicons/home-screen-icon-192x192.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "ifttt",
+    "name": "IFTTT",
+    "description": "Connect, control, and automate 1,000+ apps with IFTTT",
+    "url": "https://ifttt.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/ifttt",
+    "logo_url": "https://cdn.simpleicons.org/ifttt",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "jam",
+    "name": "Jam",
+    "description": "Record screen and collect automatic context for issues",
+    "url": "https://mcp.jam.dev/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/jam",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690abfb928bf214f7824247c_Jam.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "jentic",
+    "name": "Jentic",
+    "description": "Secure access to 1,500+ APIs",
+    "url": "https://api.jentic.com/mcp",
+    "auth": "headers",
+    "header_names": [
+      "x-jentic-api-key"
+    ],
+    "documentation_url": "https://docs.jentic.com/guides/mcp/cursor-remote/",
+    "logo_url": "https://integrations.sh/logo/jentic.com",
+    "requirements": "Create a Jentic Live Capabilities agent, configure its integration credentials, and enter its Agent API Key as x-jentic-api-key."
+  },
+  {
+    "key": "jotform",
+    "name": "Jotform",
+    "description": "Create forms and analyze submissions.",
+    "url": "https://mcp.jotform.com/mcp-app",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/jotform",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690abfc71647ce192e81d28a_jotform.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "ketryx",
+    "name": "Ketryx",
+    "description": "Search and explore regulated software lifecycle data",
+    "url": "https://app.ketryx.com/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/ketryx",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15ad72c10ac3f096c1a74_ketryx.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "kiwi",
+    "name": "Kiwi.com",
+    "description": "Flight search and travel",
+    "url": "https://mcp.kiwi.com",
+    "auth": "none",
+    "documentation_url": "https://mcp-install-instructions.alpic.cloud/servers/kiwi-com-flight-search",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "klaviyo",
+    "name": "Klaviyo",
+    "description": "Marketing campaigns, profiles, analytics",
+    "url": "https://mcp.klaviyo.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developers.klaviyo.com/en/docs/klaviyo_mcp_server",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lawve-ai",
+    "name": "Lawve AI",
+    "description": "Discover expert-written skills for legal work",
+    "url": "https://mcp.lawve.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lawve-ai",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b9158a48ff22de1784b9_lawvable%20-%20Antoine%20Louis%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "legal-data-hunter",
+    "name": "Legal Data Hunter",
+    "description": "Search 23M+ legal docs in 160+ jurisdictions.",
+    "url": "https://legaldatahunter.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/legal-data-hunter",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b899526d166cd7ad07e3_legal_data_hunter.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lilt",
+    "name": "LILT",
+    "description": "High-quality translation with human verification",
+    "url": "https://mcp.lilt.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lilt",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/697d13e9fb2d1120753661ed_Lilt-LogoMark_Color.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "linear",
+    "name": "Linear",
+    "description": "Work with issues, projects, and teams.",
+    "url": "https://mcp.linear.app/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://linear.app/docs/mcp",
+    "logo_url": "https://svgl.app/library/linear.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "local-falcon",
+    "name": "Local Falcon",
+    "description": "AI visibility and local search intelligence platform",
+    "url": "https://mcp.localfalcon.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/local-falcon",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69ae254459fe3a977afda9f1_local-falcon-mcp-logo.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "longbridge",
+    "name": "Longbridge",
+    "description": "Market data, portfolio, and trading",
+    "url": "https://mcp.longbridge.com",
+    "auth": "oauth",
+    "documentation_url": "https://open.longbridge.com/docs/mcp",
+    "logo_url": "https://github.com/longbridge.png?size=128",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lorikeet",
+    "name": "Lorikeet",
+    "description": "A universal concierge for complex businesses",
+    "url": "https://api.lorikeetcx.ai/v1/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lorikeet",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f18cdfb640bd44e6b52062_Lorikeet-sq.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lucid",
+    "name": "Lucid",
+    "description": "Ideate, diagram, and align teams",
+    "url": "https://mcp.lucid.app/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lucid",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f18b257b80134ef4df788a_lucidlogo%20-%20Jacob%20Brown%20%28Jake%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lumin",
+    "name": "Lumin",
+    "description": "Manage documents, send signature requests, and convert Markdown to PDF",
+    "url": "https://mcp.luminpdf.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lumin",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69843e996011391070f38a40_lumin%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "lunarcrush",
+    "name": "LunarCrush",
+    "description": "Real-time social and market intelligence",
+    "url": "https://lunarcrush.ai/mcp",
+    "auth": "bearer",
+    "documentation_url": "https://lunarcrush.com/en/developers/mcp",
+    "logo_url": "https://integrations.sh/logo/lunarcrush.ai",
+    "requirements": "Supply a LunarCrush API key. Tool access and request limits depend on your plan."
+  },
+  {
+    "key": "lusha",
+    "name": "Lusha",
+    "description": "Find and enrich B2B contacts and companies",
+    "url": "https://mcp.lusha.com/mcp/claude",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/lusha",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f185605c2fcaee0fa4db08_lusha-purple.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "magic-patterns",
+    "name": "Magic Patterns",
+    "description": "Discuss and iterate on Magic Patterns designs",
+    "url": "https://mcp.magicpatterns.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.magicpatterns.com/docs/documentation/features/mcp-server/overview",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6983b706c57aa5fd1fd7a2d2_magicpatterns.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "mailerlite",
+    "name": "MailerLite",
+    "description": "Manage email campaigns and subscribers.",
+    "url": "https://mcp.mailerlite.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developers.mailerlite.com/mcp",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69a666eeaf51ef9283ed2fd8_mailerlite.jpeg",
+    "requirements": "Requires a MailerLite account."
+  },
+  {
+    "key": "make",
+    "name": "Make",
+    "description": "Run scenarios and manage your Make account",
+    "url": "https://mcp.make.com",
+    "auth": "oauth",
+    "documentation_url": "https://developers.make.com/mcp-server/connect-using-oauth",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/697d14371cf45af84e39a93e_Make-Icon-Square-Purple.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "malwarebytes",
+    "name": "Malwarebytes",
+    "description": "Check links, phones, and emails for scams",
+    "url": "https://scamguard.malwarebytes.com/claude/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/malwarebytes",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f14bd279dd849807ee34b3_malwarebytes.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "mdn",
+    "name": "MDN",
+    "description": "Web docs, search, and browser compatibility data",
+    "url": "https://mcp.mdn.mozilla.net/",
+    "auth": "none",
+    "documentation_url": "https://developer.mozilla.org/en-US/mcp",
+    "logo_url": "https://developer.mozilla.org/favicon.svg",
+    "requirements": "Public experimental MDN documentation tools; no account required."
+  },
+  {
+    "key": "medidata",
+    "name": "Medidata",
+    "description": "Clinical trial help and predictive site ranking",
+    "url": "https://mcp.imedidata.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://learn.medidata.com/en-US/bundle/mcp-server-documentation/page/medidata_mcp_server_documentation.html",
+    "logo_url": "https://integrations.sh/logo/imedidata.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "mem",
+    "name": "Mem",
+    "description": "Search and manage notes.",
+    "url": "https://mcp.mem.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.mem.ai/mcp/setup",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69a772eb46aaa3bf051c52ed_mem_logo_square%20%281%29.svg",
+    "requirements": "Requires a Mem workspace."
+  },
+  {
+    "key": "mercury",
+    "name": "Mercury",
+    "description": "Accounts, transactions, balances, and cards",
+    "url": "https://mcp.mercury.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.mercury.com/docs/connecting-mercury-mcp",
+    "logo_url": "https://mercury.com/favicon.ico",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "mermaid-chart",
+    "name": "Mermaid Chart",
+    "description": "Validate and render Mermaid diagrams.",
+    "url": "https://mcp.mermaid.ai/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/mermaid-chart",
+    "logo_url": "https://svgl.app/library/mermaid-logo-light.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "metaview",
+    "name": "Metaview",
+    "description": "The AI platform for recruiting.",
+    "url": "https://mcp.metaview.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/metaview",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69b3253475eefcc4bf8f3351_Metaview%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "midpage",
+    "name": "Midpage Legal Research",
+    "description": "Search legal sources and case law.",
+    "url": "https://app.midpage.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.midpage.ai/documentation/integration/mcp-tools",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/699a550b5cce23be4022d0ab_midpage.svg",
+    "requirements": "Requires a Midpage account."
+  },
+  {
+    "key": "mintlify",
+    "name": "Mintlify",
+    "description": "Search, read, and edit your documentation",
+    "url": "https://mcp.mintlify.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/mintlify",
+    "logo_url": "https://svgl.app/library/mintlify.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "miro",
+    "name": "Miro",
+    "description": "Access and create new content on Miro boards",
+    "url": "https://mcp.miro.com/",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/miro",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69825d400692311462b4a241_Miro_Miro_Icon_0.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "mixpanel",
+    "name": "Mixpanel",
+    "description": "Analyze, query, and manage your Mixpanel data",
+    "url": "https://mcp.mixpanel.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/mixpanel",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69b842de13c16936e674bff7_Mixpanel%20Logomark%20Purple%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "monday",
+    "name": "Monday",
+    "description": "Manage projects, boards, and workflows in monday.com",
+    "url": "https://mcp.monday.com/mcp",
+    "auth": "bearer",
+    "documentation_url": "https://developer.monday.com/api-reference/docs/mcp-api-token",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6921e782b78ebbcbede151d0_monday.jpg",
+    "requirements": "Supply a monday.com personal API token for your own account. Shared integrations require a registered OAuth app and the provider's distribution process."
+  },
+  {
+    "key": "monte-carlo",
+    "name": "Monte Carlo",
+    "description": "Data & AI observability",
+    "url": "https://integrations.getmontecarlo.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/monte-carlo",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a04e495087e98bd9e279ba8_monte_carlo.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "moodys",
+    "name": "Moody's",
+    "description": "Credit ratings and risk data",
+    "url": "https://api.moodys.com/genai-ready-data/m1/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.moodys.com/web/en/us/genai/model-context-protocol.html",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "morningstar",
+    "name": "Morningstar",
+    "description": "Investment research and data",
+    "url": "https://mcp.morningstar.com/mcp",
+    "auth": "bearer",
+    "documentation_url": "https://developer.morningstar.com/direct-web-services/documentation/morningstar-ai-integrations/morningstar-mcp-server/overview#programmatic-access",
+    "logo_url": "https://developer.morningstar.com/favicon-32x32.png",
+    "requirements": "Requires licensed Morningstar access. Obtain a bearer token through its Authentication API and replace it when it expires."
+  },
+  {
+    "key": "mospi",
+    "name": "MoSPI",
+    "description": "India's official statistics in natural language",
+    "url": "https://mcp.mospi.gov.in/",
+    "auth": "none",
+    "documentation_url": "https://www.datainnovation.mospi.gov.in/mospi-mcp",
+    "logo_url": "https://integrations.sh/logo/mospi.gov.in",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "motherduck",
+    "name": "MotherDuck",
+    "description": "DuckDB cloud warehouse, SQL",
+    "url": "https://api.motherduck.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://motherduck.com/docs/sql-reference/mcp/",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "motion",
+    "name": "Motion Creative Analytics",
+    "description": "Analyze creative advertising performance.",
+    "url": "https://projects.motionapp.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.motionapp.com/en/articles/14315735-motion-mcp",
+    "logo_url": "https://cdn.prod.website-files.com/61ba3b439a672312697272c7/62193dfca2d19738b5c6da9d_motion-favicon-256x256.png",
+    "requirements": "Requires an eligible Motion Creative Analytics account and Owner, Admin, or Collaborator role. Performance data currently covers Meta."
+  },
+  {
+    "key": "msci",
+    "name": "MSCI",
+    "description": "Indexes, private-markets analytics",
+    "url": "https://mcp.msci.com/mcp/v1.0/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.msci.com/downloads/web/msci-com/data-and-analytics/private-asset-solutions/ai-for-private-markets/msci-mcp-msci-connector-user-guide.pdf",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "mt-newswires",
+    "name": "MT Newswires",
+    "description": "Real-time financial news",
+    "url": "https://mcp.mtnewswires.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://console.blueskyapi.com/docs/EDGE/news/MT_NEWSWIRES_Global",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "navan",
+    "name": "Navan",
+    "description": "Travel, expenses, transactions, policy data",
+    "url": "https://mcp.navan.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://navan.com/blog/navan-mcp-powering-agentic-ai",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "neon",
+    "name": "Neon",
+    "description": "Postgres projects, branches, SQL, docs",
+    "url": "https://mcp.neon.tech/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://neon.com/docs/ai/neon-mcp-server",
+    "logo_url": "https://svgl.app/library/neon.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "netdocuments",
+    "name": "NetDocuments (US)",
+    "description": "Securely access your documents in NetDocuments",
+    "url": "https://web-api.us.netdocuments.app/connect/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/netdocuments",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b3f6ad61021be70a3c8f_netdocuments.png",
+    "requirements": "Requires NetDocuments account access. This preset uses the United States endpoint; use your regional endpoint for other accounts."
+  },
+  {
+    "key": "netlify",
+    "name": "Netlify",
+    "description": "Create, deploy, manage, and secure websites on Netlify",
+    "url": "https://netlify-mcp.netlify.app/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/netlify",
+    "logo_url": "https://svgl.app/library/netlify.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "notion",
+    "name": "Notion",
+    "description": "Search and work with pages and databases.",
+    "url": "https://mcp.notion.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developers.notion.com/guides/mcp/get-started-with-mcp",
+    "logo_url": "https://svgl.app/library/notion.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "omni-analytics",
+    "name": "Omni Analytics",
+    "description": "Query your data using natural language through Omni's semantic model",
+    "url": "https://callbacks.omniapp.co/callback/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/omni-analytics",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69adea9f99911673406e9166_omni.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "openrouter",
+    "name": "OpenRouter",
+    "description": "Models, pricing, credits, test prompts",
+    "url": "https://mcp.openrouter.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://openrouter.ai/docs/mcp-server",
+    "logo_url": "https://cdn.simpleicons.org/openrouter",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "orion",
+    "name": "Orion by Gravity",
+    "description": "Get insights from your autonomous AI analyst",
+    "url": "https://g.runorion.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/orion",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15c544eecf5b84d8bf776_orion-icon-512%20-%20Drew%20Gillson.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "otter-ai",
+    "name": "Otter.ai",
+    "description": "Meeting transcripts, conversations, and insights",
+    "url": "https://mcp.otter.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f51c99b93cabe07b652604_otter.ai.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "parallel",
+    "name": "Parallel Search",
+    "description": "Real-time web search and content extraction",
+    "url": "https://search.parallel.ai/mcp",
+    "auth": "none",
+    "documentation_url": "https://docs.parallel.ai/integrations/mcp/search-mcp",
+    "logo_url": "https://mcpservers.org/logos/parallel.svg",
+    "requirements": "Public web search with anonymous limits. A Parallel bearer API key enables higher limits."
+  },
+  {
+    "key": "paypal",
+    "name": "PayPal",
+    "description": "Access PayPal payments platform",
+    "url": "https://mcp.paypal.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/paypal",
+    "logo_url": "https://svgl.app/library/paypal.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "peec-ai",
+    "name": "Peec AI",
+    "description": "Analyze your brand's visibility across LLMs",
+    "url": "https://api.peec.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/peec-ai",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15198d7e7e13b4c1ec865_peec_ai.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "pendo",
+    "name": "Pendo (US)",
+    "description": "Product analytics, guides, feedback",
+    "url": "https://app.pendo.io/mcp/v0/shttp",
+    "auth": "oauth",
+    "documentation_url": "https://support.pendo.io/hc/en-us/articles/41102236924955-Connect-to-the-Pendo-MCP-server",
+    "logo_url": "https://www.pendo.io/icon.svg",
+    "requirements": "US subscription endpoint. An administrator must enable AI access; use your regional endpoint for other subscriptions."
+  },
+  {
+    "key": "pg-aiguide",
+    "name": "pg-aiguide",
+    "description": "Search pg and Tiger docs, learn database skills",
+    "url": "https://mcp.tigerdata.com/docs",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/pg-aiguide",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69c4735963142fd71f9f4a3a_logo-badge-yellow.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "pitchbook",
+    "name": "PitchBook",
+    "description": "Private market intelligence",
+    "url": "https://premium.mcp.pitchbook.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://help.pitchbook.com/s/article/PitchBook-Premium-for-Claude-by-Anthropic",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "planetscale",
+    "name": "PlanetScale",
+    "description": "Manage Postgres and MySQL databases.",
+    "url": "https://mcp.pscale.dev/mcp/planetscale",
+    "auth": "oauth",
+    "documentation_url": "https://planetscale.com/docs/mcp-server",
+    "logo_url": "https://svgl.app/library/planetscale.svg",
+    "requirements": "Requires access to a PlanetScale organization."
+  },
+  {
+    "key": "play-sheet-music",
+    "name": "Play Sheet Music",
+    "description": "Generate and play interactive sheet music",
+    "url": "https://example-server.modelcontextprotocol.io/sheet-music/mcp",
+    "auth": "none",
+    "documentation_url": "https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server",
+    "logo_url": "https://integrations.sh/logo/modelcontextprotocol.io",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "playmcp",
+    "name": "PlayMCP",
+    "description": "Connect Kakao and other PlayMCP services",
+    "url": "https://playmcp.kakao.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://www.notion.so/2189b97b4888803dbbdcef264e7eff58",
+    "logo_url": "https://integrations.sh/logo/kakao.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "posthog",
+    "name": "PostHog",
+    "description": "Product analytics, flags, insights",
+    "url": "https://mcp.posthog.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://posthog.com/docs/model-context-protocol",
+    "logo_url": "https://svgl.app/library/posthog.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "postman",
+    "name": "Postman",
+    "description": "Give API context to your coding agents",
+    "url": "https://mcp.postman.com/minimal",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/postman",
+    "logo_url": "https://svgl.app/library/postman.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "privacy",
+    "name": "Privacy.com",
+    "description": "Manage virtual cards and track your spending patterns",
+    "url": "https://mcp.privacy.com",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/privacy",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a04e56fba746672e2a6a28d_privacy-logo%20-%20Johnie%20Lee.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "process-street",
+    "name": "Process Street",
+    "description": "Explore and update workflow operations",
+    "url": "https://mcp.process.st",
+    "auth": "oauth",
+    "documentation_url": "https://www.process.st/help/docs/mcp-server/",
+    "logo_url": "https://integrations.sh/logo/process.st",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "quartr",
+    "name": "Quartr",
+    "description": "Financial data and AI infrastructure for company research.",
+    "url": "https://mcp.quartr.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/quartr",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69c16ea64d0fb4d397f39e16_quarter-black.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "quo",
+    "name": "Quo",
+    "description": "Surface call insights and missed opportunities",
+    "url": "https://mcp.quo.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/quo",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f2db59ad97fe0b154a1178_quo-logo%20-%20Juraj%20Pal.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "railway",
+    "name": "Railway",
+    "description": "Projects, services, environments, deployments",
+    "url": "https://mcp.railway.com",
+    "auth": "oauth",
+    "documentation_url": "https://docs.railway.com/ai/remote-mcp-server",
+    "logo_url": "https://svgl.app/library/railway.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "ramp",
+    "name": "Ramp",
+    "description": "Search, access, and analyze your Ramp financial data",
+    "url": "https://ramp-mcp-remote.ramp.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/ramp",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690ac0e242323897e8eeb479_Ramp.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "ramp-data",
+    "name": "Ramp Data",
+    "description": "Search and analyze Ramp spend across 50,000+ businesses",
+    "url": "https://mcp.ramp.com/ramp-data/anthropic/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/ramp-data",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690ac0e242323897e8eeb479_Ramp.jpg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "razorpay",
+    "name": "Razorpay",
+    "description": "Payments, orders, and settlements",
+    "url": "https://mcp.razorpay.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://razorpay.com/docs/mcp-server/",
+    "logo_url": "https://cdn.simpleicons.org/razorpay",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "readwise",
+    "name": "Readwise",
+    "description": "Highlights, Reader documents, reading library",
+    "url": "https://mcp2.readwise.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://readwise.io/mcp",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "resend",
+    "name": "Resend",
+    "description": "Emails, templates, contacts, broadcasts, and domains",
+    "url": "https://mcp.resend.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://resend.com/docs/mcp-server",
+    "logo_url": "https://cdn.simpleicons.org/resend",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "sp-global",
+    "name": "S&P Global",
+    "description": "Capital IQ financials, market data",
+    "url": "https://kfinance.kensho.com/integrations/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.kensho.com/llmreadyapi/mcp",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "sanity",
+    "name": "Sanity",
+    "description": "Create, query, and manage structured content in Sanity",
+    "url": "https://mcp.sanity.io",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/sanity",
+    "logo_url": "https://svgl.app/library/sanity-light.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "scholar-gateway",
+    "name": "Scholar Gateway",
+    "description": "Peer-reviewed research, citations",
+    "url": "https://connector.scholargateway.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.scholargateway.ai/",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "scite",
+    "name": "Scite",
+    "description": "Evidence-based answers grounded in research",
+    "url": "https://api.scite.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/scite",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f14fa63e5cc00c8c2fe439_scite.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "send",
+    "name": "Send",
+    "description": "Create shareable documents, one-pagers, and decks",
+    "url": "https://www.send.co/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/send",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f14afcfae4b6a0b0d56710_send-icon-square%20-%20Neil%20Gandhi.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "sentry",
+    "name": "Sentry",
+    "description": "Investigate application errors and performance.",
+    "url": "https://mcp.sentry.dev/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://mcp.sentry.dev/",
+    "logo_url": "https://svgl.app/library/sentry.svg",
+    "requirements": "Requires access to a Sentry organization."
+  },
+  {
+    "key": "signnow",
+    "name": "SignNow",
+    "description": "E-signatures and documents",
+    "url": "https://mcp-server.signnow.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.signnow.com/docs/signnow/mcp-server",
+    "logo_url": "https://mcpservers.org/icon.png",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "splice",
+    "name": "Splice",
+    "description": "Search Splice's sounds catalog, build stacks & more!",
+    "url": "https://mcp.splice.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/splice",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f22435597957163fe5646c_SpliceGlyph-Black%20-%20Kevin%20Stewart.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "sprouts",
+    "name": "Sprouts Data Intelligence",
+    "description": "Find and qualify sales leads.",
+    "url": "https://sprouts-mcp-server.kartikay-dhar.workers.dev",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/sprouts",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69974168446d1f867d04722e_sprouts.ai%20logo.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "square",
+    "name": "Square",
+    "description": "Search and manage transaction, merchant, and payment data",
+    "url": "https://mcp.squareup.com/sse",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/square",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/690ac122efac2533660b7814_Square%20MCP.jpg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "stripe",
+    "name": "Stripe",
+    "description": "Work with your Stripe account and payments.",
+    "url": "https://mcp.stripe.com",
+    "auth": "oauth",
+    "documentation_url": "https://docs.stripe.com/mcp",
+    "logo_url": "https://svgl.app/library/stripe.svg",
+    "requirements": "Authorize the intended Stripe account and sandbox or live environment. A restricted API key can also be used in Bearer token mode."
+  },
+  {
+    "key": "stytch",
+    "name": "Stytch",
+    "description": "Manage authentication project settings",
+    "url": "https://mcp.stytch.dev/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://stytch.com/docs/workspace-management/stytch-mcp",
+    "logo_url": "https://integrations.sh/logo/stytch.dev",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "supabase",
+    "name": "Supabase",
+    "description": "Projects, database, docs",
+    "url": "https://mcp.supabase.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://supabase.com/docs/guides/ai-tools/mcp",
+    "logo_url": "https://svgl.app/library/supabase.svg",
+    "requirements": "Authorize a Supabase organization. Use a project-scoped endpoint and read-only mode when appropriate for your task."
+  },
+  {
+    "key": "superhuman-mail",
+    "name": "Superhuman Mail",
+    "description": "Manage email and calendar.",
+    "url": "https://mcp.mail.superhuman.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/superhuman-mail",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f15c0204bf266a152583ce_superhuman.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "supermetrics",
+    "name": "Supermetrics",
+    "description": "Marketing data, analytics, and reporting",
+    "url": "https://mcp.supermetrics.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.supermetrics.com/docs/supermetrics-mcp-server",
+    "logo_url": "https://integrations.sh/logo/supermetrics.com",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "sybill",
+    "name": "Sybill",
+    "description": "Sales calls, deals, and pipeline intelligence",
+    "url": "https://mcp.sybill.ai/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://api.sybill.ai/docs/mcp.html",
+    "logo_url": "https://integrations.sh/logo/sybill.ai",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "synapse-org",
+    "name": "Synapse.org",
+    "description": "Search collaborative scientific datasets",
+    "url": "https://mcp.synapse.org/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://github.com/susheel/synapse-mcp?tab=readme-ov-file",
+    "logo_url": "https://integrations.sh/logo/synapse.org",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "synthesize-bio",
+    "name": "Synthesize Bio",
+    "description": "Generate gene expression from a virtual human",
+    "url": "https://app.synthesize.bio/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/synthesize-bio",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f81c99cf86df125c6570a3_synthesize_bio_logo.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "tango-government-contracting",
+    "name": "Tango",
+    "description": "Search U.S. government contracting data",
+    "url": "https://govcon.dev/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://tango.makegov.com/docs/mcp/",
+    "logo_url": "https://integrations.sh/logo/govcon.dev",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "taskrabbit",
+    "name": "Taskrabbit Booking Assistance",
+    "description": "Find & book local Taskrabbit services near you",
+    "url": "https://mcp.taskrabbit.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/taskrabbit",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f5218067608fa156b6897a_taskrabbit_logo%20-%20George%20Yu%20Jiang%20%281%29.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "tavily",
+    "name": "Tavily",
+    "description": "Connect your AI agents to the web",
+    "url": "https://mcp.tavily.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/tavily",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69b32f5381aaa44510d50288_tavily.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "three-js-3d-viewer",
+    "name": "Three.js 3D Viewer",
+    "description": "Render interactive 3D scenes and models",
+    "url": "https://example-server.modelcontextprotocol.io/threejs/mcp",
+    "auth": "none",
+    "documentation_url": "https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/threejs-server",
+    "logo_url": "https://integrations.sh/logo/modelcontextprotocol.io",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "tldraw",
+    "name": "tldraw",
+    "description": "Diagrams and whiteboards",
+    "url": "https://tldraw-mcp-app.tldraw.workers.dev/mcp",
+    "auth": "none",
+    "documentation_url": "https://tldraw.notion.site/tldraw-mcp-app",
+    "logo_url": "https://cdn.simpleicons.org/tldraw",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "todoist",
+    "name": "Todoist",
+    "description": "Search, complete, and manage your tasks in Todoist",
+    "url": "https://ai.todoist.net/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/todoist",
+    "logo_url": "https://svgl.app/library/todoist.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "trellis",
+    "name": "Trellis",
+    "description": "Research trial court litigation.",
+    "url": "https://mcp.trellis.law/anthropic",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/trellis",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6a02b79fc767d70218166a22_trellis%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "trivago",
+    "name": "Trivago",
+    "description": "Find your ideal hotel at the best price.",
+    "url": "https://mcp.trivago.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/trivago",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/6913f573b5cf9a67fff78b2a_logo_trivago.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "twilio",
+    "name": "Twilio",
+    "description": "Build powerful communications and customer engagement",
+    "url": "https://mcp.twilio.com/docs",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/twilio",
+    "logo_url": "https://svgl.app/library/twilio.svg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "unthread",
+    "name": "Unthread",
+    "description": "Manage customer support tickets.",
+    "url": "https://app.unthread.io/api/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://docs.unthread.io/docs/unthread-ai/unthread-mcp",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f527771c5044192f705995_unthread-icon.svg",
+    "requirements": "Requires an active Unthread account and workspace access."
+  },
+  {
+    "key": "verisk-xactrestore",
+    "name": "Verisk XactRestore",
+    "description": "Natural-language estimating for XactRestore",
+    "url": "https://xactrestore-xactremodelserver-usw2-prod.propsol.io/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/verisk-xactrestore",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69fa17a6c74040f2aa5669fd_verisk.jpeg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "viator",
+    "name": "Viator",
+    "description": "Book travel experiences around the world",
+    "url": "https://exp-app-mcp.prod.ep.viator.com/mcp",
+    "auth": "none",
+    "documentation_url": "https://claude.com/connectors/viator",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f5282bfd6b1696c623e9da_viator.jpg",
+    "requirements": "Public tools are available without sign-in. Provider usage limits and feature requirements may apply."
+  },
+  {
+    "key": "webflow",
+    "name": "Webflow",
+    "description": "Sites, CMS, publishing",
+    "url": "https://mcp.webflow.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://developers.webflow.com/mcp/v1.0.0/reference/overview",
+    "logo_url": "https://cdn.simpleicons.org/webflow",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "windsor-ai",
+    "name": "Windsor.ai",
+    "description": "Marketing data connectors and attribution",
+    "url": "https://mcp.windsor.ai",
+    "auth": "oauth",
+    "documentation_url": "https://windsor.ai/introducing-windsor-mcp/",
+    "logo_url": "https://integrations.sh/logo/windsor.ai",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "wix",
+    "name": "Wix",
+    "description": "Sites, stores, bookings",
+    "url": "https://mcp.wix.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://dev.wix.com/docs/sdk/articles/use-the-wix-mcp/about-the-wix-mcp",
+    "logo_url": "https://cdn.simpleicons.org/wix",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "wordpress-com",
+    "name": "WordPress.com",
+    "description": "Secure AI access to manage your WordPress.com sites",
+    "url": "https://public-api.wordpress.com/wpcom/v2/mcp/v1",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/wordpress-com",
+    "logo_url": "https://svgl.app/library/wordpress.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "workable",
+    "name": "Workable",
+    "description": "Manage hiring and HR.",
+    "url": "https://mcp.workable.com/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/workable",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f81cf5d6ed1685ed513d65_workable%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "yahoo-finance",
+    "name": "Yahoo Finance",
+    "description": "Market data through the mcpservers.org community gateway.",
+    "url": "https://gateway.mcpservers.org/yahoo-finance/mcp",
+    "auth": "none",
+    "documentation_url": "https://mcpservers.org/remote-mcp-servers/yahoo-finance",
+    "logo_url": "https://mcpservers.org/logos/yahoo-finance.svg",
+    "requirements": "Public market data through the mcpservers.org community gateway; provider usage limits apply."
+  },
+  {
+    "key": "zapier",
+    "name": "Zapier",
+    "description": "Actions across 8,000+ apps",
+    "url": "https://mcp.zapier.com/api/v1/connect",
+    "auth": "oauth",
+    "documentation_url": "https://docs.zapier.com/mcp/home",
+    "logo_url": "https://cdn.simpleicons.org/zapier",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "zocks",
+    "name": "Zocks",
+    "description": "Analyze client conversations, patterns, and insights.",
+    "url": "https://mcp.zocks.io/v1/mcp",
+    "auth": "oauth",
+    "documentation_url": "https://claude.com/connectors/zocks",
+    "logo_url": "https://cdn.prod.website-files.com/68a44d4040f98a4adf2207b6/69f18e4c5285238a12ca92e0_zocks%20icon%20-%20Vikto%CC%81ria%20Paro%CC%81czi%20%281%29.svg",
+    "requirements": "Sign in with an account that can access the requested data. Provider plan and administrator policies may apply."
+  },
+  {
+    "key": "zoom",
+    "name": "Zoom",
+    "description": "Meetings, recordings, summaries",
+    "url": "https://mcp.zoom.us/mcp/zoom/streamable",
+    "auth": "oauth",
+    "documentation_url": "https://developers.zoom.us/docs/mcp/servers/connect-to-zoom-mcp-servers/",
+    "logo_url": "https://cdn.simpleicons.org/zoom",
+    "requirements": "Create a Zoom General app with the displayed redirect URI, product licenses, and tool scopes. Select client secret in Basic header; administrator or developer access is required."
+  }
+]

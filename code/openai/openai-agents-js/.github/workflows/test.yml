@@ -1,0 +1,330 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Refresh this digest when updating the Python 3.14 sandbox test image.
+  DOCKER_TEST_IMAGE: public.ecr.aws/docker/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+
+jobs:
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_ci: ${{ steps.filter.outputs.run_ci }}
+    steps:
+      - name: Determine whether CI should run
+        id: filter
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const IGNORED_PREFIXES = [
+              'docs/',
+              '.agents/',
+              '.github/ISSUE_TEMPLATE/',
+              '.github/PULL_REQUEST_TEMPLATE/',
+              '.github/codex/',
+              '.husky/',
+            ];
+            const CI_RELEVANT_PREFIXES = [
+              '.agents/skills/code-change-verification/',
+              'docs/src/scripts/',
+            ];
+
+            const isIgnoredPath = (path) => {
+              if (CI_RELEVANT_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+                return false;
+              }
+              // Docs source and configuration also own executable checks.
+              if (path.startsWith('docs/') && /\.(?:[cm]?[jt]sx?|json)$/.test(path)) {
+                return false;
+              }
+              if (IGNORED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+                return true;
+              }
+              // Keep parity with "*.md" from the previous paths-ignore list.
+              if (!path.includes('/') && path.endsWith('.md')) {
+                return true;
+              }
+              return false;
+            };
+            const changedPathsForFile = (file) =>
+              [file.filename, file.previous_filename].filter(
+                (path) => typeof path === 'string',
+              );
+
+            let files;
+            let complete = false;
+
+            try {
+              if (context.eventName === 'pull_request') {
+                files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  per_page: 100,
+                });
+                // The pull request files API returns at most 3,000 files.
+                complete = files.length < 3000 &&
+                  files.length === context.payload.pull_request.changed_files;
+              } else if (context.eventName === 'push') {
+                const before = context.payload.before;
+                const after = context.payload.after;
+
+                if (before && !/^0+$/.test(before) && after) {
+                  const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    basehead: `${before}...${after}`,
+                  });
+                  files = comparison.data.files;
+                  // Comparisons cap files at 300; divergent history is not an exact push diff.
+                  complete = comparison.data.status === 'ahead' &&
+                    Array.isArray(files) && files.length < 300;
+                }
+              }
+            } catch (error) {
+              core.warning(`Could not determine changed files: ${error.message}`);
+            }
+
+            if (!complete || !files?.length) {
+              core.info('No complete, comparable changed-file list found. Running CI by default.');
+              core.setOutput('run_ci', 'true');
+              return;
+            }
+
+            const changedFiles = files.flatMap(changedPathsForFile);
+            const relevantFiles = changedFiles.filter((path) => !isIgnoredPath(path));
+            const runCi = relevantFiles.length > 0;
+
+            core.info(`Changed files: ${changedFiles.join(', ')}`);
+            core.info(runCi ? `CI will run because relevant files changed: ${relevantFiles.join(', ')}` : 'Only docs/meta files changed. CI will be skipped.');
+            core.setOutput('run_ci', runCi ? 'true' : 'false');
+
+  test:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_OPTIONS: "--max_old_space_size=6144"
+    strategy:
+      matrix:
+        # https://nodejs.org/en/about/previous-releases
+        # Using 24.3.x due to https://github.com/pnpm/pnpm/issues/9743
+        node-version: ['22', '24.3.x']
+    steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking test checks as successful without running CI."
+      - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare Docker test image
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: |
+          docker pull "$DOCKER_TEST_IMAGE"
+          docker tag "$DOCKER_TEST_IMAGE" python:3.14-slim
+      - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+      - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm install
+      - name: Check released API against current source
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        run: pnpm api-contract:source
+      - name: Build all packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm build:ci
+      - name: Check generated declarations
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm -r -F "@openai/*" dist:check
+      - name: Check released API against build output
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        run: pnpm api-contract:dist
+      - name: Run linter
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm lint
+      - name: Type-check docs scripts
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm docs:scripts:check
+      - name: Compile examples
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm -r build-check
+      - name: Run Prisma memory regression tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm --filter memory test:prisma
+      - name: Run tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm test
+      - name: Check locally published API contract
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm local-npm:reset
+          pnpm local-npm:start > /tmp/agents-verdaccio.log 2>&1 &
+          verdaccio_pid=$!
+          cleanup() {
+            kill "$verdaccio_pid" 2>/dev/null || true
+            wait "$verdaccio_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:4873/ > /dev/null; then
+              break
+            fi
+            if ! kill -0 "$verdaccio_pid" 2>/dev/null; then
+              cat /tmp/agents-verdaccio.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://localhost:4873/ > /dev/null
+          pnpm local-npm:publish
+          pnpm test:integration:api-contract
+          cleanup
+          trap - EXIT
+          node -e "const net=require('node:net');const server=net.createServer();server.once('error',()=>process.exit(1));server.listen(4873,'127.0.0.1',()=>server.close());"
+
+  windows-sandbox-paths:
+    needs: changes
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      CI: "1"
+      NODE_ENV: test
+    steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking Windows sandbox path checks as successful without running CI."
+      - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm install
+      - name: Verify pnpm parallel failure cleanup
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: node --test scripts/tests/pnpm-parallel-cleanup.test.mjs
+      - name: Build packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm build
+      - name: Run Windows sandbox path tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts packages/agents-core/test/sandboxNativePathGrants.test.ts
+      - name: Run Windows remote path tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: pnpm exec vitest --run --project "@openai/agents-extensions" packages/agents-extensions/test/sandbox/remotePaths.test.ts
+
+  coverage:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_OPTIONS: "--max_old_space_size=6144"
+    steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking coverage check as successful without running CI."
+      - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare Docker test image
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: |
+          docker pull "$DOCKER_TEST_IMAGE"
+          docker tag "$DOCKER_TEST_IMAGE" python:3.14-slim
+      - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm install
+      - name: Build all packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm build:ci
+      - name: Run tests with coverage
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm test:coverage
+      - name: Enforce coverage thresholds
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+
+          const summaryPath = 'coverage/coverage-summary.json';
+          if (!fs.existsSync(summaryPath)) {
+            console.error(`Missing coverage summary at ${summaryPath}.`);
+            process.exit(1);
+          }
+
+          const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+          const total = summary.total ?? {};
+          const thresholds = {
+            lines: 85,
+            statements: 85,
+            functions: 85,
+            branches: 80,
+          };
+
+          let failed = false;
+          for (const [key, min] of Object.entries(thresholds)) {
+            const pct = typeof total[key]?.pct === 'number' ? total[key].pct : 0;
+            const status = pct >= min ? 'OK' : 'FAIL';
+            console.log(`${status}: ${key} ${pct}% (min ${min}%)`);
+            if (pct < min) {
+              failed = true;
+            }
+          }
+
+          if (failed) {
+            process.exit(1);
+          }
+          NODE

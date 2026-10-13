@@ -1,0 +1,74 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Agent Foundation
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Agents must follow [Writing Issues and Pull Requests](https://github.com/converge-ai-labs/agent-foundation/blob/main/CONTRIBUTING.md#writing-issues-and-pull-requests); human contributors may adapt this writing guidance. In the problem description, use a small Mermaid diagram, diff, or other Markdown view when it helps explain the issue. Simple issues can use prose alone.
+
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not include credentials, private prompts, model output, or sensitive logs.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - a13n-harness
+        - a13n-service
+        - logging
+        - a13n-envd
+        - sandbox or container image
+        - CI, release, or repository tooling
+        - documentation or specification
+        - other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Initial checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I reproduced this on a supported release or the current main branch.
+          required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Actual and expected behavior
+      description: Start with the triggering scenario, what happened, its impact, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest code, configuration, or command sequence that reproduces the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - Agent Foundation package or image version / commit:
+        - Python version:
+        - Rust version, if relevant:
+        - Operating system and architecture:
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized logs, traces, screenshots, or links that help explain the problem.

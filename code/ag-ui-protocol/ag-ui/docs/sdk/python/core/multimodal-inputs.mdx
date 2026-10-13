@@ -1,0 +1,93 @@
+---
+title: "Multimodal Inputs"
+description:
+  "Use modality-specific user input parts with typed data/url sources in
+  ag_ui.core"
+---
+
+# Multimodal Inputs
+
+`UserMessage.content` accepts either plain text or an ordered list of multimodal
+parts.
+
+```python
+from ag_ui.core import (
+    UserMessage,
+    TextPart,
+    ImagePart,
+    DocumentPart,
+    UrlSource,
+)
+
+message = UserMessage(
+    id="user-1",
+    content=[
+        TextPart(text="Summarize this PDF and screenshot"),
+        ImagePart(
+            source=UrlSource(
+                value="https://example.com/screen.png",
+                mime_type="image/png",
+            )
+        ),
+        DocumentPart(
+            source=UrlSource(
+                value="https://example.com/report.pdf",
+                mime_type="application/pdf",
+            )
+        ),
+    ],
+)
+```
+
+## Source Types
+
+Use `source.type` to describe payload delivery:
+
+- `data`: Inline base64 payload with required `mime_type`
+- `url`: HTTP(S) or data URL, optional `mime_type`
+
+## Common Use Cases
+
+### Visual QA
+
+```python
+from ag_ui.core import UserMessage, TextPart, ImagePart, UrlSource
+
+message = UserMessage(
+    id="q1",
+    content=[
+        TextPart(text="What issue do you see in this UI?"),
+        ImagePart(
+            source=UrlSource(
+                value="https://example.com/ui.png",
+                mime_type="image/png",
+            ),
+            metadata={"detail": "high"},
+        ),
+    ],
+)
+```
+
+### Audio transcription
+
+```python
+from ag_ui.core import UserMessage, TextPart, AudioPart, UrlSource
+
+message = UserMessage(
+    id="q2",
+    content=[
+        TextPart(text="Transcribe this recording."),
+        AudioPart(
+            source=UrlSource(
+                value="https://example.com/meeting.wav",
+                mime_type="audio/wav",
+            )
+        ),
+    ],
+)
+```
+
+### Deprecated binary model
+
+`BinaryInputContent` is deprecated and emits a `DeprecationWarning`. It is kept
+as a temporary compatibility path while migrating to modality-specific parts.

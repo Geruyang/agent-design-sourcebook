@@ -1,0 +1,2058 @@
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import {
+  getAllMcpTools,
+  invalidateServerToolsCache,
+  MCPServerStdio,
+  MCPServerStreamableHttp,
+  MCPServerSSE,
+} from '../src/mcp';
+import { UserError } from '../src/errors';
+import { run } from '../src';
+import { ScriptedModel, assistantMessage, functionCall } from '../src/testing';
+import { tool, type FunctionTool } from '../src/tool';
+import { withTrace } from '../src/tracing';
+import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
+import type { CallToolResultContent, MCPServer, MCPTool } from '../src/mcp';
+import { RunContext } from '../src/runContext';
+import { Agent } from '../src/agent';
+import { handoff } from '../src/handoff';
+import { z } from 'zod';
+import logger from '../src/logger';
+import {
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  ToolGuardrailFunctionOutputFactory,
+} from '../src/toolGuardrail';
+
+class StubServer extends NodeMCPServerStdio {
+  public toolList: any[];
+  constructor(name: string, tools: any[]) {
+    super({ command: 'noop', name });
+    this.toolList = tools;
+    this.cacheToolsList = true;
+  }
+  async connect(): Promise<void> {}
+  async close(): Promise<void> {}
+  async listTools(): Promise<any[]> {
+    if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
+      return this._toolsList;
+    }
+    this._cacheDirty = false;
+    this._toolsList = this.toolList;
+    return this.toolList;
+  }
+  async callTool(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent> {
+    return [];
+  }
+}
+
+describe('MCP tools cache invalidation', () => {
+  it.each([false, true])(
+    'preserves colon-suffixed server caches when the base server was cached=%s',
+    async (cacheBaseServer) => {
+      const serverName = `isolated-cache-${cacheBaseServer}`;
+      const server = new StubServer(serverName, [toolNamed('query')]);
+      const suffixedServer = new StubServer(`${serverName}:readonly`, [
+        toolNamed('read'),
+      ]);
+      const listTools = vi.spyOn(server, 'listTools');
+      const listSuffixedTools = vi.spyOn(suffixedServer, 'listTools');
+
+      try {
+        if (cacheBaseServer) {
+          await getAllMcpTools({ mcpServers: [server] });
+        }
+        await getAllMcpTools({ mcpServers: [suffixedServer] });
+
+        await invalidateServerToolsCache(serverName);
+        await invalidateServerToolsCache(serverName);
+
+        const cachedTools = await getAllMcpTools({
+          mcpServers: [suffixedServer],
+        });
+        expect(cachedTools.map((tool) => tool.name)).toEqual(['read']);
+        expect(listSuffixedTools).toHaveBeenCalledTimes(1);
+
+        await getAllMcpTools({ mcpServers: [server] });
+        expect(listTools).toHaveBeenCalledTimes(cacheBaseServer ? 2 : 1);
+
+        await suffixedServer.invalidateToolsCache();
+        await getAllMcpTools({ mcpServers: [suffixedServer] });
+        expect(listSuffixedTools).toHaveBeenCalledTimes(2);
+      } finally {
+        await invalidateServerToolsCache(serverName);
+        await invalidateServerToolsCache(suffixedServer.name);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'reevaluates callable filters for each run context with prefixed names=%s',
+    async (includeServerInToolNames) => {
+      await invalidateServerToolsCache('current-context');
+      const server = new StubServer('current-context', [toolNamed('select')]);
+      const listTools = vi.spyOn(server, 'listTools');
+      server.toolFilter = async ({ runContext }) =>
+        (runContext.context as { allowSelection: boolean }).allowSelection ===
+        true;
+      const agent = new Agent({
+        name: 'SelectionAgent',
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames },
+      });
+      const expectedName = includeServerInToolNames
+        ? 'mcp_current_context__select'
+        : 'select';
+
+      for (const allowSelection of [true, false, true]) {
+        const tools = await agent.getAllTools(
+          new RunContext({ allowSelection }),
+        );
+        expect(tools.map((tool) => tool.name)).toEqual(
+          allowSelection ? [expectedName] : [],
+        );
+      }
+      expect(listTools).toHaveBeenCalledTimes(1);
+
+      server.toolFilter = () => {
+        throw new Error('filter unavailable');
+      };
+      await expect(agent.getAllTools(new RunContext({}))).rejects.toThrow(
+        'filter unavailable',
+      );
+      expect(listTools).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('applies changed static filters to the full cached discovery result', async () => {
+    const server = new StubServer('current-static', [
+      toolNamed('alpha'),
+      toolNamed('beta'),
+    ]);
+    const listTools = vi.spyOn(server, 'listTools');
+    const agent = new Agent({ name: 'StaticAgent', mcpServers: [server] });
+    const context = new RunContext({});
+    server.toolFilter = { allowedToolNames: ['alpha'] };
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['alpha'],
+    );
+
+    server.toolFilter = { blockedToolNames: ['alpha'] };
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['beta'],
+    );
+    server.toolFilter = undefined;
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['alpha', 'beta'],
+    );
+    expect(listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('reevaluates filters when callers share a custom discovery cache key', async () => {
+    const server = new StubServer('shared-discovery', [
+      toolNamed('alpha'),
+      toolNamed('beta'),
+    ]);
+    const listTools = vi.spyOn(server, 'listTools');
+    server.toolFilter = async ({ runContext }, tool) =>
+      tool.name ===
+      (runContext.context as { selectedTool: string }).selectedTool;
+    const options = {
+      mcpServers: [server],
+      agent: new Agent({ name: 'SharedAgent' }),
+      generateMCPToolCacheKey: () => 'shared-discovery-key',
+    };
+
+    for (const selectedTool of ['alpha', 'beta', 'alpha']) {
+      const tools = await getAllMcpTools({
+        ...options,
+        runContext: new RunContext({ selectedTool }),
+      });
+      expect(tools.map((tool) => tool.name)).toEqual([selectedTool]);
+    }
+    expect(listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses MCP filter diagnostics when tool logging is disabled', async () => {
+    const serverSecret = 'SECRET_MCP_FILTER_PATH_123';
+    const toolSecret = 'SECRET_MCP_FILTER_TOOL_123';
+    const server = new StubServer(
+      `streamable-http: https://example.test/mcp/${serverSecret}`,
+      [
+        {
+          name: toolSecret,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: [toolSecret] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
+  it('preserves sanitized MCP filter diagnostics when tool logging is enabled', async () => {
+    const server = new StubServer(
+      'streamable-http: https://example.test/mcp?token=SECRET_MCP_FILTER_QUERY_123',
+      [
+        {
+          name: 'blocked_tool',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: ['blocked_tool'] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).toHaveBeenCalledWith(
+        'MCP Tool (server: streamable-http: https://example.test/mcp, tool: blocked_tool) is blocked by the static filter.',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
+  it('fetches fresh tools after cache invalidation', async () => {
+    await withTrace('test', async () => {
+      const toolsA = [
+        {
+          name: 'a',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      const toolsB = [
+        {
+          name: 'b',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      const server = new StubServer('server', toolsA);
+
+      let tools = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'test' }),
+      });
+      expect(tools.map((t) => t.name)).toEqual(['a']);
+
+      server.toolList = toolsB;
+      tools = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'test' }),
+      });
+      expect(tools.map((t) => t.name)).toEqual(['a']);
+
+      await server.invalidateToolsCache();
+      tools = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'test' }),
+      });
+      expect(tools.map((t) => t.name)).toEqual(['b']);
+    });
+  });
+
+  it('binds cached tools to the current server instance', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'a',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const serverA = new StubServer('server', tools);
+      await getAllMcpTools({
+        mcpServers: [serverA],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'test' }),
+      });
+
+      const serverB = new StubServer('server', tools);
+      let called = false;
+      (serverB as any).callTool = async () => {
+        called = true;
+        return [];
+      };
+
+      const cachedTools = (await getAllMcpTools({
+        mcpServers: [serverB],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'test' }),
+      })) as FunctionTool[];
+      await cachedTools[0].invoke({} as any, '{}');
+
+      expect(called).toBe(true);
+    });
+  });
+
+  it('clears agent-specific cache entries when cache is invalidated', async () => {
+    await withTrace('test', async () => {
+      const toolsInitial = [
+        {
+          name: 'foo_initial',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar_initial',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      const toolsUpdated = [
+        {
+          name: 'foo_updated',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar_updated',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const server = new StubServer('server', toolsInitial);
+      server.toolFilter = async (ctx: any, tool: any) => {
+        if (ctx.agent.name === 'AgentOne') {
+          return tool.name.startsWith('foo');
+        }
+        return tool.name.startsWith('bar');
+      };
+
+      const agentOne = new Agent({ name: 'AgentOne' });
+      const agentTwo = new Agent({ name: 'AgentTwo' });
+      const ctxOne = new RunContext({});
+      const ctxTwo = new RunContext({});
+
+      const initialToolsAgentOne = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(initialToolsAgentOne.map((t: any) => t.name)).toEqual([
+        'foo_initial',
+      ]);
+
+      const initialToolsAgentTwo = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(initialToolsAgentTwo.map((t: any) => t.name)).toEqual([
+        'bar_initial',
+      ]);
+
+      server.toolList = toolsUpdated;
+      await server.invalidateToolsCache();
+
+      const updatedToolsAgentOne = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(updatedToolsAgentOne.map((t: any) => t.name)).toEqual([
+        'foo_updated',
+      ]);
+
+      const updatedToolsAgentTwo = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(updatedToolsAgentTwo.map((t: any) => t.name)).toEqual([
+        'bar_updated',
+      ]);
+    });
+  });
+
+  it('invalidates cached tools via invalidateServerToolsCache', async () => {
+    await withTrace('test', async () => {
+      let tools = [
+        {
+          name: 'alpha',
+          description: '',
+          inputSchema: { type: 'object', properties: {}, required: [] },
+        },
+      ];
+
+      const server: MCPServer = {
+        name: 'invalidate-server',
+        cacheToolsList: true,
+        toolFilter: async () => true,
+        async connect() {},
+        async close() {},
+        async listTools() {
+          return tools as any;
+        },
+        async callTool(
+          _toolName: string,
+          _args: Record<string, unknown> | null,
+          _meta?: Record<string, unknown> | null,
+        ) {
+          return [];
+        },
+        async invalidateToolsCache() {},
+      };
+
+      const agent = new Agent({ name: 'AgentOne' });
+      const runContext = new RunContext({});
+
+      const initial = await getAllMcpTools({
+        mcpServers: [server],
+        runContext,
+        agent,
+      });
+      expect(initial.map((tool) => tool.name)).toEqual(['alpha']);
+
+      tools = [
+        {
+          name: 'beta',
+          description: '',
+          inputSchema: { type: 'object', properties: {}, required: [] },
+        },
+      ];
+
+      await invalidateServerToolsCache('invalidate-server');
+      const refreshed = await getAllMcpTools({
+        mcpServers: [server],
+        runContext,
+        agent,
+      });
+      expect(refreshed.map((tool) => tool.name)).toEqual(['beta']);
+    });
+  });
+
+  it('does not cache a callable filter result that crosses invalidation', async () => {
+    let markFilterStarted!: () => void;
+    let resumeFilter!: () => void;
+    const filterStarted = new Promise<void>((resolve) => {
+      markFilterStarted = resolve;
+    });
+    const filterResumed = new Promise<void>((resolve) => {
+      resumeFilter = resolve;
+    });
+    let filterCalls = 0;
+    const server = new StubServer('filter-invalidation', [toolNamed('a')]);
+    server.toolFilter = async () => {
+      filterCalls += 1;
+      if (filterCalls === 1) {
+        markFilterStarted();
+        await filterResumed;
+      }
+      return true;
+    };
+    const params = {
+      mcpServers: [server],
+      runContext: new RunContext({}),
+      agent: new Agent({ name: 'FilterAgent' }),
+    };
+
+    const staleListing = getAllMcpTools(params);
+    await filterStarted;
+    server.toolList = [toolNamed('b')];
+    await server.invalidateToolsCache();
+    resumeFilter();
+
+    expect((await staleListing).map((tool) => tool.name)).toEqual(['a']);
+    expect((await getAllMcpTools(params)).map((tool) => tool.name)).toEqual([
+      'b',
+    ]);
+  });
+
+  it.each([
+    { cacheToolsList: true, expectedListCalls: 1, expectedFilterCalls: 2 },
+    { cacheToolsList: false, expectedListCalls: 2, expectedFilterCalls: 2 },
+  ])(
+    'isolates callable filter and FunctionTool mutations with cacheToolsList=$cacheToolsList',
+    async ({ cacheToolsList, expectedListCalls, expectedFilterCalls }) => {
+      const serverName = `filter-snapshot-${cacheToolsList}`;
+      await invalidateServerToolsCache(serverName);
+      const listedTool = toolWithNestedMetadata('original_tool');
+      const callTool = vi.fn(async () => [] as CallToolResultContent);
+      let listCalls = 0;
+      let filterCalls = 0;
+      const server: MCPServer = {
+        name: serverName,
+        cacheToolsList,
+        toolFilter: async (_context, tool) => {
+          filterCalls += 1;
+          mutateToolDefinition(tool);
+          return true;
+        },
+        async connect() {},
+        async close() {},
+        async listTools() {
+          listCalls += 1;
+          return [listedTool];
+        },
+        callTool,
+        async invalidateToolsCache() {
+          await invalidateServerToolsCache(serverName);
+        },
+      };
+      const options = {
+        mcpServers: [server],
+        convertSchemasToStrict: true,
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'FilterSnapshotAgent' }),
+      };
+
+      const firstListing = (await getAllMcpTools(options)) as FunctionTool[];
+      expectFunctionToolDefinition(firstListing[0], 'original_tool');
+      expectOriginalToolDefinition(listedTool, 'original_tool');
+
+      const firstParameters = firstListing[0].parameters as any;
+      firstListing[0].description = 'caller mutation';
+      firstParameters.required.length = 0;
+      firstParameters.properties.query.type = 'number';
+
+      const secondListing = (await getAllMcpTools(options)) as FunctionTool[];
+      expectFunctionToolDefinition(secondListing[0], 'original_tool');
+      expect(secondListing[0].parameters).not.toBe(firstParameters);
+      expectOriginalToolDefinition(listedTool, 'original_tool');
+
+      await secondListing[0].invoke(
+        new RunContext({}),
+        JSON.stringify({ query: 'safe' }),
+      );
+
+      expect(callTool).toHaveBeenCalledWith('original_tool', { query: 'safe' });
+      expect(listCalls).toBe(expectedListCalls);
+      expect(filterCalls).toBe(expectedFilterCalls);
+    },
+  );
+});
+
+describe('MCP tools static filters', () => {
+  it('filters tools using allowed and blocked tool names', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'alpha',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'beta',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'gamma',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const server = new StubServer('server', tools);
+      server.toolFilter = {
+        allowedToolNames: ['alpha', 'beta'],
+        blockedToolNames: ['beta'],
+      };
+
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result.map((tool) => tool.name)).toEqual(['alpha']);
+    });
+  });
+});
+
+describe('MCP tools uniqueness', () => {
+  it('throws when duplicate tool names are found across servers', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'duplicate',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const serverA = new StubServer('server-a', tools);
+      const serverB = new StubServer('server-b', tools);
+
+      await expect(
+        getAllMcpTools({
+          mcpServers: [serverA, serverB],
+          runContext: new RunContext({}),
+          agent: new Agent({ name: 'AgentOne' }),
+        }),
+      ).rejects.toBeInstanceOf(UserError);
+    });
+  });
+
+  it('throws when one server returns tool names that normalize to one function tool name', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        toolNamed('search-a'),
+        toolNamed('search_a'),
+      ]);
+
+      await expect(
+        getAllMcpTools({
+          mcpServers: [server],
+          runContext: new RunContext({}),
+          agent: new Agent({ name: 'AgentOne' }),
+        }),
+      ).rejects.toBeInstanceOf(UserError);
+    });
+  });
+
+  it.each([false, true])(
+    'invokes both tools of one server through run() with stream=%s',
+    async (stream) => {
+      await withTrace('test', async () => {
+        const server = new StubServer('docs', [
+          toolNamed('search-a'),
+          toolNamed('search_a'),
+        ]);
+        const callTool = vi.spyOn(server, 'callTool');
+
+        const agent = new Agent({
+          name: 'SameServerDuplicateToolsAgent',
+          mcpServers: [server],
+          mcpConfig: { includeServerInToolNames: true },
+        });
+
+        // The advertised names are what the model can call; the server still
+        // has to receive the original tool names it published.
+        const advertised = (await agent.getAllTools(new RunContext({}))).map(
+          (candidate) => candidate.name,
+        );
+        expect(new Set(advertised).size).toBe(2);
+
+        agent.model = new ScriptedModel([
+          [
+            functionCall(advertised[0]!, {}, { callId: 'search_dash' }),
+            functionCall(advertised[1]!, {}, { callId: 'search_underscore' }),
+          ],
+          [assistantMessage('both tools ran')],
+        ]);
+
+        let result;
+        if (stream) {
+          const streamed = await run(agent, 'search twice', { stream: true });
+          await streamed.completed;
+          result = streamed;
+        } else {
+          result = await run(agent, 'search twice');
+        }
+
+        expect(result.finalOutput).toBe('both tools ran');
+        expect(callTool.mock.calls.map(([name]) => name).sort()).toEqual([
+          'search-a',
+          'search_a',
+        ]);
+      });
+    },
+  );
+
+  it('prefixes local MCP tool names with server names when requested', async () => {
+    await withTrace('test', async () => {
+      const serverA = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'fetch',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      const serverB = new StubServer('calendar', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'update',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      serverA.cacheToolsList = false;
+      serverB.cacheToolsList = false;
+
+      const tools = await getAllMcpTools({
+        mcpServers: [serverA, serverB],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+        includeServerInToolNames: true,
+      });
+
+      expect(tools.map((t) => t.name)).toEqual([
+        'mcp_docs__search',
+        'mcp_docs__fetch',
+        'mcp_calendar__search',
+        'mcp_calendar__update',
+      ]);
+    });
+  });
+
+  it('keeps server guardrails isolated through filtering, caching, and name prefixing', async () => {
+    const inputGuardrail = defineToolInputGuardrail({
+      name: 'guarded-input',
+      run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+    });
+    const outputGuardrail = defineToolOutputGuardrail({
+      name: 'guarded-output',
+      run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+    });
+    const guardedServer = new StubServer('guarded', [
+      toolNamed('allowed'),
+      toolNamed('filtered'),
+    ]);
+    guardedServer.toolFilter = { allowedToolNames: ['allowed'] };
+    guardedServer.toolInputGuardrails = [inputGuardrail];
+    guardedServer.toolOutputGuardrails = [outputGuardrail];
+    const unguardedServer = new StubServer('unguarded', [toolNamed('plain')]);
+    const options = {
+      mcpServers: [guardedServer, unguardedServer],
+      runContext: new RunContext({}),
+      agent: new Agent({ name: 'GuardrailIsolationAgent' }),
+      includeServerInToolNames: true,
+    };
+
+    const first = (await getAllMcpTools(options)) as FunctionTool[];
+    const second = (await getAllMcpTools(options)) as FunctionTool[];
+
+    expect(first.map((tool) => tool.name)).toEqual([
+      'mcp_guarded__allowed',
+      'mcp_unguarded__plain',
+    ]);
+    expect(first[0].inputGuardrails).toEqual([inputGuardrail]);
+    expect(first[0].outputGuardrails).toEqual([outputGuardrail]);
+    expect(first[1].inputGuardrails).toEqual([]);
+    expect(first[1].outputGuardrails).toEqual([]);
+    expect(second[0].inputGuardrails).not.toBe(first[0].inputGuardrails);
+    expect(second[0].outputGuardrails).not.toBe(first[0].outputGuardrails);
+
+    first[0].inputGuardrails?.splice(0);
+    first[0].outputGuardrails?.splice(0);
+    expect(guardedServer.toolInputGuardrails).toEqual([inputGuardrail]);
+    expect(guardedServer.toolOutputGuardrails).toEqual([outputGuardrail]);
+    expect(second[0].inputGuardrails).toEqual([inputGuardrail]);
+    expect(second[0].outputGuardrails).toEqual([outputGuardrail]);
+  });
+
+  it('redacts URL credentials from prefixed tool names while dispatching the original tool name', async () => {
+    const endpoint = new URL(
+      'https://example.test:8443/mcp?token=URL_QUERY#URL_FRAGMENT',
+    );
+    endpoint.username = 'URL_USER';
+    endpoint.password = 'URL_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
+    const server = new StubServer(rawServerName, [
+      {
+        name: 'search',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    ]);
+    server.cacheToolsList = false;
+    const callTool = vi.fn(async () => [{ type: 'text', text: 'ok' }]);
+    server.callTool = callTool;
+
+    const tools = (await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    })) as FunctionTool[];
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toContain('example_test_8443_mcp');
+    for (const secret of [
+      'URL_USER',
+      'URL_PASSWORD',
+      'URL_QUERY',
+      'URL_FRAGMENT',
+    ]) {
+      expect(tools[0].name).not.toContain(secret);
+    }
+
+    await tools[0].invoke(
+      new RunContext({}),
+      JSON.stringify({ query: 'agents' }),
+    );
+    expect(callTool).toHaveBeenCalledWith('search', { query: 'agents' });
+    expect(server.name).toBe(rawServerName);
+  });
+
+  it('preserves credential-free URL spelling in prefixed tool names', async () => {
+    const server = new StubServer(
+      'streamable-http: https://EXAMPLE.test:443/mcp',
+      [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.cacheToolsList = false;
+
+    const tools = await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    });
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe(
+      'mcp_streamable_http__https___EXAMPLE_test_443_mcp__search',
+    );
+  });
+
+  it('rejects URL-derived server names that collide after redaction', async () => {
+    const endpointA = new URL(
+      'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',
+    );
+    endpointA.username = 'USER_A';
+    endpointA.password = 'PASSWORD_A';
+    const endpointB = new URL(
+      'https://example.test/mcp?token=QUERY_B#FRAGMENT_B',
+    );
+    endpointB.username = 'USER_B';
+    endpointB.password = 'PASSWORD_B';
+    const rawServerNames = [
+      `streamable-http: ${endpointA.toString()}`,
+      `streamable-http: ${endpointB.toString()}`,
+    ];
+
+    async function getCollisionError(serverNames: string[]): Promise<Error> {
+      const servers = serverNames.map((name) => {
+        const server = new StubServer(name, [
+          {
+            name: 'search',
+            description: '',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ]);
+        server.cacheToolsList = false;
+        return server;
+      });
+
+      try {
+        await getAllMcpTools({
+          mcpServers: servers,
+          includeServerInToolNames: true,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(UserError);
+        return error as Error;
+      }
+      throw new Error('Expected sanitized MCP server name collision.');
+    }
+
+    const forwardError = await getCollisionError(rawServerNames);
+    const reversedError = await getCollisionError(
+      [...rawServerNames].reverse(),
+    );
+    const expectedMessage =
+      "MCP server names are indistinguishable after URL redaction for tool 'search': 'streamable-http: https://example.test/mcp'. Configure unique safe server names when includeServerInToolNames is enabled.";
+
+    expect(forwardError.message).toBe(expectedMessage);
+    expect(reversedError.message).toBe(expectedMessage);
+    for (const secret of [
+      'USER_A',
+      'PASSWORD_A',
+      'QUERY_A',
+      'FRAGMENT_A',
+      'USER_B',
+      'PASSWORD_B',
+      'QUERY_B',
+      'FRAGMENT_B',
+    ]) {
+      expect(forwardError.message).not.toContain(secret);
+      expect(reversedError.message).not.toContain(secret);
+    }
+  });
+
+  it('sanitizes non-ASCII MCP server and tool names before prefixing', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('天気サーバー', [
+        {
+          name: '検索',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+
+      const tools = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+        includeServerInToolNames: true,
+      });
+
+      expect(tools.map((t) => t.name)).toEqual(['mcp_server__tool']);
+      expect(tools[0].name.length).toBeLessThanOrEqual(64);
+      expect(/^[A-Za-z0-9_-]+$/.test(tools[0].name)).toBe(true);
+    });
+  });
+
+  it('shortens long prefixed MCP names with deterministic hashes', async () => {
+    await withTrace('test', async () => {
+      const longServerName = `server_${'a'.repeat(100)}`;
+      const longToolName = `tool_${'b'.repeat(100)}`;
+      const serverA = new StubServer(longServerName, [
+        {
+          name: longToolName,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      const serverB = new StubServer(longServerName, [
+        {
+          name: longToolName,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      serverA.cacheToolsList = false;
+      serverB.cacheToolsList = false;
+
+      const tools = await getAllMcpTools({
+        mcpServers: [serverA, serverB],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+        includeServerInToolNames: true,
+      });
+      const names = tools.map((t) => t.name);
+
+      expect(new Set(names).size).toBe(2);
+      expect(names.every((name) => name.length <= 64)).toBe(true);
+      expect(names.every((name) => /^[A-Za-z0-9_-]+$/.test(name))).toBe(true);
+    });
+  });
+
+  it('allocates normalized MCP tool name collisions stably', async () => {
+    async function publicNamesByOriginalTool(
+      toolNames: string[],
+    ): Promise<Record<string, string>> {
+      const server = new StubServer(
+        'docs',
+        toolNames.map((name) => ({
+          name,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        })),
+      );
+      server.cacheToolsList = false;
+
+      const tools = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+        includeServerInToolNames: true,
+      });
+
+      return Object.fromEntries(
+        server.toolList.map((mcpTool, index) => {
+          const tool = tools[index];
+          if (!tool) {
+            throw new Error(`Missing function tool at index ${index}`);
+          }
+          return [String(mcpTool.name), tool.name];
+        }),
+      );
+    }
+
+    await withTrace('test', async () => {
+      const firstOrder = await publicNamesByOriginalTool(['search', 'search!']);
+      const reversedOrder = await publicNamesByOriginalTool([
+        'search!',
+        'search',
+      ]);
+
+      expect(firstOrder).toEqual(reversedOrder);
+      expect(Object.values(firstOrder)).not.toContain('mcp_docs__search');
+      expect(new Set(Object.values(firstOrder)).size).toBe(2);
+      expect(
+        Object.values(firstOrder).every((name) =>
+          name.startsWith('mcp_docs__search_'),
+        ),
+      ).toBe(true);
+
+      const dashOrder = await publicNamesByOriginalTool([
+        'search-a',
+        'search_a',
+      ]);
+      const reversedDashOrder = await publicNamesByOriginalTool([
+        'search_a',
+        'search-a',
+      ]);
+
+      expect(dashOrder).toEqual(reversedDashOrder);
+      expect(new Set(Object.values(dashOrder)).size).toBe(2);
+      expect(
+        Object.values(dashOrder).every((name) =>
+          name.startsWith('mcp_docs__search_'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it('reserves existing local function tool names when prefixing MCP tools', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      const reservedTool = tool({
+        name: 'mcp_docs__search',
+        description: 'Reserved local tool.',
+        parameters: z.object({}),
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'AgentOne',
+        tools: [reservedTool],
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames: true },
+      });
+
+      const tools = await agent.getMcpTools(new RunContext({}));
+
+      expect(tools[0].name).not.toBe('mcp_docs__search');
+      expect(tools[0].name.startsWith('mcp_docs__search_')).toBe(true);
+      expect(tools[0].name.length).toBeLessThanOrEqual(64);
+    });
+  });
+
+  it('reserves enabled handoff tool names when prefixing MCP tools', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('calendar', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      const handoffAgent = new Agent({ name: 'CalendarAgent' });
+      const agent = new Agent({
+        name: 'AgentOne',
+        handoffs: [
+          handoff(handoffAgent, {
+            toolNameOverride: 'mcp_calendar__search',
+          }),
+        ],
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames: true },
+      });
+
+      const tools = await agent.getMcpTools(new RunContext({}));
+
+      expect(tools[0].name).not.toBe('mcp_calendar__search');
+      expect(tools[0].name.startsWith('mcp_calendar__search_')).toBe(true);
+    });
+  });
+
+  it('ignores disabled handoff tool names when prefixing MCP tools', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('calendar', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      const handoffAgent = new Agent({ name: 'CalendarAgent' });
+      const agent = new Agent({
+        name: 'AgentOne',
+        handoffs: [
+          handoff(handoffAgent, {
+            toolNameOverride: 'mcp_calendar__search',
+            isEnabled: false,
+          }),
+        ],
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames: true },
+      });
+
+      const tools = await agent.getMcpTools(new RunContext({}));
+
+      expect(tools[0].name).toBe('mcp_calendar__search');
+    });
+  });
+
+  it('uses agent MCP config to force strict MCP tool schemas', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: {
+            type: 'object',
+            properties: { foo: { type: 'string' } },
+          },
+        },
+      ]);
+      server.cacheToolsList = false;
+      const agent = new Agent({
+        name: 'AgentOne',
+        mcpServers: [server],
+        mcpConfig: { convertSchemasToStrict: true },
+      });
+
+      const mcpTools = (await agent.getMcpTools(
+        new RunContext({}),
+      )) as FunctionTool[];
+      const mcpTool = mcpTools[0]!;
+
+      expect(mcpTool.strict).toBe(true);
+      expect(mcpTool.parameters.additionalProperties).toBe(false);
+      expect(mcpTool.parameters.required).toEqual(['foo']);
+    });
+  });
+
+  it('uses agent MCP config errorFunction for MCP tool failures', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      const callTool = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      server.callTool = callTool;
+      const errorFunction = vi.fn(() => 'agent failure');
+      const agent = new Agent({
+        name: 'AgentOne',
+        mcpServers: [server],
+        mcpConfig: { errorFunction },
+      });
+
+      const mcpTools = (await agent.getMcpTools(
+        new RunContext({}),
+      )) as FunctionTool[];
+      const mcpTool = mcpTools[0]!;
+      const result = await mcpTool.invoke(new RunContext({}), '{}');
+
+      expect(result).toBe('agent failure');
+      expect(errorFunction).toHaveBeenCalledTimes(1);
+      expect(callTool).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('lets server MCP errorFunction override agent MCP config', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      server.callTool = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      server.errorFunction = vi.fn(() => 'server failure');
+      const agentErrorFunction = vi.fn(() => 'agent failure');
+      const agent = new Agent({
+        name: 'AgentOne',
+        mcpServers: [server],
+        mcpConfig: { errorFunction: agentErrorFunction },
+      });
+
+      const mcpTools = (await agent.getMcpTools(
+        new RunContext({}),
+      )) as FunctionTool[];
+      const mcpTool = mcpTools[0]!;
+      const result = await mcpTool.invoke(new RunContext({}), '{}');
+
+      expect(result).toBe('server failure');
+      expect(server.errorFunction).toHaveBeenCalledTimes(1);
+      expect(agentErrorFunction).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rethrows MCP tool failures when agent MCP config errorFunction is null', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ]);
+      server.cacheToolsList = false;
+      server.callTool = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      const agent = new Agent({
+        name: 'AgentOne',
+        mcpServers: [server],
+        mcpConfig: { errorFunction: null },
+      });
+
+      const mcpTools = (await agent.getMcpTools(
+        new RunContext({}),
+      )) as FunctionTool[];
+      const mcpTool = mcpTools[0]!;
+
+      await expect(mcpTool.invoke(new RunContext({}), '{}')).rejects.toThrow(
+        'boom',
+      );
+    });
+  });
+});
+
+describe('MCP tools agent-dependent cache behavior', () => {
+  it('handles agent-specific callable tool filters without cache leaking between agents', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'foo',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      // Callable filter chooses tool availability per agent name
+      const filter = async (ctx: any, tool: any) => {
+        if (ctx.agent.name === 'AgentOne') {
+          return tool.name === 'foo'; // AgentOne: only 'foo' allowed
+        } else {
+          return tool.name === 'bar'; // AgentTwo: only 'bar' allowed
+        }
+      };
+      const server = new StubServer('shared-server', tools);
+      server.toolFilter = filter;
+
+      const agentOne = new Agent({ name: 'AgentOne' });
+      const agentTwo = new Agent({ name: 'AgentTwo' });
+      const ctxOne = new RunContext({});
+      const ctxTwo = new RunContext({});
+
+      // First access by AgentOne (should get only 'foo')
+      const result1 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(result1.map((t: any) => t.name)).toEqual(['foo']);
+
+      // Second access by AgentTwo (should get only 'bar')
+      const result2 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(result2.map((t: any) => t.name)).toEqual(['bar']);
+
+      // Third access by AgentOne (should still get only 'foo', from cache key)
+      const result3 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(result3.map((t: any) => t.name)).toEqual(['foo']);
+    });
+  });
+});
+
+describe('Custom generateMCPToolCacheKey can include runContext in key', () => {
+  it('supports fully custom cache key logic, including runContext properties', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'foo',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      // Filter that allows a tool based on runContext meta value
+      const filter = async (ctx: any, tool: any) => {
+        if (ctx.runContext.meta && ctx.runContext.meta.kind === 'fooUser') {
+          return tool.name.startsWith('foo');
+        } else {
+          return tool.name.startsWith('bar');
+        }
+      };
+      const server = new StubServer('custom-key-srv', tools);
+      server.toolFilter = filter;
+      const agent = new Agent({ name: 'A' });
+      // Deliberately omit the server name so invalidation depends on the key registry.
+      const generateMCPToolCacheKey = ({ runContext }: any) =>
+        `opaque-partition-${runContext?.meta?.kind}`;
+
+      // Agent 'A', runContext kind 'fooUser' => should see only 'foo'
+      const context1 = new RunContext({});
+      (context1 as any).meta = { kind: 'fooUser' };
+      const res1 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context1,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res1.map((t: any) => t.name)).toEqual(['foo']);
+
+      // Agent 'A', runContext kind 'barUser' => should see only 'bar'
+      const context2 = new RunContext({});
+      (context2 as any).meta = { kind: 'barUser' };
+      const res2 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context2,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res2.map((t: any) => t.name)).toEqual(['bar']);
+
+      // Agent 'A'/'fooUser' again => should hit the correct cache entry, still see only 'foo'
+      const res3 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context1,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res3.map((t: any) => t.name)).toEqual(['foo']);
+
+      server.toolList = [toolNamed('foo-updated'), toolNamed('bar-updated')];
+      await server.invalidateToolsCache();
+
+      const refreshedFoo = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context1,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      const refreshedBar = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context2,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(refreshedFoo.map((tool) => tool.name)).toEqual(['foo_updated']);
+      expect(refreshedBar.map((tool) => tool.name)).toEqual(['bar_updated']);
+    });
+  });
+});
+
+describe('MCP tools without tracing', () => {
+  it('lists tools directly when no trace is active', async () => {
+    let listCalls = 0;
+    const server: MCPServer = {
+      name: 'no-trace-server',
+      cacheToolsList: false,
+      async connect() {},
+      async close() {},
+      async listTools() {
+        listCalls += 1;
+        return [
+          {
+            name: 'tool',
+            description: '',
+            inputSchema: { type: 'object', properties: {}, required: [] },
+          },
+        ] as any;
+      },
+      async callTool(
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) {
+        return [];
+      },
+      async invalidateToolsCache() {},
+    };
+
+    const tools = await getAllMcpTools([server]);
+    expect(tools.map((tool) => tool.name)).toEqual(['tool']);
+    expect(listCalls).toBe(1);
+  });
+});
+
+function toolNamed(name: string): MCPTool {
+  return {
+    name,
+    description: '',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  };
+}
+
+type MCPToolWithNestedMetadata = MCPTool & {
+  outputSchema: {
+    type: 'object';
+    properties: { answer: { type: string } };
+    required: string[];
+  };
+  annotations: { audience: string[] };
+  _meta: { owner: { name: string } };
+};
+
+function toolWithNestedMetadata(name: string): MCPToolWithNestedMetadata {
+  return {
+    name,
+    description: 'original description',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: { answer: { type: 'string' } },
+      required: ['answer'],
+    },
+    annotations: { audience: ['user'] },
+    _meta: { owner: { name: 'server' } },
+  };
+}
+
+function mutateToolDefinition(tool: MCPTool): void {
+  const toolWithMetadata = tool as MCPToolWithNestedMetadata;
+  toolWithMetadata.name = 'mutated_tool';
+  toolWithMetadata.description = 'mutated description';
+  toolWithMetadata.inputSchema.required.length = 0;
+  (toolWithMetadata.inputSchema.properties.query as { type: string }).type =
+    'number';
+  toolWithMetadata.outputSchema.required.length = 0;
+  toolWithMetadata.outputSchema.properties.answer.type = 'number';
+  toolWithMetadata.annotations.audience[0] = 'assistant';
+  toolWithMetadata._meta.owner.name = 'caller';
+}
+
+function expectOriginalToolDefinition(tool: MCPTool, name: string): void {
+  const toolWithMetadata = tool as MCPToolWithNestedMetadata;
+  expect(toolWithMetadata).toEqual(toolWithNestedMetadata(name));
+}
+
+function expectFunctionToolDefinition(
+  functionTool: FunctionTool,
+  name: string,
+): void {
+  expect(functionTool.name).toBe(name);
+  expect(functionTool.description).toBe('original description');
+  expect(functionTool.parameters).toMatchObject({
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+    additionalProperties: false,
+  });
+  expect(functionTool.strict).toBe(true);
+}
+
+function createDeferredVoid() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+function createStubUnderlying(name: string, initialTools: MCPTool[]) {
+  let toolList = [...initialTools];
+  let cachedTools: MCPTool[] | undefined;
+  let cacheDirty = true;
+  let invalidateCalls = 0;
+  let listCalls = 0;
+  let connected = false;
+  let connection = 0;
+  let sessionId: string | undefined;
+  let toolsGeneration = 0;
+  let connectionStateVersion = 0;
+  let isClosed = true;
+  let connectOperation: (() => Promise<void>) | undefined;
+  let closeOperation: (() => Promise<void>) | undefined;
+  let invalidateOperation: (() => Promise<void>) | undefined;
+  let listOperation: (() => Promise<void>) | undefined;
+  const stub = {
+    name,
+    get sessionId() {
+      return sessionId;
+    },
+    async connect() {
+      const connectStateVersion = connectionStateVersion;
+      isClosed = false;
+      await connectOperation?.();
+      if (isClosed || connectStateVersion !== connectionStateVersion) {
+        throw new Error(
+          'Streamable HTTP MCP server was closed during connect.',
+        );
+      }
+      connected = true;
+      connection += 1;
+      sessionId = `${name}-${connection}`;
+      cacheDirty = true;
+    },
+    async close() {
+      isClosed = true;
+      connectionStateVersion += 1;
+      connected = false;
+      sessionId = undefined;
+      cacheDirty = true;
+      await closeOperation?.();
+    },
+    async listTools() {
+      listCalls += 1;
+      if (!connected) {
+        throw new Error(
+          'Server not initialized. Make sure you call connect() first.',
+        );
+      }
+      if (!cacheDirty && cachedTools) {
+        return cachedTools;
+      }
+      const listedTools = [...toolList];
+      const listedGeneration = toolsGeneration;
+      await listOperation?.();
+      if (listedGeneration === toolsGeneration) {
+        cachedTools = listedTools;
+        cacheDirty = false;
+      }
+      return listedTools;
+    },
+    async invalidateToolsCache() {
+      invalidateCalls += 1;
+      toolsGeneration += 1;
+      cacheDirty = true;
+      if (invalidateOperation) {
+        await invalidateOperation();
+      }
+      await invalidateServerToolsCache(name);
+    },
+    async callToolResult() {
+      if (!connected) {
+        throw new Error(
+          'Server not initialized. Make sure you call connect() first.',
+        );
+      }
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  return {
+    stub,
+    setTools: (tools: MCPTool[]) => (toolList = [...tools]),
+    setConnectOperation: (operation: () => Promise<void>) => {
+      connectOperation = operation;
+    },
+    setCloseOperation: (operation: () => Promise<void>) => {
+      closeOperation = operation;
+    },
+    setInvalidateOperation: (operation: () => Promise<void>) => {
+      invalidateOperation = operation;
+    },
+    setListOperation: (operation: () => Promise<void>) => {
+      listOperation = operation;
+    },
+    invalidateCalls: () => invalidateCalls,
+    listCalls: () => listCalls,
+    underlyingCachedTools: () => cachedTools,
+  };
+}
+
+const wrapperCacheCases = [
+  {
+    label: 'MCPServerStdio',
+    serverName: 'stdio-wrapper-cache',
+    createServer: () =>
+      new MCPServerStdio({
+        command: 'noop',
+        name: 'stdio-wrapper-cache',
+        cacheToolsList: true,
+      }),
+  },
+  {
+    label: 'MCPServerStreamableHttp',
+    serverName: 'streamable-http-wrapper-cache',
+    createServer: () =>
+      new MCPServerStreamableHttp({
+        url: 'http://localhost:1',
+        name: 'streamable-http-wrapper-cache',
+        cacheToolsList: true,
+      }),
+  },
+  {
+    label: 'MCPServerSSE',
+    serverName: 'sse-wrapper-cache',
+    createServer: () =>
+      new MCPServerSSE({
+        url: 'http://localhost:1',
+        name: 'sse-wrapper-cache',
+        cacheToolsList: true,
+      }),
+  },
+];
+
+describe.each(wrapperCacheCases)(
+  '$label cache invalidation',
+  ({ serverName, createServer }) => {
+    beforeEach(async () => {
+      await invalidateServerToolsCache(serverName);
+    });
+
+    function createHarness() {
+      const server = createServer();
+      const {
+        stub,
+        setTools,
+        setConnectOperation,
+        setCloseOperation,
+        setListOperation,
+        invalidateCalls,
+        listCalls,
+        underlyingCachedTools,
+      } = createStubUnderlying(serverName, [toolWithNestedMetadata('a')]);
+      (server as unknown as { underlying: typeof stub }).underlying = stub;
+      return {
+        server,
+        setTools,
+        setConnectOperation,
+        setCloseOperation,
+        setListOperation,
+        invalidateCalls,
+        listCalls,
+        underlyingCachedTools,
+      };
+    }
+
+    it('does not expose its cached tool definitions to callers', async () => {
+      const { server, listCalls } = createHarness();
+      await server.connect();
+
+      const firstListing = await server.listTools();
+      const firstTool = firstListing[0];
+      firstListing.length = 0;
+      mutateToolDefinition(firstTool);
+
+      const secondListing = await server.listTools();
+
+      expect(secondListing.map((tool) => tool.name)).toEqual(['a']);
+      expect(secondListing[0]).not.toBe(firstTool);
+      expectOriginalToolDefinition(secondListing[0], 'a');
+      expect(listCalls()).toBe(1);
+    });
+
+    it('does not expose underlying tool definitions without wrapper caching', async () => {
+      const { server, underlyingCachedTools } = createHarness();
+      server.cacheToolsList = false;
+      await server.connect();
+
+      const listing = await server.listTools();
+      const listedTool = listing[0];
+      listing.length = 0;
+      mutateToolDefinition(listedTool);
+
+      expect(underlyingCachedTools()?.map((tool) => tool.name)).toEqual(['a']);
+      expectOriginalToolDefinition(underlyingCachedTools()![0], 'a');
+    });
+
+    it('returns fresh shared tools after explicit invalidation', async () => {
+      const { server, setTools, invalidateCalls } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      setTools([toolNamed('b')]);
+      const callsBeforeInvalidation = invalidateCalls();
+      await server.invalidateToolsCache();
+
+      expect(invalidateCalls()).toBe(callsBeforeInvalidation + 1);
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['b'],
+      );
+    });
+
+    it('does not restore stale tools from a listing crossing invalidation', async () => {
+      const { server, setTools } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      setTools([toolNamed('b')]);
+      const invalidation = server.invalidateToolsCache();
+      const crossingListing = getAllMcpTools([server]);
+      const crossingExpectation = expect(crossingListing).rejects.toThrow(
+        'server lifecycle operation is in progress',
+      );
+      await invalidation;
+
+      await crossingExpectation;
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['b'],
+      );
+    });
+
+    it('rejects a listing invalidated before its wrapper cache commit', async () => {
+      const { server, setTools, setListOperation } = createHarness();
+      await server.connect();
+      const listStarted = createDeferredVoid();
+      const resumeList = createDeferredVoid();
+      setListOperation(async () => {
+        listStarted.resolve();
+        await resumeList.promise;
+      });
+
+      const staleListing = server.listTools();
+      await listStarted.promise;
+      setTools([toolNamed('b')]);
+      await server.invalidateToolsCache();
+      resumeList.resolve();
+
+      await expect(staleListing).rejects.toThrow(
+        'MCP tool listing became stale before it completed',
+      );
+      expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+        'b',
+      ]);
+    });
+
+    it('rejects listings while reconnect is in progress', async () => {
+      const { server, setTools, setConnectOperation } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      const connectStarted = createDeferredVoid();
+      const resumeConnect = createDeferredVoid();
+      setConnectOperation(async () => {
+        connectStarted.resolve();
+        await resumeConnect.promise;
+      });
+      setTools([toolNamed('b')]);
+
+      const reconnect = server.connect();
+      await connectStarted.promise;
+      await expect(getAllMcpTools([server])).rejects.toThrow(
+        'server lifecycle operation is in progress',
+      );
+      resumeConnect.resolve();
+      await reconnect;
+
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['b'],
+      );
+    });
+
+    it('rejects listings while close is in progress', async () => {
+      const { server, setCloseOperation } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      const closeStarted = createDeferredVoid();
+      const resumeClose = createDeferredVoid();
+      setCloseOperation(async () => {
+        closeStarted.resolve();
+        await resumeClose.promise;
+      });
+
+      const close = server.close();
+      await closeStarted.promise;
+      await expect(getAllMcpTools([server])).rejects.toThrow(
+        'server lifecycle operation is in progress',
+      );
+      resumeClose.resolve();
+      await close;
+
+      await expect(getAllMcpTools([server])).rejects.toThrow(
+        'Server not initialized',
+      );
+    });
+
+    it('releases the lifecycle guard after a failed reconnect', async () => {
+      const { server, setTools, setConnectOperation } = createHarness();
+      await server.connect();
+      await getAllMcpTools([server]);
+      setTools([toolNamed('b')]);
+      setConnectOperation(async () => {
+        throw new Error('connect failed');
+      });
+
+      await expect(server.connect()).rejects.toThrow('connect failed');
+
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['b'],
+      );
+    });
+
+    it('does not advertise shared cached tools after close', async () => {
+      const { server } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      await server.close();
+
+      await expect(getAllMcpTools([server])).rejects.toThrow(
+        'Server not initialized',
+      );
+    });
+
+    it('returns tools from the current connection after reconnect', async () => {
+      const { server, setTools } = createHarness();
+      await server.connect();
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['a'],
+      );
+
+      setTools([toolNamed('b')]);
+      await server.connect();
+
+      expect((await getAllMcpTools([server])).map((tool) => tool.name)).toEqual(
+        ['b'],
+      );
+    });
+  },
+);
+
+it('snapshots sessionless streamable HTTP tool listings', async () => {
+  const serverName = 'streamable-http-sessionless-tools';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const listedTools = [toolNamed('a')];
+  const stub = {
+    name: serverName,
+    sessionId: undefined,
+    async connect() {},
+    async close() {},
+    async invalidateToolsCache() {},
+    async listTools() {
+      return listedTools;
+    },
+    async callToolResult(toolName: string) {
+      if (!listedTools.some((tool) => tool.name === toolName)) {
+        throw new Error(`Tool ${toolName} was not listed.`);
+      }
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  await server.connect();
+
+  const returnedTools = await server.listTools();
+  returnedTools.length = 0;
+
+  await expect(server.callTool('a', {})).resolves.toEqual([
+    { type: 'text', text: 'ok' },
+  ]);
+
+  const uncachedServer = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: `${serverName}-uncached`,
+    cacheToolsList: false,
+  });
+  (uncachedServer as unknown as { underlying: typeof stub }).underlying = stub;
+  await uncachedServer.connect();
+
+  const uncachedReturnedTools = await uncachedServer.listTools();
+  expect(uncachedReturnedTools).not.toBe(listedTools);
+  uncachedReturnedTools.length = 0;
+
+  await expect(uncachedServer.callTool('a', {})).resolves.toEqual([
+    { type: 'text', text: 'ok' },
+  ]);
+});
+
+it('starts streamable HTTP close before yielding', async () => {
+  const serverName = 'streamable-http-immediate-close';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setCloseOperation } = createStubUnderlying(serverName, [
+    toolNamed('a'),
+  ]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const closeStarted = createDeferredVoid();
+  const resumeClose = createDeferredVoid();
+  setCloseOperation(async () => {
+    closeStarted.resolve();
+    await resumeClose.promise;
+  });
+  await server.connect();
+
+  const closing = server.close();
+  const toolCallExpectation = expect(server.callTool('a', {})).rejects.toThrow(
+    'Server not initialized',
+  );
+  await closeStarted.promise;
+  resumeClose.resolve();
+
+  await closing;
+  await toolCallExpectation;
+});
+
+it('keeps close authoritative over a pending streamable HTTP connect', async () => {
+  const serverName = 'streamable-http-connect-close-order';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setConnectOperation } = createStubUnderlying(serverName, [
+    toolNamed('a'),
+  ]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const connectStarted = createDeferredVoid();
+  const resumeConnect = createDeferredVoid();
+  setConnectOperation(async () => {
+    connectStarted.resolve();
+    await resumeConnect.promise;
+  });
+
+  const connecting = server.connect();
+  const connectingExpectation = expect(connecting).rejects.toThrow(
+    'Streamable HTTP MCP server was closed during connect',
+  );
+  const closing = server.close();
+  await connectStarted.promise;
+  resumeConnect.resolve();
+
+  await closing;
+  await connectingExpectation;
+  expect(server.sessionId).toBeUndefined();
+});
+
+it('keeps the lifecycle guard active until all branches settle', async () => {
+  const serverName = 'streamable-http-lifecycle-settlement';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setConnectOperation, setInvalidateOperation } =
+    createStubUnderlying(serverName, [toolNamed('a')]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const connectStarted = createDeferredVoid();
+  const resumeConnect = createDeferredVoid();
+  setConnectOperation(async () => {
+    connectStarted.resolve();
+    await resumeConnect.promise;
+  });
+  setInvalidateOperation(async () => {
+    throw new Error('invalidation failed');
+  });
+
+  const connecting = server.connect();
+  const connectingExpectation = expect(connecting).rejects.toThrow(
+    'invalidation failed',
+  );
+  await connectStarted.promise;
+  const listingExpectation = expect(server.listTools()).rejects.toThrow(
+    'server lifecycle operation is in progress',
+  );
+  resumeConnect.resolve();
+
+  await listingExpectation;
+  await connectingExpectation;
+});
+
+it('observes synchronous failures from both lifecycle branches', async () => {
+  const serverName = 'streamable-http-synchronous-lifecycle-failures';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub } = createStubUnderlying(serverName, [toolNamed('a')]);
+  let invalidateCalls = 0;
+  let connectCalls = 0;
+  const syncThrowingStub = {
+    ...stub,
+    invalidateToolsCache() {
+      invalidateCalls += 1;
+      throw new Error('invalidation failed');
+    },
+    connect() {
+      connectCalls += 1;
+      throw new Error('connect failed');
+    },
+  };
+  (server as unknown as { underlying: typeof syncThrowingStub }).underlying =
+    syncThrowingStub;
+
+  await expect(server.connect()).rejects.toThrow('invalidation failed');
+  expect(invalidateCalls).toBe(1);
+  expect(connectCalls).toBe(1);
+});

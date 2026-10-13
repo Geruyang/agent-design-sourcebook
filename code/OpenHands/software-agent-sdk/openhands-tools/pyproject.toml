@@ -1,0 +1,42 @@
+[project]
+name = "openhands-tools"
+version = "1.54.0"
+description = "OpenHands Tools - Runtime tools for AI agents"
+
+requires-python = ">=3.12"
+dependencies = [
+    "openhands-sdk",
+    "tree-sitter>=0.24",
+    "tree-sitter-bash>=0.23",
+    "binaryornot>=0.6.0",
+    "cachetools",
+    "libtmux>=0.53.0",
+    "pydantic>=2.13.5",
+    "browser-use>=0.8.0",
+    "func-timeout>=4.3.5",
+    "tom-swe>=1.0.3",
+]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
+
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+include = ["openhands.tools*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["py.typed", "**/*.j2"]
+"openhands.tools.preset.subagents" = ["*.md"]

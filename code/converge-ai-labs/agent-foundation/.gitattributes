@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+proto/a13n-service/*.json linguist-generated=true
+frontend/apps/a13n-console/src/service-client/schema.ts linguist-generated=true

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Research evidence, vendor guidance, source notes, and caveats behind the Long-Horizon Prompting skill." />
+  <meta name="theme-color" content="#f5f3ee" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <link rel="canonical" href="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/references.html" />
+  <meta property="og:title" content="References — Long-Horizon Prompting" />
+  <meta property="og:site_name" content="Long-Horizon Prompting" />
+  <meta property="og:description" content="The evidence base behind long-horizon task briefs, verification, persistence, and orchestration." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/references.html" />
+  <meta property="og:image" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/social-card.png" />
+  <meta property="og:image:alt" content="Long-Horizon Prompting references" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <title>References — Long-Horizon Prompting</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="site-brand" href="index.html">Long-Horizon Prompting</a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="index.html">Overview</a>
+      <a href="guide.html">Guide</a>
+      <a href="lab.html">Prompt Lab</a>
+      <a href="references.html" aria-current="page">References</a>
+    </nav>
+    <a class="site-github" href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+       target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <main id="main" class="article-shell references-page">
+    <header class="article-hero">
+      <p class="section-eyebrow">Evidence / snapshot 2026-07-11</p>
+      <h1>References and source notes.</h1>
+      <p>
+        The skill is a synthesis across long-trajectory reliability, verification,
+        multi-agent diversity, orchestration, and current vendor guidance. The Cycle
+        Double Cover prompt is an exemplar, not the sole foundation.
+      </p>
+    </header>
+
+    <div class="evidence-policy">
+      <h2>How to read this page</h2>
+      <div>
+        <p><strong>Preprint</strong> means an arXiv manuscript that may not have completed peer review. <strong>Vendor</strong> means first-party guidance or reporting, often based on undisclosed internal evaluations. <strong>Primary</strong> means the direct research or evaluation artifact. <strong>Synthesis</strong> means interpretation assembled for this skill.</p>
+        <p>Findings are scoped to the tasks, models, and evaluators studied. Directional mechanisms are not universal effect sizes. Living vendor documentation should be rechecked before model-specific use.</p>
+      </div>
+    </div>
+
+    <nav class="reference-nav" aria-label="Reference categories">
+      <a href="#cdc">Case study</a>
+      <a href="#persistence">Persistence and stopping</a>
+      <a href="#verification">Verification</a>
+      <a href="#diversity">Diversity and orchestration</a>
+      <a href="#vendor">Vendor guidance</a>
+      <a href="#repository">Repository artifacts</a>
+    </nav>
+
+    <section class="reference-section" id="cdc">
+      <div class="reference-heading">
+        <p class="section-eyebrow">01 / Case study</p>
+        <h2>Cycle Double Cover prompt</h2>
+        <p>A concrete demonstration of the brief anatomy. It does not establish that the candidate theorem is correct or that any individual prompt block caused the result.</p>
+      </div>
+      <div class="reference-list">
+        <article class="reference-card">
+          <div class="reference-meta"><span>Vendor artifact</span><time datetime="2026-07-10">10 Jul 2026</time></div>
+          <h3><a href="https://cdn.openai.com/pdf/04d1d1e4-bc75-476a-97cf-49055cd98d31/cdc_prompt.pdf" target="_blank" rel="noreferrer">Prompt used for “A Proof of the Cycle Double Cover Conjecture” ↗</a></h3>
+          <p>Demonstrates definitions, exact scope, named partial results, dynamic parallel search, blocked-route bookkeeping, adversarial checks, an effort floor, and a strict return condition.</p>
+          <p class="caveat"><strong>Caveat:</strong> “Up to 64 agents” is available capacity, not evidence that 64 ran continuously. Completion time and effectiveness are vendor-reported; no component ablation is public.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Vendor candidate</span><time datetime="2026-07-10">10 Jul 2026</time></div>
+          <h3><a href="https://cdn.openai.com/pdf/04d1d1e4-bc75-476a-97cf-49055cd98d31/cdc_proof.pdf" target="_blank" rel="noreferrer">A Proof of the Cycle Double Cover Conjecture ↗</a></h3>
+          <p>Illustrates why candidate generation and accepted result are different pipeline stages.</p>
+          <p class="caveat"><strong>Caveat:</strong> The proof was unreviewed: it had no independent peer review, Lean/Coq formalization, or arXiv posting at publication. This site does not describe the conjecture as solved.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Synthesis</span><time datetime="2026-07-11">11 Jul 2026</time></div>
+          <h3><a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/skills/long-horizon-prompting/references/cdc-prompt-annotated.md" target="_blank" rel="noreferrer">The Cycle Double Cover Prompt, Annotated ↗</a></h3>
+          <p>Block-by-block analysis with provenance, loophole-closure rationale, and the internal contradiction between partial-result fallback and strict return.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="reference-section" id="persistence">
+      <div class="reference-heading">
+        <p class="section-eyebrow">02 / Research</p>
+        <h2>Persistence and stopping</h2>
+        <p>Why long trajectories drift, why one-time budget reminders decay, and why verified progress must live outside the prompt.</p>
+      </div>
+      <div class="reference-list">
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-06">Jun 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2606.29718" target="_blank" rel="noreferrer">Diagnosing and Mitigating Context Rot in Long-horizon Search ↗</a></h3>
+          <p>Supports explicit effort/return framing and summarization rather than blind truncation as uncertainty and give-up errors rise over studied trajectories.</p>
+          <p class="caveat"><strong>Scope:</strong> Error drift is model- and task-dependent, not a universal law.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-05">May 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2605.23574" target="_blank" rel="noreferrer">Push Your Agent / PushBench ↗</a></h3>
+          <p>Supports external verified-progress ledgers, backlog tracking, and artifact-checkable stopping. Ledger-based controllers substantially improved specified large-quantity tasks where prompt-only configurations failed.</p>
+          <p class="caveat"><strong>Scope:</strong> Reported success ranges apply to the tested configurations; they are not a general agent success rate.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2025-08">Aug 2025</time></div>
+          <h3><a href="https://arxiv.org/abs/2508.17196" target="_blank" rel="noreferrer">BudgetThinker ↗</a></h3>
+          <p>Supports periodic budget-state reminders from the harness rather than relying on a budget stated once at launch.</p>
+          <p class="caveat"><strong>Boundary:</strong> Reminder effectiveness does not replace hard runtime limits.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2025-03">Mar 2025</time></div>
+          <h3><a href="https://arxiv.org/abs/2503.14499" target="_blank" rel="noreferrer">Measuring AI Ability to Complete Long Tasks ↗</a></h3>
+          <p>Supports investment in reliability, checkpointing, and mistake recovery as models complete longer tasks.</p>
+          <p class="caveat"><strong>Scope:</strong> Historical time-horizon trends are estimates, not forward guarantees or direct prompt ablations.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Primary evaluation</span><time datetime="2026-06-26">26 Jun 2026</time></div>
+          <h3><a href="https://metr.org/blog/2026-06-26-gpt-5-6-sol/" target="_blank" rel="noreferrer">METR predeployment evaluation of GPT-5.6 Sol ↗</a></h3>
+          <p>Supports pairing stronger persistence with independent verification and anti-gaming controls.</p>
+          <p class="caveat"><strong>Scope:</strong> Cheating rates and time-horizon sensitivity are specific to METR's evaluated models and setup. The report does not prove that persistence prompting causes cheating.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="reference-section" id="verification">
+      <div class="reference-heading">
+        <p class="section-eyebrow">03 / Research</p>
+        <h2>Verification bottlenecks</h2>
+        <p>Parallel candidate generation scales faster than reliable candidate selection. The brief therefore needs as much design attention on verification as generation.</p>
+      </div>
+      <div class="reference-list">
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2024-07">Jul 2024</time></div>
+          <h3><a href="https://arxiv.org/abs/2407.21787" target="_blank" rel="noreferrer">Large Language Monkeys ↗</a></h3>
+          <p>Supports verifier investment as any-sample coverage grows faster than practical answer selection.</p>
+          <p class="caveat"><strong>Scope:</strong> Scaling and selector plateaus are measured in the paper's settings, not guaranteed universally.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-02">Feb 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2602.18998" target="_blank" rel="noreferrer">Benchmarking Test-Time Scaling of General LLM Agents ↗</a></h3>
+          <p>Names the verification gap directly: pass@K can rise while self-selection lags or falls, and sequential scaling meets context ceilings.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-02">Feb 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2602.20629" target="_blank" rel="noreferrer">QEDBench ↗</a></h3>
+          <p>Supports enumerated mathematical failure modes and verification outside the generating run; studied judges were systematically lenient toward incomplete proofs.</p>
+          <p class="caveat"><strong>Scope:</strong> Mathematical proof judging does not establish the same failure rate in every domain.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-05">May 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2605.20531" target="_blank" rel="noreferrer">Pseudo-Formalization for Automatic Proof Verification ↗</a></h3>
+          <p>Supports modular artifacts with local premises, conclusions, and independently checked steps.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2025-10">Oct 2025</time></div>
+          <h3><a href="https://arxiv.org/abs/2510.13888" target="_blank" rel="noreferrer">ProofBench / ProofGrader ↗</a></h3>
+          <p>Supports graded rubric-based candidate selection over unstructured binary judgment.</p>
+          <p class="caveat"><strong>Scope:</strong> Expert-agreement and oracle-gap results are benchmark-specific.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2024-07">Jul 2024</time></div>
+          <h3><a href="https://arxiv.org/abs/2407.13692" target="_blank" rel="noreferrer">Prover-Verifier Games ↗</a></h3>
+          <p>Supports generator legibility and adversarial checking as complementary mechanisms.</p>
+          <p class="caveat"><strong>Boundary:</strong> Training-time results are indirect evidence for prompt-time verifier agents.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2025-06">Jun 2025</time></div>
+          <h3><a href="https://arxiv.org/abs/2506.12928" target="_blank" rel="noreferrer">Scaling Test-time Compute for LLM Agents ↗</a></h3>
+          <p>Supports best-of-N sampling, list-wise comparison, and reflection triggered by observed weakness rather than a fixed cadence.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="reference-section" id="diversity">
+      <div class="reference-heading">
+        <p class="section-eyebrow">04 / Research</p>
+        <h2>Diversity and orchestration</h2>
+        <p>Why role labels are insufficient, early communication can collapse search, and durable route state prevents repeated dead ends.</p>
+      </div>
+      <div class="reference-list">
+        <article class="reference-card">
+          <div class="reference-meta"><span>ACL Findings</span><time datetime="2026-04">2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2604.18005" target="_blank" rel="noreferrer">Diversity Collapse in Multi-Agent LLM Systems ↗</a></h3>
+          <p>Supports early independence, sparse communication, and caution around authority-driven convergence.</p>
+          <p class="caveat"><strong>Scope:</strong> Dense communication is not inherently harmful; effects depend on topology and task.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-04">Apr 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2604.03809" target="_blank" rel="noreferrer">Representational Collapse in Multi-Agent LLM Committees ↗</a></h3>
+          <p>Supports the rule that agreement alone must not be a stopping or confidence signal.</p>
+          <p class="caveat"><strong>Scope:</strong> Unanimity can reflect shared bias under collapse; it is not always evidence of collapse.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2025-09">Sep 2025</time></div>
+          <h3><a href="https://arxiv.org/abs/2509.04475" target="_blank" rel="noreferrer">ParaThinker ↗</a></h3>
+          <p>Supports parallel width as a countermeasure to sequential tunnel vision in tested reasoning settings.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-02">Feb 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2602.08344" target="_blank" rel="noreferrer">OPE ↗</a></h3>
+          <p>Supports explicit solution-space partitioning and diverse outlines before candidate development.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-02">Feb 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2602.03786" target="_blank" rel="noreferrer">AOrchestra ↗</a></h3>
+          <p>Supports runtime synthesis of each worker's instruction, context, tools, and model rather than relying on static role labels.</p>
+          <p class="caveat"><strong>Scope:</strong> Reported relative gains are against selected baselines and benchmarks.</p>
+        </article>
+        <article class="reference-card">
+          <div class="reference-meta"><span>Preprint</span><time datetime="2026-06">Jun 2026</time></div>
+          <h3><a href="https://arxiv.org/abs/2606.10662" target="_blank" rel="noreferrer">DeLM ↗</a></h3>
+          <p>Supports durable shared state for verified findings, failures, and falsified hypotheses.</p>
+          <p class="caveat"><strong>Boundary:</strong> Shared state must be verified and scoped or it can itself cause convergence and contamination.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="reference-section" id="vendor">
+      <div class="reference-heading">
+        <p class="section-eyebrow">05 / Living guidance</p>
+        <h2>Vendor guidance</h2>
+        <p>Useful operational doctrine, but model-specific and volatile. Vendor convergence is not independent scientific validation.</p>
+      </div>
+      <div class="reference-list compact-references">
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2025</time></div><h3><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide" target="_blank" rel="noreferrer">GPT-5 prompting guide ↗</a></h3><p>Persistence, stop conditions, autonomy thresholds, and internal rubrics.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2025</time></div><h3><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5-1_prompting_guide" target="_blank" rel="noreferrer">GPT-5.1 prompting guide ↗</a></h3><p>End-to-end solution persistence. Do not transplant model-family blocks blindly.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2025</time></div><h3><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5-2_prompting_guide" target="_blank" rel="noreferrer">GPT-5.2 prompting guide ↗</a></h3><p>Scope discipline, conjunctive stop rules, high-risk checks, and compaction.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2026</time></div><h3><a href="https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide" target="_blank" rel="noreferrer">Codex prompting guide ↗</a></h3><p>Plan closure, promise discipline, and working-artifact defaults; explicitly Codex-specific.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2026</time></div><h3><a href="https://developers.openai.com/api/docs/guides/prompt-guidance" target="_blank" rel="noreferrer">Prompt guidance ↗</a></h3><p>Outcome-first prompting, minimal baselines, decision rules, and restrained invariants.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI</span><time>2026 snapshot</time></div><h3><a href="https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6" target="_blank" rel="noreferrer">GPT-5.6 Sol prompt guidance ↗</a></h3><p>Lean prompts, completion bars, retrieval stop rules, and verification loops. Reported evaluation gains are vendor-internal and directional.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>OpenAI beta</span><time>2026</time></div><h3><a href="https://developers.openai.com/api/docs/guides/tools-multi-agent" target="_blank" rel="noreferrer">Multi-agent API guide ↗</a></h3><p>Root/subagent trees, context isolation, bounded delegation, and serial-task anti-patterns.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>Anthropic</span><time datetime="2025-06-13">13 Jun 2025</time></div><h3><a href="https://www.anthropic.com/engineering/multi-agent-research-system" target="_blank" rel="noreferrer">How we built our multi-agent research system ↗</a></h3><p>Four-part worker specifications, effort tiers, externalized plans, and subagents as context compressors.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>Anthropic</span><time datetime="2025-11-26">26 Nov 2025</time></div><h3><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents" target="_blank" rel="noreferrer">Effective harnesses for long-running agents ↗</a></h3><p>Initializer/worker separation, structured progress, immutable tests, and user-level verification.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>Anthropic</span><time datetime="2026-01-23">23 Jan 2026</time></div><h3><a href="https://claude.com/blog/building-multi-agent-systems-when-and-how-to-use-them" target="_blank" rel="noreferrer">When to use multi-agent systems ↗</a></h3><p>Context-centric decomposition, fresh-context verifiers, concrete criteria, and negative tests.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>Anthropic living docs</span><time>2026 snapshot</time></div><h3><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices" target="_blank" rel="noreferrer">Claude prompting best practices ↗</a></h3><p>Compaction-aware state, progress evidence, and removal of stale over-prescription.</p></article>
+        <article class="reference-card"><div class="reference-meta"><span>Anthropic living docs</span><time>2026 snapshot</time></div><h3><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5" target="_blank" rel="noreferrer">Prompting Claude Fable 5 ↗</a></h3><p>Evidence-grounded progress reporting and restraint around over-delegation. Internal “nearly eliminated” claims lack a published protocol.</p></article>
+      </div>
+    </section>
+
+    <section class="reference-section" id="repository">
+      <div class="reference-heading">
+        <p class="section-eyebrow">06 / Reproducibility</p>
+        <h2>Repository artifacts</h2>
+        <p>The website is a reading surface. These files are the auditable source of truth.</p>
+      </div>
+      <div class="artifact-links">
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/skills/long-horizon-prompting/SKILL.md" target="_blank" rel="noreferrer"><strong>SKILL.md</strong><span>Scope, method, examples, boundaries, and gotchas.</span></a>
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/skills/long-horizon-prompting/references/research-evidence.md" target="_blank" rel="noreferrer"><strong>Research evidence</strong><span>Element-to-evidence map and dated study notes.</span></a>
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/skills/long-horizon-prompting/references/vendor-guidance.md" target="_blank" rel="noreferrer"><strong>Vendor guidance</strong><span>Dated OpenAI and Anthropic doctrine with caveats.</span></a>
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/skills/long-horizon-prompting/references/task-brief-template.md" target="_blank" rel="noreferrer"><strong>Task-brief template</strong><span>Reusable skeleton and ten-dimension rubric.</span></a>
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/researcher/claims/index.jsonl" target="_blank" rel="noreferrer"><strong>Claim provenance</strong><span>Source, evidence strength, volatility, and review date for numeric/vendor claims.</span></a>
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/blob/main/examples/long-horizon-prompt-lab/report/PROVENANCE.md" target="_blank" rel="noreferrer"><strong>CDC report provenance</strong><span>Hashes, source URLs, retrieval details, and limitations.</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer page-shell">
+    <p>
+      By
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Muratcan Koylan</a>.
+      Project site for the long-horizon-prompting skill.
+      External sources were catalogued from the skill's 2026-07-11 evidence snapshot and were not revalidated live by this page.
+    </p>
+    <div>
+      <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Website ↗</a>
+      <a href="https://x.com/muratcan" target="_blank" rel="noreferrer">X ↗</a>
+      <a href="guide.html">Guide</a>
+      <a href="lab.html">Prompt Lab</a>
+    </div>
+  </footer>
+  <script src="site.js"></script>
+</body>
+</html>

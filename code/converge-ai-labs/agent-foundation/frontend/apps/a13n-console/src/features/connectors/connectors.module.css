@@ -1,0 +1,80 @@
+.checkNote {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.preview {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 12px;
+  min-width: 0;
+}
+.previewDescription {
+  margin: 0 0 8px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.6;
+}
+
+/* Tool picker ------------------------------------------------------------ */
+.tools {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.toolsHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 4px;
+  font-size: var(--a13n-text-md);
+  font-weight: 500;
+}
+.toolList {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--a13n-border);
+  border-radius: var(--a13n-radius-group);
+}
+.tool {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+.tool + .tool {
+  border-top: 1px solid var(--a13n-border);
+}
+.toolName {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: var(--a13n-text-sm);
+  font-weight: 400;
+}
+.toolName span,
+.toolDescription {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolDescription {
+  min-width: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.4;
+}
+.toolStatus {
+  margin: 0;
+  padding: 12px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.showMore {
+  margin: 6px auto;
+  display: flex;
+}

@@ -1,0 +1,5050 @@
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  assertSandboxEntryMetadataSupported,
+  assertSandboxManifestMetadataSupported,
+  assertRunAsUnsupported,
+  addPtyWebSocketListener,
+  applyInlineManifestEntryToState,
+  appendPtyOutput,
+  cloneManifestWithRoot,
+  cloneManifestWithoutMountEntries,
+  createRunAsRemoteEditor,
+  createPtyProcessEntry,
+  deserializePersistedEnvironmentForRuntime,
+  deserializeManifest,
+  entryContainsLocalSource,
+  formatExecResponse,
+  formatPtyExecUpdate,
+  hydrateRemoteWorkspaceTar,
+  manifestContainsLocalSource,
+  closePtyOutput,
+  materializeEnvironment,
+  materializeInlineManifest,
+  materializeInlineManifestEntry,
+  manifestMaterializationOptionsWithRunAs,
+  mergeManifestDelta,
+  mergeMaterializedEnvironment,
+  normalizeGitRepository,
+  openPtyWebSocket,
+  parseExposedPortEndpoint,
+  persistRemoteWorkspaceTar,
+  prepareManifestMounts,
+  PtyProcessRegistry,
+  RemoteSandboxEditor,
+  assertConfiguredExposedPort,
+  decodeNativeSnapshotRef,
+  encodeNativeSnapshotRef,
+  deserializeRemoteSandboxSessionStateValues,
+  getCachedExposedPortEndpoint,
+  rehydrateRemoteSandboxSessionStateValues,
+  requireNativeSnapshotRef,
+  recordResolvedExposedPortEndpoint,
+  readRunAsRemoteFile,
+  resolveRemoteSandboxEffectivePath,
+  resolveSandboxAbsolutePath,
+  resolveSandboxRelativePath,
+  resolveSandboxWorkdir,
+  runAsRemoteDirectoryExists,
+  runAsRemotePathExists,
+  sandboxUserShellCommand,
+  serializeRemoteSandboxSessionState,
+  serializeRuntimeEnvironmentForPersistence,
+  serializeManifestRecord,
+  shellCommandForPty,
+  sniffImageMediaType,
+  toUint8Array,
+  truncateOutput,
+  validateRemoteSandboxPath,
+  validateRemoteSandboxPathForManifest,
+  validateWorkspaceTarArchive,
+  watchPtyOutput,
+  withSandboxSpan,
+  writePtyStdin,
+  writeRunAsRemoteText,
+  workspaceTarExcludeArgs,
+} from '../../src/sandbox/shared';
+import { collectPtyOutput } from '../../src/sandbox/shared/pty';
+import {
+  applyLocalSourceManifestEntryToState,
+  applyLocalSourceManifestToState,
+  materializeLocalSourceManifest,
+  materializeLocalSourceManifestEntry,
+} from '../../src/sandbox/shared/localSources';
+import {
+  isRcloneCloudBucketMountEntry,
+  mountRcloneCloudBucket,
+  rcloneArchiveArch,
+  rcloneInstallCommand,
+  unmountRcloneMount,
+} from '../../src/sandbox/shared/inContainerMounts';
+import { makePaxRecord, makeTarArchive } from './tarFixture';
+import {
+  ONE_BY_ONE_GIF,
+  ONE_BY_ONE_JPEG,
+  ONE_BY_ONE_PNG,
+  ONE_BY_ONE_WEBP,
+} from './imageFixture';
+import {
+  EnvValueReference,
+  Manifest,
+  SandboxArchiveError,
+  SandboxConfigurationError,
+  SandboxMountError,
+  SandboxPathResolutionError,
+  SandboxProviderError,
+  SandboxSnapshotError,
+  SandboxUnsupportedFeatureError,
+  boxMount,
+  file,
+  gitRepo,
+  localDir,
+  localFile,
+  mount,
+  registerEnvValueReference,
+  type SandboxSessionState,
+  type AzureBlobMount,
+  type GCSMount,
+  type R2Mount,
+  type S3Mount,
+} from '@openai/agents-core/sandbox';
+import {
+  isHostPathStrictlyWithinRoot,
+  isHostPathWithinRoot,
+  relativeHostPathEscapesRoot,
+  relativeHostPathEscapesRootOrSelf,
+} from '@openai/agents-core/sandbox/internal';
+
+const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  await Promise.all(
+    tempDirs
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
+  );
+});
+
+function recordMountWrite(writes: Map<string, string>) {
+  return async (path: string, content: string | Uint8Array) => {
+    writes.set(
+      path,
+      typeof content === 'string' ? content : Buffer.from(content).toString(),
+    );
+  };
+}
+
+function onlyMountWrite(writes: Map<string, string>): string {
+  expect(writes.size).toBe(1);
+  return [...writes.values()][0]!;
+}
+
+describe('exposed port helpers', () => {
+  test('requires configured ports unless on-demand resolution is allowed', () => {
+    expect(
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 3000,
+        configuredPorts: [3000],
+      }),
+    ).toBe(3000);
+    expect(
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 8080,
+        allowOnDemand: true,
+      }),
+    ).toBe(8080);
+
+    expect(() =>
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      }),
+    ).toThrow(SandboxConfigurationError);
+
+    try {
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      });
+      throw new Error('Expected assertConfiguredExposedPort to throw.');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SandboxConfigurationError);
+      expect((error as SandboxConfigurationError).details).toEqual({
+        provider: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      });
+    }
+  });
+
+  test('parses exposed port endpoints with schemes, inferred TLS, and merged queries', () => {
+    expect(
+      parseExposedPortEndpoint(
+        ' https://preview.example.test:8443/app?token=a ',
+        {
+          providerName: 'TestProvider',
+          source: 'preview URL',
+          query: 'workspace=abc',
+        },
+      ),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 8443,
+      tls: true,
+      query: 'token=a&workspace=abc',
+      url: 'https://preview.example.test:8443/app?token=a',
+    });
+
+    expect(
+      parseExposedPortEndpoint('preview.example.test', {
+        providerName: 'TestProvider',
+        source: 'preview host',
+      }),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 443,
+      tls: true,
+      query: '',
+      url: undefined,
+    });
+
+    expect(
+      parseExposedPortEndpoint('preview.example.test:8080/path?token=a', {
+        providerName: 'TestProvider',
+        source: 'preview host',
+        query: 'workspace=abc',
+      }),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 8080,
+      tls: false,
+      query: 'token=a&workspace=abc',
+      url: undefined,
+    });
+  });
+
+  test('reports provider errors for invalid exposed port endpoint values', () => {
+    for (const [value, details] of [
+      [
+        '   ',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+        },
+      ],
+      [
+        'http://[::1',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+          value: 'http://[::1',
+          cause: expect.any(String),
+        },
+      ],
+      [
+        'file:///tmp/preview',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+          value: 'file:///tmp/preview',
+        },
+      ],
+    ] as const) {
+      try {
+        parseExposedPortEndpoint(value, {
+          providerName: 'TestProvider',
+          source: 'preview URL',
+        });
+        throw new Error('Expected parseExposedPortEndpoint to throw.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(SandboxProviderError);
+        expect((error as SandboxProviderError).details).toMatchObject(details);
+      }
+    }
+  });
+
+  test('records and reads cached exposed port endpoints', () => {
+    const state = {} as SandboxSessionState;
+    const endpoint = {
+      host: 'preview.example.test',
+      port: 443,
+      tls: true,
+      query: 'token=a',
+      url: 'https://preview.example.test?token=a',
+    };
+
+    expect(getCachedExposedPortEndpoint(state, 3000)).toBeUndefined();
+    expect(recordResolvedExposedPortEndpoint(state, 3000, endpoint)).toEqual(
+      endpoint,
+    );
+    expect(getCachedExposedPortEndpoint(state, 3000)).toEqual(endpoint);
+    expect(state.exposedPorts).toEqual({
+      '3000': endpoint,
+    });
+  });
+});
+
+describe('remote sandbox path helpers', () => {
+  test.each([
+    ['x86_64', 'amd64'],
+    ['amd64', 'amd64'],
+    ['i386', '386'],
+    ['i686', '386'],
+    ['aarch64', 'arm64'],
+    ['arm64', 'arm64'],
+    ['armv7l', 'arm-v7'],
+    ['armv6l', 'arm-v6'],
+    ['armv5l', 'arm'],
+  ])('maps rclone architecture %s to %s', (machine, expected) => {
+    expect(rcloneArchiveArch(machine)).toBe(expected);
+  });
+
+  test('rejects unsupported rclone architectures', () => {
+    expect(rcloneArchiveArch('mips64')).toBeUndefined();
+  });
+
+  test('pins and verifies the rclone archive before atomic installation', () => {
+    const command = rcloneInstallCommand('amd64');
+
+    expect(command).toContain(
+      'https://downloads.rclone.org/v1.74.4/rclone-v1.74.4-linux-amd64.zip',
+    );
+    expect(command).toContain(
+      'fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d',
+    );
+    expect(command).toContain('sha256sum --check --strict -');
+    expect(command).toContain('mktemp /usr/local/bin/.rclone.XXXXXX');
+    expect(command).toContain('mv -f "$target_tmp" /usr/local/bin/rclone');
+    expect(command).not.toContain('https://rclone.org/install.sh');
+  });
+
+  test('reports rclone archive checksum failures', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remoteName: 'logs',
+        },
+        installRcloneViaScript: true,
+        runCommand: async (command) => {
+          if (
+            command ===
+            'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+          ) {
+            return { status: 1 };
+          }
+          if (command === 'uname -m') {
+            return { status: 0, stdout: 'x86_64\n' };
+          }
+          if (command.includes('sha256sum --check --strict -')) {
+            return {
+              status: 86,
+              stdout: 'MOUNT_SECRET_SENTINEL',
+              stderr: 'MOUNT_SECRET_SENTINEL',
+            };
+          }
+          return { status: 0 };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(SandboxMountError);
+    expect((caught as SandboxMountError).message).toContain(
+      'checksum verification failed',
+    );
+    expect((caught as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      package: 'rclone',
+      version: '1.74.4',
+      architecture: 'amd64',
+      status: 86,
+    });
+    expect(JSON.stringify(caught)).not.toContain('MOUNT_SECRET_SENTINEL');
+  });
+
+  test('redacts unsupported rclone architecture command output', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      installRcloneViaScript: true,
+      runCommand: async (command) => {
+        if (command.includes('command -v rclone')) {
+          return { status: 1 };
+        }
+        if (command === 'uname -m') {
+          return { status: 0, stdout: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0 };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect((error as SandboxMountError).details).toMatchObject({
+      architecture: 'unsupported',
+      status: 0,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+  });
+
+  test('removes a credential config when writing it fails', async () => {
+    const commands: string[] = [];
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: async () => {
+          throw new Error('write failed');
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to write rclone config/u);
+
+    expect(commands.at(-1)).toMatch(
+      /^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u,
+    );
+  });
+
+  test.each(['rejects', 'returns nonzero'] as const)(
+    'rejects a successful rclone mount when config cleanup %s',
+    async (cleanupFailure) => {
+      const commands: string[] = [];
+      const entry: S3Mount = {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        accessKeyId: 'access-key',
+        secretAccessKey: 'secret-key',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      };
+
+      const error = await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          if (
+            /^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u.test(command)
+          ) {
+            if (cleanupFailure === 'rejects') {
+              throw new Error('MOUNT_SECRET_SENTINEL');
+            }
+            return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+          }
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(SandboxMountError);
+      expect(String(error)).toContain('remove rclone config');
+      expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+      expect(
+        commands.some(
+          (command) =>
+            command.includes("'rclone' 'mount'") ||
+            command.includes('rclone mount'),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  test('reports both rclone mount and credential cleanup failures safely', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        if (/^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u.test(command)) {
+          return { status: 1, stderr: 'CLEANUP_SECRET_SENTINEL' };
+        }
+        if (
+          command.includes("'rclone' 'mount'") ||
+          command.includes('rclone mount')
+        ) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'cloud bucket mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+  });
+
+  test('rejects symlink-aliased mount credentials during remote preflight', async () => {
+    const manifest = new Manifest({
+      entries: {
+        'secret.conf': {
+          type: 'file',
+          content: '[custom]\npassword = serialized\n',
+        },
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: {
+            type: 'daytona_cloud_bucket',
+            pattern: {
+              type: 'rclone',
+              remoteName: 'custom',
+              configFilePath: '/tmp/config',
+            },
+          },
+        },
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
+
+    await expect(
+      prepareManifestMounts(manifest, async (path) => `/workspace/${path}`, {
+        credentialBoundaryManifest: manifest,
+        resolveCredentialPath: async () => '/workspace/secret.conf',
+      }),
+    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+  });
+
+  test('revalidates credential file paths before mount materialization', async () => {
+    const materializeMount = vi.fn();
+    let credentialPathResolutions = 0;
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: {
+            type: 'daytona_cloud_bucket',
+            pattern: {
+              type: 'rclone',
+              remoteName: 'custom',
+              configFilePath: '/run/rclone.conf',
+            },
+          },
+        },
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
+
+    await expect(
+      materializeInlineManifest(
+        { mkdir: vi.fn(), writeFile: vi.fn() },
+        manifest,
+        'test',
+        async (path) => `/workspace/${path}`,
+        {
+          materializeMount,
+          resolveCredentialPath: async () =>
+            credentialPathResolutions++ === 0
+              ? '/run/rclone-a.conf'
+              : '/run/rclone-b.conf',
+        },
+      ),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(credentialPathResolutions).toBe(2);
+    expect(materializeMount).not.toHaveBeenCalled();
+  });
+
+  test('revalidates credential file authority immediately before reading it', async () => {
+    const commands: string[] = [];
+    const writeFile = vi.fn();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'custom',
+          configFilePath: '/run/rclone.conf',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile,
+        revalidateMountAuthority: async () => {
+          throw new SandboxMountError(
+            'Sandbox mount authority changed after validation.',
+          );
+        },
+      }),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(commands).not.toContain("cat -- '/run/rclone.conf'");
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  test('revalidates mount authority immediately before writing rclone credentials', async () => {
+    const commands: string[] = [];
+    const writeFile = vi.fn();
+    let revalidationCount = 0;
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile,
+        revalidateMountAuthority: async () => {
+          revalidationCount += 1;
+          if (revalidationCount === 2) {
+            throw new SandboxMountError(
+              'Sandbox mount authority changed after validation.',
+            );
+          }
+        },
+      }),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(revalidationCount).toBe(2);
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("'rclone' 'mount'") ||
+          command.includes('rclone mount'),
+      ),
+    ).toBe(false);
+  });
+
+  test('mounts Box entries through the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry = boxMount({
+      path: '/Shared/Docs',
+      clientId: 'box-client-id',
+      clientSecret: 'box-client-secret',
+      accessToken: 'box-access-token',
+      token: '{"access_token":"token"}',
+      boxConfigFile: '/run/secrets/box.json',
+      configCredentials: '{"boxAppSettings":{}}',
+      boxSubType: 'enterprise',
+      rootFolderId: 'root-id',
+      impersonate: '123456',
+      ownedBy: 'owner@example.com',
+      readOnly: false,
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'fuse',
+          remoteName: 'boxremote',
+          configFilePath: '/workspace/rclone.conf',
+          extraArgs: ['--vfs-cache-mode', 'writes'],
+        },
+      },
+    });
+
+    expect(isRcloneCloudBucketMountEntry(entry, 'test_cloud_bucket')).toBe(
+      true,
+    );
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/box docs',
+      pattern: {
+        type: 'rclone',
+        mode: 'fuse',
+        remoteName: 'boxremote',
+        configFilePath: '/workspace/rclone.conf',
+        extraArgs: ['--vfs-cache-mode', 'writes'],
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        if (command === "cat -- '/workspace/rclone.conf'") {
+          return { status: 0, stdout: '[boxremote]\nexisting = true\n' };
+        }
+        return { status: 0 };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    const mountCommand = commands.find((command) =>
+      command.startsWith("'rclone' 'mount'"),
+    );
+    const commandText = commands.join('\n');
+
+    expect(configText).toContain('[boxremote]');
+    expect(configText).toContain('existing = true');
+    expect(configText).toContain('type = box');
+    expect(configText).toContain('client_id = box-client-id');
+    expect(configText).toContain('client_secret = box-client-secret');
+    expect(configText).toContain('box_config_file = /run/secrets/box.json');
+    expect(configText).toContain('config_credentials = {"boxAppSettings":{}}');
+    expect(configText).toContain('access_token = box-access-token');
+    expect(configText).toContain('token = {"access_token":"token"}');
+    expect(configText).toContain('box_sub_type = enterprise');
+    expect(configText).toContain('root_folder_id = root-id');
+    expect(configText).toContain('impersonate = 123456');
+    expect(configText).toContain('owned_by = owner@example.com');
+    expect(commandText).not.toContain('client_secret = box-client-secret');
+    expect(commandText).not.toContain('access_token = box-access-token');
+    expect(commandText).not.toContain('token = {"access_token":"token"}');
+    expect(mountCommand).toContain("'boxremote:Shared/Docs'");
+    expect(mountCommand).toContain("'/workspace/box docs'");
+    expect(mountCommand).toContain("'--uid' '1000' '--gid' '1000'");
+    expect(mountCommand).toContain("'--vfs-cache-mode' 'writes'");
+    expect(mountCommand).not.toContain("'--read-only'");
+  });
+
+  test('rejects unsupported rclone mount strategies and patterns', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'other_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    expect(isRcloneCloudBucketMountEntry(file({ content: 'x' }), 'test')).toBe(
+      false,
+    );
+    expect(isRcloneCloudBucketMountEntry(entry, 'test_cloud_bucket')).toBe(
+      false,
+    );
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/only supports test_cloud_bucket mount entries/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'other_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'bind' } as any,
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/require a rclone mount pattern/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'other_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'rclone', mode: 'sshfs' } as any,
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/support rclone fuse and nfs modes only/);
+  });
+
+  test('rejects invalid rclone remote names and missing config file sections', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'rclone', remoteName: 'bad remote!' },
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/remoteName to contain only/);
+
+    const configReadError = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        remoteName: 'logs',
+        configFilePath: '/workspace/rclone.conf',
+      },
+      runCommand: async (command) => {
+        if (command === "cat -- '/workspace/rclone.conf'") {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(configReadError).toBeInstanceOf(SandboxMountError);
+    expect(String(configReadError)).toMatch(
+      /failed to read rclone config file/u,
+    );
+    expect((configReadError as SandboxMountError).details).toMatchObject({
+      status: 1,
+    });
+    expect(JSON.stringify(configReadError)).not.toContain(
+      'MOUNT_SECRET_SENTINEL',
+    );
+    expect(JSON.stringify(configReadError)).not.toContain(
+      '/workspace/rclone.conf',
+    );
+
+    const thrownCommandError = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: { type: 'rclone', remoteName: 'logs' },
+      runCommand: async () => {
+        throw new Error('MOUNT_SECRET_SENTINEL');
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(thrownCommandError).toBeInstanceOf(SandboxMountError);
+    expect((thrownCommandError as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      operation: 'check /dev/fuse',
+    });
+    expect(JSON.stringify(thrownCommandError)).not.toContain(
+      'MOUNT_SECRET_SENTINEL',
+    );
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+          configFilePath: '/workspace/rclone.conf',
+        },
+        runCommand: async (command) => {
+          if (command === "cat -- '/workspace/rclone.conf'") {
+            return { status: 0, stdout: '[other]\ntype = s3\n' };
+          }
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/missing the required remote section/);
+  });
+
+  test('rejects Azure Blob rclone mounts without an account name', async () => {
+    const entry: AzureBlobMount = {
+      type: 'azure_blob_mount',
+      container: 'container-name',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'azure',
+        },
+      },
+    } as any;
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/azure',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/Azure Blob mounts require account or accountName/);
+  });
+
+  test('validates rclone NFS pidfiles before cleanup kill commands', async () => {
+    const commands: string[] = [];
+
+    await unmountRcloneMount({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      mountPath: '/workspace/data',
+      handle: {
+        nfsPidPath: '/tmp/openai-agents-test-logs.nfs.pid',
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        return { status: 0 };
+      },
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain('openai_agents_kill_pidfile()');
+    expect(commands[0]).toContain('require_termination=$1');
+    expect(commands[0]).toContain(
+      "cmdline=$(tr '\\000' ' ' < \"/proc/$pid/cmdline\"",
+    );
+    expect(commands[0]).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
+    );
+    expect(commands[0]).not.toContain('*.nfs.pid');
+    expect(commands[0]).toContain('helper_status=$?');
+    expect(commands[0]).not.toContain('kill "$(cat "$pidfile")"');
+  });
+
+  test('preserves an unsuccessful rclone unmount status after pid cleanup', async () => {
+    let command = '';
+
+    await expect(
+      unmountRcloneMount({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        mountPath: '/workspace/data',
+        runCommand: async (receivedCommand) => {
+          command = receivedCommand;
+          return { status: 32, stderr: 'target is busy' };
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to unmount cloud bucket/u);
+
+    expect(command).toContain('unmount_status=$?');
+    expect(command).toContain('helper_status=0');
+    expect(command).toContain(
+      '[ "$unmount_status" -eq 0 ] && [ "$helper_status" -eq 0 ]',
+    );
+    expect(command).not.toContain(
+      "umount -l '/workspace/data' >/dev/null 2>&1 || true",
+    );
+  });
+
+  test('rejects rclone replacement cleanup when its tracked NFS helper is not terminated', async () => {
+    let command = '';
+
+    await expect(
+      unmountRcloneMount({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        mountPath: '/workspace/data',
+        handle: {
+          nfsPidPath: '/tmp/openai-agents-test-logs.nfs.pid',
+        },
+        runCommand: async (receivedCommand) => {
+          command = receivedCommand;
+          return { status: 1 };
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to unmount cloud bucket/u);
+
+    expect(command).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid'",
+    );
+    expect(command).toContain('return 1');
+    expect(command).toContain('sleep 0.1');
+    expect(command).toContain('helper_status=$?');
+  });
+
+  test('passes S3 provider through the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      s3Provider: 'Minio',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('type = s3');
+    expect(configText).toContain('provider = Minio');
+  });
+
+  test('rejects partial S3 credentials before shared rclone side effects', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(writes),
+      }),
+    ).rejects.toThrow(/both accessKeyId and secretAccessKey/u);
+
+    expect(commands).toEqual([]);
+    expect(writes.size).toBe(0);
+  });
+
+  test('rejects partial GCS HMAC credentials before shared rclone side effects', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: GCSMount = {
+      type: 'gcs_mount',
+      bucket: 'agent-logs',
+      accessId: 'gcs-access-id',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(writes),
+      }),
+    ).rejects.toThrow(/both accessId and secretAccessKey/u);
+
+    expect(commands).toEqual([]);
+    expect(writes.size).toBe(0);
+  });
+
+  test('enables ambient credential providers only after trusted opt-in', async () => {
+    const entries: Array<S3Mount | GCSMount | AzureBlobMount> = [
+      {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+      {
+        type: 'gcs_mount',
+        bucket: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+      {
+        type: 'azure_blob_mount',
+        account: 'account-name',
+        container: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+    ];
+
+    for (const entry of entries) {
+      const writes = new Map<string, string>();
+      await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        allowAmbientCredentials: true,
+        runCommand: async (command) =>
+          command === 'id -u; id -g'
+            ? { status: 0, stdout: '1000\n1000\n' }
+            : { status: 0, stdout: '' },
+        writeFile: recordMountWrite(writes),
+      });
+      const configText = onlyMountWrite(writes);
+      if (entry.type === 'azure_blob_mount') {
+        expect(configText).toContain('use_msi = true');
+      } else {
+        expect(configText).toContain('env_auth = true');
+      }
+      expect(configText).not.toContain('anonymous = true');
+    }
+  });
+
+  test('rejects shared R2 rclone mounts without accountId even with customDomain', async () => {
+    const entry: R2Mount = {
+      type: 'r2_mount',
+      bucket: 'agent-logs',
+      customDomain: 'https://r2.example.test',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    } as any;
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/accountId/);
+  });
+
+  test('accepts Azure Blob endpoint aliases in the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: AzureBlobMount = {
+      type: 'azure_blob_mount',
+      account: 'account-name',
+      container: 'container-name',
+      endpoint: 'https://blob.alias.example.test',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'azure',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/azure',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('type = azureblob');
+    expect(configText).toContain('account = account-name');
+    expect(configText).toContain('endpoint = https://blob.alias.example.test');
+    expect(configText).toContain('use_msi = false');
+    expect(configText).toContain('env_auth = false');
+  });
+
+  test('validates rclone NFS pidfiles during failed mount cleanup', async () => {
+    const commands: string[] = [];
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remote: 'logs',
+        },
+      },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        mode: 'nfs',
+        remote: 'logs',
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        if (
+          command ===
+          'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+        ) {
+          return { status: 0, stdout: '' };
+        }
+        if (command === 'command -v rclone >/dev/null 2>&1') {
+          return { status: 1, stdout: '' };
+        }
+        if (command.includes('mount -v -t nfs')) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain(
+      'TestSandboxClient cloud bucket mount failed while trying to mount rclone nfs client.',
+    );
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+
+    const cleanupCommand = commands.find(
+      (command) =>
+        command.includes('/tmp/openai-agents-test-logs.nfs.pid') &&
+        command.includes('openai_agents_kill_pidfile()'),
+    );
+    expect(cleanupCommand).toContain('openai_agents_kill_pidfile()');
+    expect(cleanupCommand).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
+    );
+    expect(cleanupCommand).toContain('[ "$helper_status" -eq 0 ] && rm -f --');
+    expect(cleanupCommand).not.toContain('kill "$(cat');
+    expect(commands).toContain(
+      "'/usr/local/bin/rclone' 'serve' 'nfs' '--help' >/dev/null 2>&1",
+    );
+    expect(
+      commands.some((command) =>
+        command.includes("('/usr/local/bin/rclone' 'serve' 'nfs'"),
+      ),
+    ).toBe(true);
+  });
+
+  test('surfaces failed rclone NFS helper termination without leaking output', async () => {
+    const commands: string[] = [];
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remote: 'logs',
+        },
+      },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        mode: 'nfs',
+        remote: 'logs',
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        if (
+          command ===
+          'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+        ) {
+          return { status: 0, stdout: '' };
+        }
+        if (command === 'command -v rclone >/dev/null 2>&1') {
+          return { status: 1, stdout: '' };
+        }
+        if (command.includes('mount -v -t nfs')) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        if (command.includes('openai_agents_kill_pidfile 1')) {
+          return { status: 1, stderr: 'CLEANUP_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'cloud bucket mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+    const cleanupCommand = commands.find((command) =>
+      command.includes('openai_agents_kill_pidfile 1'),
+    );
+    expect(cleanupCommand).toContain('[ "$helper_status" -eq 0 ] && rm -f --');
+    expect(commands).not.toContain(
+      "rm -f -- '/tmp/openai-agents-test-logs.conf'",
+    );
+  });
+
+  test('accept in-root absolute workspace paths', () => {
+    expect(
+      resolveSandboxAbsolutePath('/workspace', '/workspace/file.txt'),
+    ).toBe('/workspace/file.txt');
+    expect(
+      resolveSandboxAbsolutePath('/workspace', '/workspace/src/../file.txt'),
+    ).toBe('/workspace/file.txt');
+    expect(resolveSandboxWorkdir('/workspace', '/workspace/src')).toBe(
+      '/workspace/src',
+    );
+    expect(resolveSandboxWorkdir('/workspace', '/workspace/src/..')).toBe(
+      '/workspace',
+    );
+    expect(
+      resolveSandboxRelativePath('/workspace', '/workspace/src/app.ts'),
+    ).toBe('src/app.ts');
+    expect(resolveSandboxRelativePath('/workspace', '/workspace')).toBe('');
+  });
+
+  test('reject workspace escapes', () => {
+    expect(() =>
+      resolveSandboxAbsolutePath('/workspace', '/tmp/file.txt'),
+    ).toThrow(/escapes the workspace root/);
+    expect(() =>
+      resolveSandboxAbsolutePath('/workspace', '/workspace/../tmp/file.txt'),
+    ).toThrow(/escapes the workspace root/);
+    expect(() => resolveSandboxWorkdir('/workspace', '/tmp')).toThrow(
+      /escapes the workspace root/,
+    );
+    expect(() =>
+      resolveSandboxWorkdir('/workspace', '/workspace/../tmp'),
+    ).toThrow(/escapes the workspace root/);
+    expect(() => resolveSandboxRelativePath('/workspace', '/tmp')).toThrow(
+      /escapes the workspace root/,
+    );
+  });
+
+  test('detects host relative paths that escape a root', () => {
+    expect(relativeHostPathEscapesRoot('')).toBe(false);
+    expect(relativeHostPathEscapesRoot('..')).toBe(true);
+    expect(relativeHostPathEscapesRoot('../secret.txt')).toBe(true);
+    expect(relativeHostPathEscapesRoot('/tmp/secret.txt')).toBe(true);
+    expect(relativeHostPathEscapesRoot('safe/file.txt')).toBe(false);
+    expect(relativeHostPathEscapesRootOrSelf('')).toBe(true);
+    expect(relativeHostPathEscapesRootOrSelf('..')).toBe(true);
+    expect(relativeHostPathEscapesRootOrSelf('../secret.txt')).toBe(true);
+    expect(relativeHostPathEscapesRootOrSelf('/tmp/secret.txt')).toBe(true);
+    expect(relativeHostPathEscapesRootOrSelf('safe/file.txt')).toBe(false);
+    expect(
+      isHostPathStrictlyWithinRoot('/tmp/root', '/tmp/root/file.txt'),
+    ).toBe(true);
+    expect(isHostPathWithinRoot('/tmp/root', '/tmp/root')).toBe(true);
+    expect(isHostPathStrictlyWithinRoot('/tmp/root', '/tmp/root')).toBe(false);
+    expect(isHostPathStrictlyWithinRoot('/tmp/root', '/tmp/secret.txt')).toBe(
+      false,
+    );
+  });
+
+  test('accept extra path grants and read-only grant policy', () => {
+    expect(
+      resolveSandboxAbsolutePath('/workspace', '/mnt/data/input.txt', {
+        extraPathGrants: [
+          {
+            path: '/mnt/data',
+            readOnly: true,
+          },
+        ],
+      }),
+    ).toBe('/mnt/data/input.txt');
+    expect(() =>
+      resolveSandboxAbsolutePath('/workspace', '/mnt/data/output.txt', {
+        extraPathGrants: [
+          {
+            path: '/mnt/data',
+            readOnly: true,
+          },
+        ],
+        forWrite: true,
+      }),
+    ).toThrow(/read-only extra path grant/);
+  });
+
+  test('validates remote paths with manifest extra path grants', async () => {
+    const manifest = new Manifest({
+      extraPathGrants: [{ path: '/mnt/data', readOnly: true }],
+    });
+    const commands: string[] = [];
+
+    await expect(
+      validateRemoteSandboxPathForManifest({
+        manifest,
+        path: '/mnt/data/input.txt',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '/mnt/data/input.txt\n' };
+        },
+      }),
+    ).resolves.toBe('/mnt/data/input.txt');
+    expect(commands[0]).toContain('/mnt/data');
+
+    await expect(
+      validateRemoteSandboxPathForManifest({
+        manifest,
+        path: '/mnt/data/output.txt',
+        options: { forWrite: true },
+        runCommand: async () => ({ status: 0 }),
+      }),
+    ).rejects.toThrow(/read-only extra path grant/);
+  });
+
+  test('normalizes git repository shorthands', () => {
+    expect(normalizeGitRepository('openai/openai-agents-js')).toBe(
+      'https://github.com/openai/openai-agents-js.git',
+    );
+    expect(
+      normalizeGitRepository({
+        host: 'git.example.test',
+        repo: 'team/project',
+      }),
+    ).toBe('https://git.example.test/team/project.git');
+    expect(normalizeGitRepository('https://example.test/repo.git')).toBe(
+      'https://example.test/repo.git',
+    );
+    expect(normalizeGitRepository('git@example.test:owner/repo.git')).toBe(
+      'git@example.test:owner/repo.git',
+    );
+    expect(() => normalizeGitRepository({ repo: '' })).toThrow(
+      /git_repo entries require a repo/,
+    );
+  });
+
+  test('encodes, decodes, and requires native snapshot references', () => {
+    const encoded = encodeNativeSnapshotRef({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+
+    expect(decodeNativeSnapshotRef(encoded)).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+    const encodedArrayBuffer = new ArrayBuffer(encoded.byteLength);
+    new Uint8Array(encodedArrayBuffer).set(encoded);
+    expect(decodeNativeSnapshotRef(encodedArrayBuffer)).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+    expect(
+      new TextDecoder().decode(
+        encodeNativeSnapshotRef({
+          provider: 'e2b',
+          snapshotId: 'snap_no_workspace_persistence',
+        }),
+      ),
+    ).toBe(
+      'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_no_workspace_persistence"}',
+    );
+
+    expect(
+      requireNativeSnapshotRef(encoded, 'modal_snapshot_filesystem'),
+    ).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+  });
+
+  test('rejects invalid native snapshot references', () => {
+    expect(decodeNativeSnapshotRef('not-a-native-snapshot')).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef('E2B_SANDBOX_SNAPSHOT_V1\nnot-json'),
+    ).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef('E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":""}'),
+    ).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef(
+        'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_123","workspace_persistence":123}',
+      ),
+    ).toEqual({
+      provider: 'e2b',
+      snapshotId: 'snap_123',
+      workspacePersistence: undefined,
+    });
+
+    expect(() =>
+      requireNativeSnapshotRef(
+        'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_123"}',
+        'runloop',
+      ),
+    ).toThrow(SandboxSnapshotError);
+  });
+
+  test('strips ephemeral manifest data during persistence', () => {
+    const manifest = new Manifest({
+      entries: {
+        keep: {
+          type: 'file',
+          content: 'keep\n',
+        },
+        secret: {
+          type: 'file',
+          content: 'secret\n',
+          ephemeral: true,
+        },
+        nested: {
+          type: 'dir',
+          children: {
+            keep: {
+              type: 'file',
+              content: 'keep\n',
+            },
+            secret: {
+              type: 'file',
+              content: 'secret\n',
+              ephemeral: true,
+            },
+          },
+        },
+      },
+      environment: {
+        KEEP: 'ok',
+        SECRET: {
+          value: 'secret',
+          ephemeral: true,
+        },
+      },
+      users: [{ name: 'sandbox-user' }],
+      groups: [{ name: 'sandbox-group', users: [{ name: 'sandbox-user' }] }],
+      extraPathGrants: [{ path: '/tmp/data', readOnly: true }],
+      remoteMountCommandAllowlist: ['ls', 'cat'],
+    });
+
+    expect(serializeManifestRecord(manifest)).toMatchObject({
+      entries: {
+        keep: {
+          type: 'file',
+          content: 'keep\n',
+        },
+        nested: {
+          type: 'dir',
+          children: {
+            keep: {
+              type: 'file',
+              content: 'keep\n',
+            },
+          },
+        },
+      },
+      environment: {
+        KEEP: {
+          value: 'ok',
+        },
+      },
+      users: [{ name: 'sandbox-user' }],
+      groups: [{ name: 'sandbox-group', users: [{ name: 'sandbox-user' }] }],
+      extraPathGrants: [{ path: '/tmp/data', readOnly: true }],
+      remoteMountCommandAllowlist: ['ls', 'cat'],
+    });
+    expect(
+      serializeRuntimeEnvironmentForPersistence(manifest, {
+        KEEP: 'ok',
+        SECRET: 'secret',
+        OVERRIDE: 'persist',
+      }),
+    ).toEqual({
+      KEEP: 'ok',
+    });
+  });
+
+  test('restores client env overrides without persisting them', () => {
+    const manifest = new Manifest({
+      environment: {
+        KEEP: 'manifest',
+        SECRET: {
+          value: 'secret',
+          ephemeral: true,
+        },
+      },
+    });
+
+    expect(
+      serializeRuntimeEnvironmentForPersistence(manifest, {
+        KEEP: 'runtime-override',
+        SECRET: 'secret',
+        API_KEY: 'client-secret',
+      }),
+    ).toEqual({
+      KEEP: 'manifest',
+    });
+
+    expect(
+      deserializePersistedEnvironmentForRuntime(
+        manifest,
+        {
+          KEEP: 'manifest',
+          API_KEY: 'previous-secret',
+        },
+        {
+          KEEP: 'client-override',
+          API_KEY: 'client-secret',
+        },
+      ),
+    ).toEqual({
+      KEEP: 'manifest',
+      API_KEY: 'client-secret',
+    });
+  });
+
+  test('persists remote runtime environment values outside the manifest', () => {
+    const manifest = new Manifest({
+      environment: {
+        KEEP: 'manifest',
+        SECRET: {
+          value: 'secret',
+          ephemeral: true,
+        },
+      },
+    });
+
+    const serialized = serializeRemoteSandboxSessionState({
+      manifest,
+      environment: {
+        KEEP: 'runtime-override',
+        SECRET: 'runtime-secret',
+        API_KEY: 'runtime-secret',
+        FEATURE_FLAG: 'enabled',
+      },
+    });
+    const restored = deserializeRemoteSandboxSessionStateValues(serialized);
+    const restoredWithConfiguredEnv =
+      deserializeRemoteSandboxSessionStateValues(serialized, {
+        API_KEY: 'configured-secret',
+      });
+
+    expect(serialized.environment).toEqual({
+      API_KEY: 'runtime-secret',
+      FEATURE_FLAG: 'enabled',
+      KEEP: 'manifest',
+    });
+    expect(restored.environment).toEqual({
+      API_KEY: 'runtime-secret',
+      FEATURE_FLAG: 'enabled',
+      KEEP: 'manifest',
+    });
+    expect(restoredWithConfiguredEnv.environment).toEqual({
+      API_KEY: 'configured-secret',
+      FEATURE_FLAG: 'enabled',
+      KEEP: 'manifest',
+    });
+  });
+
+  test('round-trips remote environment references without resolved secrets', async () => {
+    let currentSecret = 'activity-secret';
+    class RemoteSecretReference extends EnvValueReference {
+      static readonly type = 'test.remote_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      RemoteSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Remote secret reference key must be a string.');
+        }
+        return new RemoteSecretReference(payload.key);
+      },
+    );
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new RemoteSecretReference('openai-key'),
+        },
+      });
+      const serialized = serializeRemoteSandboxSessionState({
+        manifest,
+        environment: {
+          TOKEN: 'activity-secret:openai-key',
+          PROVIDER_VALUE: 'persisted',
+        },
+      });
+      const serializedJson = JSON.stringify(serialized);
+
+      expect(serializedJson).not.toContain('activity-secret');
+      expect(serialized.manifest).toMatchObject({
+        environment: {
+          TOKEN: {
+            type: RemoteSecretReference.type,
+            key: 'openai-key',
+          },
+        },
+      });
+
+      currentSecret = 'worker-secret';
+      const restored = await rehydrateRemoteSandboxSessionStateValues(
+        JSON.parse(serializedJson),
+      );
+      expect(restored.manifest.environment.TOKEN).toBeInstanceOf(
+        RemoteSecretReference,
+      );
+      expect(restored.environment).toEqual({
+        TOKEN: 'worker-secret:openai-key',
+        PROVIDER_VALUE: 'persisted',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  test('materializes and merges environment values', async () => {
+    const previous = new Manifest({
+      environment: {
+        KEEP: 'previous',
+        OVERRIDE: 'old',
+      },
+    });
+    const next = new Manifest({
+      environment: {
+        KEEP: 'next',
+        OVERRIDE: 'next-manifest',
+        NEW_VALUE: 'new',
+      },
+    });
+
+    expect(
+      await materializeEnvironment(previous, {
+        OVERRIDE: 'runtime',
+        TOKEN: 'client',
+      }),
+    ).toEqual({
+      KEEP: 'previous',
+      OVERRIDE: 'old',
+      TOKEN: 'client',
+    });
+    expect(
+      await mergeMaterializedEnvironment(previous, next, {
+        KEEP: 'previous',
+        OVERRIDE: 'runtime',
+        TOKEN: 'client',
+      }),
+    ).toEqual({
+      KEEP: 'next',
+      OVERRIDE: 'next-manifest',
+      NEW_VALUE: 'new',
+      TOKEN: 'client',
+    });
+  });
+
+  test('applies local source manifests to remote state', async () => {
+    const written = new Map<string, string | Uint8Array>();
+    const resolvedPaths: Array<{ path: string; forWrite: boolean }> = [];
+    const state = {
+      manifest: new Manifest({
+        root: '/workspace',
+        entries: {
+          'base.txt': file({ content: 'base' }),
+        },
+        environment: {
+          KEEP: 'previous',
+        },
+      }),
+      environment: {
+        KEEP: 'previous',
+        TOKEN: 'runtime',
+      },
+    };
+    const manifest = new Manifest({
+      entries: {
+        'next.txt': file({ content: 'next' }),
+      },
+      environment: {
+        KEEP: 'next',
+        ADDED: 'yes',
+      },
+    });
+
+    await applyLocalSourceManifestToState(
+      state,
+      manifest,
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async (path, content) => {
+          written.set(path, content);
+        },
+      },
+      async (path, options) => {
+        resolvedPaths.push({
+          path,
+          forWrite: options?.forWrite ?? false,
+        });
+        return `/workspace/${path}`;
+      },
+    );
+
+    expect(written.get('/workspace/next.txt')).toBe('next');
+    expect(resolvedPaths).toEqual([{ path: 'next.txt', forWrite: true }]);
+    expect(state.manifest.entries).toEqual({
+      'base.txt': file({ content: 'base' }),
+      'next.txt': file({ content: 'next' }),
+    });
+    expect(state.environment).toEqual({
+      KEEP: 'next',
+      ADDED: 'yes',
+      TOKEN: 'runtime',
+    });
+  });
+
+  test('applies manifest entry concurrency limits to local source manifests', async () => {
+    const state = {
+      manifest: new Manifest({ root: '/workspace' }),
+      environment: {},
+    };
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+
+    await applyLocalSourceManifestToState(
+      state,
+      new Manifest({
+        entries: {
+          'a.txt': file({ content: 'a' }),
+          'b.txt': file({ content: 'b' }),
+          'c.txt': file({ content: 'c' }),
+        },
+      }),
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async () => {
+          activeWrites += 1;
+          maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          activeWrites -= 1;
+        },
+      },
+      async (path) => `/workspace/${path}`,
+      {
+        concurrencyLimits: {
+          manifestEntries: 2,
+        },
+      },
+    );
+
+    expect(maxActiveWrites).toBe(2);
+  });
+
+  test('applies local_dir file concurrency limits to local source manifests', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-local-dir-'));
+    tempDirs.push(tempDir);
+    await writeFile(join(tempDir, 'a.txt'), 'a');
+    await writeFile(join(tempDir, 'b.txt'), 'b');
+    await writeFile(join(tempDir, 'c.txt'), 'c');
+    const state = {
+      manifest: new Manifest({ root: '/workspace' }),
+      environment: {},
+    };
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+
+    await applyLocalSourceManifestToState(
+      state,
+      new Manifest({
+        extraPathGrants: [{ path: tempDir, readOnly: true }],
+        entries: {
+          copied: localDir({ src: tempDir }),
+        },
+      }),
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async () => {
+          activeWrites += 1;
+          maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          activeWrites -= 1;
+        },
+      },
+      async (path) => `/workspace/${path}`,
+      {
+        concurrencyLimits: {
+          localDirFiles: 2,
+        },
+      },
+    );
+
+    expect(maxActiveWrites).toBe(2);
+  });
+
+  test('applies single local source entries to remote state', async () => {
+    const written = new Map<string, string | Uint8Array>();
+    const state = {
+      manifest: new Manifest({
+        root: '/workspace',
+        entries: {
+          'base.txt': file({ content: 'base' }),
+        },
+      }),
+    };
+
+    await applyLocalSourceManifestEntryToState(
+      state,
+      '/workspace/nested/next.txt',
+      file({ content: 'next' }),
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async (path, content) => {
+          written.set(path, content);
+        },
+      },
+      async (path) => `/workspace/${path}`,
+    );
+
+    expect(written.get('/workspace/nested/next.txt')).toBe('next');
+    expect(state.manifest.entries).toEqual({
+      'base.txt': file({ content: 'base' }),
+      'nested/next.txt': file({ content: 'next' }),
+    });
+  });
+
+  test('detects local source entries in manifests', () => {
+    expect(entryContainsLocalSource(file({ content: 'inline' }))).toBe(false);
+    expect(
+      entryContainsLocalSource(localFile({ src: '/tmp/source.txt' })),
+    ).toBe(true);
+    expect(
+      entryContainsLocalSource({
+        type: 'dir',
+        children: {
+          nested: gitRepo({ repo: 'openai/openai-agents-js' }),
+        },
+      }),
+    ).toBe(true);
+    expect(
+      manifestContainsLocalSource(
+        new Manifest({
+          entries: {
+            data: localDir({ src: '/tmp/project' }),
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      manifestContainsLocalSource(
+        new Manifest({
+          entries: {
+            'README.md': file({ content: 'readme' }),
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test('materializes async environment resolvers', async () => {
+    const manifest = new Manifest({
+      environment: {
+        TOKEN: {
+          value: 'placeholder',
+          resolve: async () => 'resolved-token',
+        },
+      },
+    });
+
+    await expect(materializeEnvironment(manifest)).resolves.toEqual({
+      TOKEN: 'resolved-token',
+    });
+    expect(
+      serializeRuntimeEnvironmentForPersistence(manifest, {
+        TOKEN: 'resolved-token',
+      }),
+    ).toEqual({
+      TOKEN: 'resolved-token',
+    });
+  });
+
+  test('deserializes manifests and merges manifest deltas', () => {
+    const base = new Manifest({
+      root: '/workspace',
+      entries: {
+        old: {
+          type: 'file',
+          content: 'old',
+        },
+      },
+      environment: {
+        KEEP: 'base',
+      },
+      users: [{ name: 'base-user' }],
+      groups: [{ name: 'base-group', users: [{ name: 'base-user' }] }],
+      extraPathGrants: [{ path: '/tmp/base', readOnly: true }],
+      remoteMountCommandAllowlist: ['ls'],
+    });
+    const update = new Manifest({
+      version: 2,
+      entries: {
+        next: {
+          type: 'file',
+          content: 'next',
+        },
+      },
+      environment: {
+        KEEP: 'updated',
+        ADDED: 'yes',
+      },
+      users: [{ name: 'next-user' }],
+      groups: [{ name: 'next-group', users: [{ name: 'next-user' }] }],
+      extraPathGrants: [{ path: '/tmp/next', readOnly: false }],
+      remoteMountCommandAllowlist: ['cat'],
+    });
+
+    expect(deserializeManifest(undefined).root).toBe('/workspace');
+    expect(mergeManifestDelta(base, update)).toMatchObject({
+      version: 2,
+      root: '/workspace',
+      entries: {
+        old: {
+          type: 'file',
+          content: 'old',
+        },
+        next: {
+          type: 'file',
+          content: 'next',
+        },
+      },
+      environment: {
+        KEEP: {
+          value: 'updated',
+        },
+        ADDED: {
+          value: 'yes',
+        },
+      },
+      users: [{ name: 'base-user' }, { name: 'next-user' }],
+      groups: [
+        { name: 'base-group', users: [{ name: 'base-user' }] },
+        { name: 'next-group', users: [{ name: 'next-user' }] },
+      ],
+      extraPathGrants: [
+        { path: '/tmp/base', readOnly: true },
+        { path: '/tmp/next', readOnly: false },
+      ],
+      remoteMountCommandAllowlist: ['cat'],
+    });
+
+    expect(
+      mergeManifestDelta(
+        base,
+        new Manifest({
+          entries: {
+            implicit: {
+              type: 'file',
+              content: 'implicit',
+            },
+          },
+        }),
+      ).remoteMountCommandAllowlist,
+    ).toEqual(['ls']);
+  });
+
+  test('edits remote sandbox files through apply_patch operations', async () => {
+    const files = new Map<string, string>();
+    const mkdirMock = vi.fn();
+    const editor = new RemoteSandboxEditor({
+      mkdir: mkdirMock,
+      pathExists: async (path) => files.has(path),
+      readText: async (path) => files.get(path) ?? '',
+      writeText: async (path, content) => {
+        files.set(path, content);
+      },
+      deletePath: async (path) => {
+        files.delete(path);
+      },
+    });
+
+    await editor.createFile({
+      type: 'create_file',
+      path: 'src/new.txt',
+      diff: '+hello',
+    });
+    await editor.updateFile({
+      type: 'update_file',
+      path: 'src/new.txt',
+      diff: '-hello\n+hello world',
+    });
+    expect(files.get('src/new.txt')).toBe('hello world');
+
+    await editor.updateFile({
+      type: 'update_file',
+      path: 'src/new.txt',
+      diff: '-hello world\n+hello moved',
+      moveTo: 'renamed/new.txt',
+    });
+    expect(files.get('renamed/new.txt')).toBe('hello moved');
+    expect(files.has('src/new.txt')).toBe(false);
+
+    await expect(
+      editor.createFile({
+        type: 'create_file',
+        path: 'renamed/new.txt',
+        diff: '+overwrite',
+      }),
+    ).rejects.toThrow('Cannot create file because it already exists');
+    expect(files.get('renamed/new.txt')).toBe('hello moved');
+
+    await editor.deleteFile({
+      type: 'delete_file',
+      path: 'renamed/new.txt',
+    });
+
+    expect(mkdirMock).toHaveBeenCalledWith('src');
+    expect(mkdirMock).toHaveBeenCalledWith('renamed');
+    expect(files.has('renamed/new.txt')).toBe(false);
+  });
+
+  test('does not treat unreadable editor fallback reads as missing files', async () => {
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    const editor = new RemoteSandboxEditor({
+      readText: async () => {
+        throw denied;
+      },
+      writeText: vi.fn(),
+      deletePath: vi.fn(),
+    });
+
+    await expect(
+      editor.createFile({
+        type: 'create_file',
+        path: '/workspace/blocked',
+        diff: '+hello',
+      }),
+    ).rejects.toBe(denied);
+  });
+
+  test('prepares runAs remote writes with privileged ownership commands', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+
+    await writeRunAsRemoteText({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      path: '/workspace/notes.txt',
+      content: 'hello',
+      runAs: 'sandbox-user',
+      writer,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        return { status: 0, stdout: '' };
+      },
+    });
+
+    expect(writer.writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/openai-agents-/u),
+      'hello',
+    );
+    expect(commands[0]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[1]).toMatchObject({
+      command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[2]).toMatchObject({
+      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+      options: { runAs: 'root' },
+    });
+  });
+
+  test('wraps sandbox user shell commands for root and sudo handoff', () => {
+    expect(sandboxUserShellCommand('echo ok')).toBe('echo ok');
+
+    const command = sandboxUserShellCommand("printf '%s' ok", 'sandbox-user');
+
+    expect(command).toContain("target_user='sandbox-user'");
+    expect(command).toContain('current_uid="$(id -u)"');
+    expect(command).toContain(
+      'if [ "$current_uid" = "$target_user" ] || [ "$current_user" = "$target_user" ]; then',
+    );
+    expect(command).toContain('elif [ "$current_uid" -eq 0 ]; then');
+    expect(command).toContain('su -s /bin/sh "$target_user" -c');
+    expect(command).toContain('sudo -n -u "$target_user" -- sh -lc');
+    expect(command).toContain("'printf '\\''%s'\\'' ok'");
+  });
+
+  test('reads runAs files and checks remote path existence', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const runCommand = vi.fn(async (command, options) => {
+      commands.push({ command, options });
+      if (command.startsWith('base64')) {
+        return { status: 0, stdout: 'aGVsbG8gd29ybGQ=\n' };
+      }
+      return { status: command.includes('exists') ? 0 : 1, stdout: '' };
+    });
+
+    await expect(
+      readRunAsRemoteFile({
+        providerName: 'FakeSandboxClient',
+        providerId: 'fake',
+        path: '/workspace/notes.txt',
+        runAs: 'sandbox-user',
+        runCommand,
+      }),
+    ).resolves.toEqual(new TextEncoder().encode('hello world'));
+
+    await expect(
+      runAsRemotePathExists('/workspace/exists', 'sandbox-user', runCommand),
+    ).resolves.toBe(true);
+    await expect(
+      runAsRemotePathExists('/workspace/missing', 'sandbox-user', runCommand),
+    ).resolves.toBe(false);
+    await expect(
+      runAsRemoteDirectoryExists(
+        '/workspace/exists',
+        'sandbox-user',
+        runCommand,
+      ),
+    ).resolves.toBe(true);
+
+    expect(commands).toEqual([
+      {
+        command: "base64 -- '/workspace/notes.txt'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/exists'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/missing'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: expect.stringContaining('OPENAI_AGENTS_READ_PATH_PROBE_V1'),
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/exists'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -d '/workspace/exists' && test -x '/workspace/exists'",
+        options: { runAs: 'sandbox-user' },
+      },
+    ]);
+  });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed runAs path probes: %j', async (result) => {
+    await expect(
+      runAsRemotePathExists(
+        '/workspace/blocked',
+        'sandbox-user',
+        async () => result,
+        { providerName: 'FakeSandboxClient', providerId: 'fake' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'fake',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
+    });
+  });
+
+  test('checks directory searchability under the requested runAs identity', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockResolvedValueOnce({ status: 1 });
+
+    await expect(
+      runAsRemoteDirectoryExists(
+        '/workspace/blocked',
+        'sandbox-user',
+        runCommand,
+      ),
+    ).resolves.toBe(false);
+    expect(runCommand.mock.calls).toEqual([
+      ["test -e '/workspace/blocked'", { runAs: 'sandbox-user' }],
+      [
+        "test -d '/workspace/blocked' && test -x '/workspace/blocked'",
+        { runAs: 'sandbox-user' },
+      ],
+    ]);
+  });
+
+  test('reports runAs command failures with provider context', async () => {
+    await expect(
+      readRunAsRemoteFile({
+        providerName: 'FakeSandboxClient',
+        providerId: 'fake',
+        path: '/workspace/notes.txt',
+        runAs: 'sandbox-user',
+        runCommand: async () => ({
+          status: 1,
+          stdout: 'permission denied',
+          stderr: 'read failed',
+        }),
+      }),
+    ).rejects.toMatchObject({
+      message:
+        'FakeSandboxClient failed to read file /workspace/notes.txt: permission denied\nread failed',
+      details: { provider: 'fake' },
+    });
+  });
+
+  test('creates runAs remote editors with mutation hooks and resolved paths', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+    const beforeFilesystemMutation = vi.fn(async () => {});
+    const editor = createRunAsRemoteEditor({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      runAs: 'sandbox-user',
+      resolvePath: async (path) => `/workspace/${path}`,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        if (command.startsWith('test -e')) {
+          return { status: 1, stdout: '' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writer,
+      beforeFilesystemMutation,
+    });
+
+    await editor.createFile({
+      type: 'create_file',
+      path: 'src/notes.txt',
+      diff: '+hello',
+    });
+
+    expect(beforeFilesystemMutation).toHaveBeenCalledTimes(2);
+    expect(writer.writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/openai-agents-/u),
+      'hello',
+    );
+    expect(commands[0]).toEqual({
+      command: "test -e '/workspace/src/notes.txt'",
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[1]).toEqual({
+      command: expect.stringContaining('OPENAI_AGENTS_READ_PATH_PROBE_V1'),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[2]).toEqual({
+      command: "mkdir -p -- '/workspace/src'",
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[3]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[4]).toMatchObject({
+      command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[5]).toMatchObject({
+      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+      options: { runAs: 'root' },
+    });
+  });
+
+  test('applies runAs manifest metadata with privileged ownership commands', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const options = manifestMaterializationOptionsWithRunAs({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      runAs: 'sandbox-user',
+      runCommand: async (command, commandOptions) => {
+        commands.push({ command, options: commandOptions });
+        return { status: 0, stdout: '' };
+      },
+      support: {
+        entryGroups: true,
+        entryPermissions: true,
+      },
+    });
+
+    await options.applyMetadata?.('/workspace/notes.txt', {
+      type: 'file',
+      content: 'hello',
+      group: { name: 'sandbox-group' },
+      permissions: '-rw-r-----',
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[0]?.command).toContain(
+      "chgrp 'sandbox-group' -- '/workspace/notes.txt'",
+    );
+    expect(commands[0]?.command).toContain(
+      "chmod 0640 -- '/workspace/notes.txt'",
+    );
+  });
+
+  test('validates remote sandbox paths against resolved realpaths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agents-remote-root-'));
+    const outside = await mkdtemp(join(tmpdir(), 'agents-remote-outside-'));
+    tempDirs.push(root, outside);
+    const resolvedRoot = await realpath(root);
+    await mkdir(join(root, 'safe'));
+    await writeFile(join(root, 'safe', 'target.txt'), 'inside\n');
+    await symlink(join(root, 'safe', 'target.txt'), join(root, 'link.txt'));
+    await writeFile(join(outside, 'secret.txt'), 'secret\n');
+    await symlink(outside, join(root, 'escape'));
+
+    const validationCommands: string[] = [];
+    const runCommand = async (command: string) => {
+      validationCommands.push(command);
+      try {
+        const { stdout, stderr } = await execFileAsync('/bin/sh', [
+          '-lc',
+          command,
+        ]);
+        return { status: 0, stdout, stderr };
+      } catch (error) {
+        const failure = error as Error & {
+          code?: number;
+          stdout?: string;
+          stderr?: string;
+        };
+        return {
+          status: failure.code ?? 1,
+          stdout: failure.stdout ?? '',
+          stderr: failure.stderr ?? '',
+        };
+      }
+    };
+
+    await expect(
+      validateRemoteSandboxPath({
+        root,
+        path: 'escape/secret.txt',
+        runCommand,
+      }),
+    ).rejects.toBeInstanceOf(SandboxPathResolutionError);
+    await expect(
+      validateRemoteSandboxPath({
+        root,
+        path: 'link.txt',
+        runCommand,
+      }),
+    ).resolves.toBe(join(resolvedRoot, 'safe', 'target.txt'));
+    await expect(
+      validateRemoteSandboxPath({
+        root,
+        path: 'safe/new.txt',
+        options: { forWrite: true },
+        runCommand,
+      }),
+    ).resolves.toBe(join(resolvedRoot, 'safe/new.txt'));
+    await expect(
+      validateRemoteSandboxPath({
+        root: '/',
+        path: 'src/app.ts',
+        runCommand,
+      }),
+    ).resolves.toBe('/src/app.ts');
+    expect(validationCommands).not.toHaveLength(0);
+    expect(validationCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('PATH=/usr/bin:/bin\nHOME=/root'),
+        expect.stringContaining(
+          'unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT\nexport PATH HOME',
+        ),
+      ]),
+    );
+  }, 15_000);
+
+  test('uses an absolute trusted binary for credential path resolution', async () => {
+    const runCommand = vi.fn(async () => ({
+      status: 0,
+      stdout: '/var/run/secrets/aws/token\n',
+    }));
+
+    await expect(
+      resolveRemoteSandboxEffectivePath({
+        path: '/var/run/secrets/aws/token',
+        runCommand,
+      }),
+    ).resolves.toBe('/var/run/secrets/aws/token');
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand).toHaveBeenCalledWith(
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+    );
+  });
+
+  test('rejects extra output from credential path resolution', async () => {
+    await expect(
+      resolveRemoteSandboxEffectivePath({
+        path: '/var/run/secrets/aws/token',
+        runCommand: async () => ({
+          status: 0,
+          stdout: '/var/run/secrets/aws/token\n/tmp/untrusted-override\n',
+        }),
+      }),
+    ).rejects.toThrow(/failed effective-path resolution/u);
+  });
+
+  test('rejects remote path validators that do not return absolute paths', async () => {
+    await expect(
+      validateRemoteSandboxPath({
+        root: '/workspace',
+        path: 'src/app.ts',
+        runCommand: async () => ({ status: 0, stdout: 'relative/app.ts\n' }),
+      }),
+    ).rejects.toThrow(/validator did not return an absolute resolved path/);
+  });
+
+  test('validates workspace tar archives before hydrate', () => {
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]),
+      ),
+    ).not.toThrow();
+
+    for (const archive of [
+      makeTarArchive([{ name: '/etc/passwd', content: 'bad' }]),
+      makeTarArchive([{ name: '../escape.txt', content: 'bad' }]),
+      makeTarArchive([{ name: 'C:/escape.txt', content: 'bad' }]),
+      makeTarArchive([{ name: 'safe\\file.txt', content: 'bad' }]),
+      makeTarArchive([{ name: 'hardlink', type: '1', linkName: 'safe' }]),
+      makeTarArchive([
+        { name: 'safe/file.txt', content: 'ok' },
+        { name: 'safe/file.txt/child.txt', content: 'bad' },
+      ]),
+      makeTarArchive([
+        { name: 'link', type: '2', linkName: '/tmp/outside' },
+        { name: 'link/child.txt', content: 'bad' },
+      ]),
+    ]) {
+      expect(() => validateWorkspaceTarArchive(archive)).toThrow(
+        SandboxArchiveError,
+      );
+    }
+
+    const symlinkArchive = makeTarArchive([
+      { name: 'link', type: '2', linkName: 'safe/file.txt' },
+    ]);
+    expect(() => validateWorkspaceTarArchive(symlinkArchive)).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(symlinkArchive, { allowSymlinks: false }),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(symlinkArchive, {
+        allowExternalSymlinkTargets: false,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'link', type: '2', linkName: '/tmp/outside' }]),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'link', type: '2', linkName: '/tmp/outside' }]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).toThrow(/absolute symlink target not allowed/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'nested', type: '5' },
+          { name: 'nested/link', type: '2', linkName: '../../outside' },
+        ]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).toThrow(/symlink target escapes archive root/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'nested', type: '5' },
+          { name: 'nested/link', type: '2', linkName: '../safe/file.txt' },
+        ]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).not.toThrow();
+  });
+
+  test('validates tar root members, PAX paths, and long names', () => {
+    expect(() =>
+      validateWorkspaceTarArchive(makeTarArchive([{ name: '.', type: '5' }])),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(makeTarArchive([{ name: '.', type: '2' }])),
+    ).toThrow(/archive root symlink/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: '.', content: 'root-file' }]),
+      ),
+    ).toThrow(/archive root member must be directory/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'dir', type: '5' },
+          { name: 'dir', type: '5' },
+        ]),
+      ),
+    ).not.toThrow();
+
+    const paxArchive = makeTarArchive([
+      {
+        name: 'pax-path',
+        type: 'x',
+        content: makePaxRecord('path', 'workspace/skipped/ignored.txt'),
+      },
+      { name: 'ignored', content: 'skip me' },
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord('comment', 'harmless metadata'),
+      },
+      {
+        name: 'long-name',
+        type: 'L',
+        content: 'workspace/keep/deep/file.txt\n',
+      },
+      { name: 'fallback', content: 'long name content' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(paxArchive, {
+        rootName: 'workspace',
+        skipRelPaths: ['skipped'],
+      }),
+    ).not.toThrow();
+
+    const paxLinkArchive = makeTarArchive([
+      {
+        name: 'pax-link',
+        type: 'x',
+        content: `${makePaxRecord('path', 'workspace/keep/link')}${makePaxRecord(
+          'linkpath',
+          '../target.txt',
+        )}`,
+      },
+      { name: 'fallback-link', type: '2', linkName: 'fallback-target' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(paxLinkArchive, {
+        rootName: 'workspace',
+        rejectSymlinkRelPaths: ['workspace/keep/link'],
+      }),
+    ).toThrow(/symlink member not allowed: workspace\/keep\/link/);
+  });
+
+  test.each([
+    ['safe/file.txt', 'safe/file.txt'],
+    ['safe/file.txt\0\0', 'safe/file.txt'],
+    ['safe/file.txt\n', 'safe/file.txt'],
+    ['safe/line\nname.txt\0', 'safe/line\nname.txt'],
+    ['safe/line\rname.txt\0', 'safe/line\rname.txt'],
+    ['safe/line\u2028name.txt\0', 'safe/line\u2028name.txt'],
+    ['safe/line\u2029name.txt\0', 'safe/line\u2029name.txt'],
+  ])('preserves GNU long-name trimming for %j', (content, path) => {
+    const archive = makeTarArchive([
+      { name: 'long-name', type: 'L', content },
+      { name: 'fallback.txt', content: 'ok' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(archive, { rejectRelPaths: [path] }),
+    ).toThrow(`archive member overlaps protected path: ${path}`);
+  });
+
+  test.each(['path', 'linkpath'])('rejects global PAX %s overrides', (key) => {
+    const archive = makeTarArchive([
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord(key, 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).toThrow(
+      new RegExp(`global PAX ${key} override not allowed`),
+    );
+  });
+
+  test('rejects malformed PAX byte framing and encoding', () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: '999 path=logs/events.jsonl\n',
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).toThrow(
+      /PAX record exceeds payload/,
+    );
+
+    const invalidUtf8 = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: new Uint8Array([0x37, 0x20, 0x78, 0x3d, 0xc3, 0x28, 0x0a]),
+      },
+    ]);
+    expect(() => validateWorkspaceTarArchive(invalidUtf8)).toThrow(
+      /invalid UTF-8 in PAX record/,
+    );
+  });
+
+  test('rejects malformed tar headers and unsupported member types', () => {
+    expect(() => validateWorkspaceTarArchive(new Uint8Array(1))).toThrow(
+      /truncated header/,
+    );
+
+    const truncatedPayload = makeTarArchive([
+      { name: 'file.txt', content: 'payload' },
+    ]).subarray(0, 515);
+    expect(() => validateWorkspaceTarArchive(truncatedPayload)).toThrow(
+      /truncated member payload/,
+    );
+
+    const base256Size = makeTarArchive([{ name: 'file.txt', content: 'ok' }]);
+    base256Size[124] = 0x80;
+    expect(() => validateWorkspaceTarArchive(base256Size)).toThrow(
+      /base-256 tar sizes are not supported/,
+    );
+
+    const invalidOctalSize = makeTarArchive([
+      { name: 'file.txt', content: 'ok' },
+    ]);
+    invalidOctalSize[124] = '8'.charCodeAt(0);
+    expect(() => validateWorkspaceTarArchive(invalidOctalSize)).toThrow(
+      /invalid octal size/,
+    );
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'device', type: '3' }]),
+      ),
+    ).toThrow(/unsupported member type/);
+  });
+
+  test('rejects archive members that overlap protected paths', () => {
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache/data.json', content: 'unsafe' }]),
+        { rejectRelPaths: ['cache'] },
+      ),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'safe/cache.txt', content: 'safe' }]),
+        { rejectRelPaths: ['cache'] },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'workspace/cache/data.json', content: 'unsafe' },
+        ]),
+        {
+          rejectRelPaths: ['cache'],
+          rootName: 'workspace',
+        },
+      ),
+    ).toThrow(SandboxArchiveError);
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', content: 'blocking file' }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o755 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: '.', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'README.md', content: 'protected root' }]),
+        { rejectRelPaths: [''] },
+      ),
+    ).toThrow(SandboxArchiveError);
+  });
+
+  test('rejects workspace tar archives over resource limits', () => {
+    const archive = makeTarArchive([
+      { name: 'one.txt', content: '1' },
+      { name: 'two.txt', content: '22' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: 4,
+          maxExtractedBytes: null,
+          maxMembers: null,
+        },
+      }),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: 2,
+          maxMembers: null,
+        },
+      }),
+    ).toThrow(/archive extracted size exceeds limit/);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: 1,
+        },
+      }),
+    ).toThrow(/archive member count exceeds limit/);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: null,
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test('rejects symbolic links before hydrating tar archives', async () => {
+    const writeFile = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({ root: '/custom/workspace' }),
+        data: makeTarArchive([
+          { name: 'link', type: '2', linkName: 'safe/file.txt' },
+        ]),
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand: vi.fn(),
+        },
+      }),
+    ).rejects.toBeInstanceOf(SandboxArchiveError);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      name: 'an exact ephemeral file',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          'secret.txt': {
+            type: 'file',
+            content: 'runtime-only',
+            ephemeral: true,
+          },
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'secret.txt', content: 'persisted secret' },
+      ]),
+      protectedPath: 'secret.txt',
+    },
+    {
+      name: 'a descendant of an ephemeral directory',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'logs/events.jsonl', content: 'persisted log' },
+      ]),
+      protectedPath: 'logs',
+    },
+    {
+      name: 'a file that blocks an ephemeral descendant',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          cache: {
+            type: 'dir',
+            children: {
+              'session.json': {
+                type: 'file',
+                content: 'runtime-only',
+                ephemeral: true,
+              },
+            },
+          },
+        },
+      }),
+      archive: makeTarArchive([{ name: 'cache', content: 'blocking file' }]),
+      protectedPath: 'cache/session.json',
+    },
+    {
+      name: 'a descendant of an ephemeral mount target',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'mounted/cache',
+            ephemeral: true,
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'mounted/cache/data.json', content: 'persisted mount data' },
+      ]),
+      protectedPath: 'mounted/cache',
+    },
+  ])(
+    'rejects $name before hydrating tar archives',
+    async ({ manifest, archive, protectedPath }) => {
+      const writeFile = vi.fn();
+      const runCommand = vi.fn(async (command: string) => ({
+        status: 0,
+        stdout: command.includes('resolve-workspace-path.sh')
+          ? `${manifest.root}\n`
+          : '',
+        stderr: '',
+      }));
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'FakeProvider',
+          manifest,
+          data: archive,
+          io: {
+            mkdir: vi.fn(),
+            readFile: vi.fn(),
+            writeFile,
+            runCommand,
+          },
+        }),
+      ).rejects.toMatchObject({
+        details: {
+          reason: `archive member overlaps protected path: ${protectedPath}`,
+        },
+      });
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(runCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  test('hydrates tar archives without ephemeral manifest paths', async () => {
+    const archive = makeTarArchive([
+      { name: 'src/index.ts', content: 'export {};' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      data: archive,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile,
+        runCommand,
+      },
+    });
+
+    expect(writeFile).toHaveBeenCalledWith(expect.any(String), archive);
+    expect(runCommand).toHaveBeenCalled();
+  });
+
+  test('rejects global PAX path overrides before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord('path', 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'global PAX path override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('parses multibyte PAX records before protected paths', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: `${makePaxRecord('comment', 'é')}${makePaxRecord(
+          'path',
+          'logs/events.jsonl',
+        )}`,
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: logs',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects NUL-bearing PAX paths before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('path', 'secret.txt\0ignored'),
+      },
+      { name: 'safe.txt', content: 'persisted secret' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            'secret.txt': {
+              type: 'file',
+              content: 'runtime-only',
+              ephemeral: true,
+            },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'NUL byte in PAX record',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects PAX size overrides before hydration side effects', async () => {
+    const embeddedHeader = makeTarArchive([
+      { name: 'logs/events.jsonl', content: '' },
+    ]).subarray(0, 512);
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('size', '0'),
+      },
+      { name: 'safe.txt', content: embeddedHeader },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'PAX size override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects GNU sparse PAX destinations before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('GNU.sparse.name', 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'PAX GNU.sparse.name override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects populated tar archives when the workspace root is ephemeral', async () => {
+    const archive = makeTarArchive([
+      { name: 'src/index.ts', content: 'export {};' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            '': { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: ',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('round-trips an ephemeral workspace root as an empty tar archive', async () => {
+    const manifest = new Manifest({
+      root: '/custom/workspace',
+      entries: {
+        '': { type: 'dir', ephemeral: true },
+      },
+    });
+    const persistedContent = makeTarArchive([
+      { name: 'secret.txt', content: 'must not persist' },
+    ]);
+    const persistRunCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+    const persistReadFile = vi.fn(async () => persistedContent);
+
+    const archive = await persistRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest,
+      io: {
+        mkdir: vi.fn(),
+        readFile: persistReadFile,
+        writeFile: vi.fn(),
+        runCommand: persistRunCommand,
+      },
+    });
+
+    expect(archive).toEqual(makeTarArchive([]));
+    expect(persistReadFile).not.toHaveBeenCalled();
+    expect(persistRunCommand).not.toHaveBeenCalled();
+
+    const hydrateWriteFile = vi.fn();
+    const hydrateRunCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest,
+      data: archive,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: hydrateWriteFile,
+        runCommand: hydrateRunCommand,
+      },
+    });
+
+    expect(hydrateWriteFile).toHaveBeenCalledWith(expect.any(String), archive);
+    expect(hydrateRunCommand).toHaveBeenCalled();
+  });
+
+  test('clears remote workspace root before hydrating tar archives', async () => {
+    const archive = makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]);
+    const commands: string[] = [];
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest: new Manifest({ root: '/custom/workspace' }),
+      data: archive,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        runCommand: vi.fn(async (command: string) => {
+          commands.push(command);
+          if (command.includes('resolve-workspace-path.sh')) {
+            return {
+              status: 0,
+              stdout: '/custom/workspace\n',
+              stderr: '',
+            };
+          }
+          return {
+            status: 0,
+            stdout: '',
+            stderr: '',
+          };
+        }),
+      },
+    });
+
+    const hydrateCommand = commands.find((command) =>
+      command.includes('tar -C'),
+    );
+    expect(hydrateCommand).toContain(
+      "find '/custom/workspace' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+    );
+    expect(hydrateCommand!.indexOf('find')).toBeLessThan(
+      hydrateCommand!.indexOf('tar -C'),
+    );
+  });
+
+  test('rejects filesystem root before hydrating tar archives', async () => {
+    const archive = makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]);
+    const io = {
+      mkdir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      runCommand: vi.fn(),
+    };
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({ root: '/' }),
+        data: archive,
+        io,
+      }),
+    ).rejects.toThrow(SandboxArchiveError);
+
+    expect(io.writeFile).not.toHaveBeenCalled();
+    expect(io.runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects filesystem root before persisting tar archives', async () => {
+    const io = {
+      mkdir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      runCommand: vi.fn(),
+    };
+
+    await expect(
+      persistRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({ root: '/' }),
+        io,
+      }),
+    ).rejects.toThrow(SandboxArchiveError);
+
+    expect(io.readFile).not.toHaveBeenCalled();
+    expect(io.runCommand).not.toHaveBeenCalled();
+  });
+
+  test('builds tar exclude args from ephemeral entries and mount targets', () => {
+    const manifest = new Manifest({
+      entries: {
+        keep: { type: 'file', content: 'keep' },
+        'literal[1]*?': {
+          type: 'file',
+          content: 'literal',
+          ephemeral: true,
+        },
+        secret: { type: 'file', content: 'secret', ephemeral: true },
+        mounted: mount({
+          source: 's3://bucket/data',
+          mountPath: 'cache',
+          ephemeral: true,
+          mountStrategy: { type: 'in_container' },
+        }),
+      },
+    });
+
+    expect(workspaceTarExcludeArgs(manifest)).toEqual([
+      "--exclude='./cache'",
+      "--exclude='./literal\\[1\\]\\*\\?'",
+      "--exclude='./mounted'",
+      "--exclude='./secret'",
+    ]);
+  });
+
+  test('materializes inline file and directory entries', async () => {
+    const directories: string[] = [];
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (path: string) => {
+        directories.push(path);
+      },
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await materializeInlineManifestEntry(
+      writer,
+      '/workspace/project',
+      {
+        type: 'dir',
+        children: {
+          'README.md': {
+            type: 'file',
+            content: 'readme',
+          },
+        },
+      },
+      'test',
+    );
+
+    expect(directories).toContain('/workspace/project');
+    expect(files.get('/workspace/project/README.md')).toBe('readme');
+    await expect(
+      materializeInlineManifestEntry(
+        writer,
+        '/workspace/local.txt',
+        {
+          type: 'local_file',
+          src: '/tmp/local.txt',
+        },
+        'test',
+      ),
+    ).rejects.toThrow(/cannot materialize local_file entries/);
+    await expect(
+      materializeInlineManifestEntry(
+        writer,
+        '/workspace/bad',
+        { type: 'bad' } as any,
+        'test',
+      ),
+    ).rejects.toThrow(/Unsupported sandbox entry type/);
+    await expect(
+      materializeInlineManifestEntry(
+        writer,
+        '/workspace/mount',
+        mount({
+          source: 's3://bucket/data',
+          mountStrategy: { type: 'in_container' },
+        }),
+        'test',
+      ),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+  });
+
+  test('clones manifests with provider-specific roots', () => {
+    const manifest = new Manifest({
+      root: '/workspace',
+      entries: {
+        'README.md': {
+          type: 'file',
+          content: 'readme',
+        },
+      },
+      environment: {
+        TOKEN: {
+          value: 'placeholder',
+          description: 'provider token',
+        },
+      },
+      extraPathGrants: [{ path: '/mnt/data', readOnly: true }],
+    });
+
+    const cloned = cloneManifestWithRoot(manifest, '/provider/workspace');
+
+    expect(cloned.root).toBe('/provider/workspace');
+    expect(cloned.entries).toEqual(manifest.entries);
+    expect(cloned.entries).not.toBe(manifest.entries);
+    expect(cloned.environment.TOKEN.normalized()).toEqual({
+      value: 'placeholder',
+      description: 'provider token',
+    });
+    expect(cloned.extraPathGrants).toEqual([
+      {
+        path: '/mnt/data',
+        readOnly: true,
+      },
+    ]);
+    expect(manifest.root).toBe('/workspace');
+  });
+
+  test('rebases root-scoped absolute mount paths when cloning manifests with provider-specific roots', () => {
+    const manifest = new Manifest({
+      root: '/workspace',
+      entries: {
+        relative: mount({
+          source: 's3://bucket/relative',
+          mountPath: 'mounted/relative',
+        }),
+        absolute: mount({
+          source: 's3://bucket/absolute',
+          mountPath: '/workspace/mounted/absolute',
+        }),
+        external: mount({
+          source: 's3://bucket/external',
+          mountPath: '/mnt/external',
+        }),
+        nested: {
+          type: 'dir',
+          children: {
+            absolute: mount({
+              source: 's3://bucket/nested',
+              mountPath: '/workspace/nested/mounted',
+            }),
+          },
+        },
+      },
+    });
+
+    const cloned = cloneManifestWithRoot(manifest, '/provider/workspace');
+
+    expect(cloned.entries.relative).toMatchObject({
+      mountPath: 'mounted/relative',
+    });
+    expect(cloned.entries.absolute).toMatchObject({
+      mountPath: '/provider/workspace/mounted/absolute',
+    });
+    expect(cloned.entries.external).toMatchObject({
+      mountPath: '/mnt/external',
+    });
+    expect(cloned.entries.nested).toMatchObject({
+      children: {
+        absolute: {
+          mountPath: '/provider/workspace/nested/mounted',
+        },
+      },
+    });
+    expect(manifest.entries.absolute).toMatchObject({
+      mountPath: '/workspace/mounted/absolute',
+    });
+  });
+
+  test('clones manifests without mount entries', () => {
+    const manifest = new Manifest({
+      entries: {
+        keep: {
+          type: 'dir',
+          children: {
+            'file.txt': {
+              type: 'file',
+              content: 'file',
+            },
+            mounted: {
+              type: 'mount',
+              source: '/mnt/data',
+            },
+          },
+        },
+        rootMount: {
+          type: 'mount',
+          source: '/mnt/root',
+        },
+      },
+      environment: {
+        TOKEN: {
+          value: 'placeholder',
+          description: 'provider token',
+        },
+      },
+    });
+
+    const cloned = cloneManifestWithoutMountEntries(manifest);
+
+    expect(cloned.entries).toEqual({
+      keep: {
+        type: 'dir',
+        children: {
+          'file.txt': {
+            type: 'file',
+            content: 'file',
+          },
+        },
+      },
+    });
+    expect(cloned.environment.TOKEN.normalized()).toEqual({
+      value: 'placeholder',
+      description: 'provider token',
+    });
+    expect(manifest.entries.rootMount).toMatchObject({
+      type: 'mount',
+      source: '/mnt/root',
+    });
+  });
+
+  test('normalizes top-level manifest paths before remote materialization', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceFile = join(tempDir, 'source.txt');
+    await writeFile(sourceFile, 'local source');
+
+    const resolvedPaths: string[] = [];
+    const directories: string[] = [];
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (path: string) => {
+        directories.push(path);
+      },
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+    const resolvePath = async (path: string) => {
+      resolvedPaths.push(path);
+      return `/workspace/${path}`;
+    };
+
+    await materializeInlineManifest(
+      writer,
+      new Manifest({
+        entries: {
+          ' ./src//README.md ': file({ content: 'readme' }),
+          dir: {
+            type: 'dir',
+            children: {
+              ' ./nested//note.txt ': file({ content: 'note' }),
+            },
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged(
+        'mounted',
+        'mounted/cache',
+        'mounted/cache/nested',
+      ),
+      'test',
+      resolvePath,
+    );
+    await materializeLocalSourceManifest(
+      writer,
+      new Manifest({
+        extraPathGrants: [{ path: dirname(sourceFile), readOnly: true }],
+        entries: {
+          ' ./copied//source.txt ': {
+            type: 'local_file',
+            src: sourceFile,
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged(
+        'mounted',
+        'mounted/cache',
+      ),
+      'test',
+      resolvePath,
+    );
+
+    expect(resolvedPaths).toEqual([
+      'src/README.md',
+      'dir',
+      'dir/nested/note.txt',
+      'copied/source.txt',
+    ]);
+    expect(directories).toContain('/workspace/dir');
+    expect(files.get('/workspace/src/README.md')).toBe('readme');
+    expect(files.get('/workspace/dir/nested/note.txt')).toBe('note');
+    expect(Buffer.from(files.get('/workspace/copied/source.txt')!)).toEqual(
+      Buffer.from('local source'),
+    );
+  });
+
+  test('re-resolves nested manifest child paths before remote writes', async () => {
+    const files = new Map<string, string | Uint8Array>();
+    const resolvedPaths: string[] = [];
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await expect(
+      materializeInlineManifest(
+        writer,
+        new Manifest({
+          entries: {
+            dir: {
+              type: 'dir',
+              children: {
+                'link/file.txt': file({ content: 'blocked' }),
+              },
+            },
+          },
+        }),
+        'test',
+        async (path) => {
+          resolvedPaths.push(path);
+          if (path === 'dir/link/file.txt') {
+            throw new Error('Sandbox path escapes the workspace root.');
+          }
+          return `/workspace/${path}`;
+        },
+      ),
+    ).rejects.toThrow(/escapes the workspace root/);
+
+    expect(resolvedPaths).toEqual(['dir', 'dir/link/file.txt']);
+    expect(files.size).toBe(0);
+  });
+
+  test('materializes remote manifest mounts after entries in parent-first order', async () => {
+    const operations: string[] = [];
+    const resolvedPaths: string[] = [];
+    const writer = {
+      mkdir: async (path: string) => {
+        operations.push(`mkdir:${path}`);
+      },
+      writeFile: async (path: string, _content: string | Uint8Array) => {
+        operations.push(`write:${path}`);
+      },
+    };
+
+    await materializeInlineManifest(
+      writer,
+      new Manifest({
+        entries: {
+          child: mount({
+            mountPath: 'mounted/cache',
+            mountStrategy: { type: 'in_container' },
+          }),
+          app: {
+            type: 'dir',
+            children: {
+              'note.txt': file({ content: 'note' }),
+              nested: mount({
+                mountPath: 'mounted/cache/nested',
+                mountStrategy: { type: 'in_container' },
+              }),
+            },
+          },
+          parent: mount({
+            mountPath: 'mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      'test',
+      async (path) => {
+        resolvedPaths.push(path);
+        return `/workspace/${path}`;
+      },
+      {
+        materializeMount: async (absolutePath) => {
+          operations.push(`mount:${absolutePath}`);
+        },
+      },
+    );
+
+    expect(operations).toEqual([
+      'mkdir:/workspace/app',
+      'write:/workspace/app/note.txt',
+      'mount:/workspace/mounted',
+      'mount:/workspace/mounted/cache',
+      'mount:/workspace/mounted/cache/nested',
+    ]);
+    expect(resolvedPaths).toEqual([
+      'mounted',
+      'mounted/cache',
+      'mounted/cache/nested',
+      'app',
+      'app/note.txt',
+      'app/nested',
+    ]);
+  });
+
+  test('validates all effective mount paths before materialization', async () => {
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+    const materializeMount = vi.fn();
+    const manifest = new Manifest({
+      entries: {
+        'note.txt': file({ content: 'not written' }),
+        first: {
+          type: 's3_mount',
+          bucket: 'first',
+          accessKeyId: 'first-key',
+          secretAccessKey: 'first-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+        second: {
+          type: 's3_mount',
+          bucket: 'second',
+          accessKeyId: 'second-key',
+          secretAccessKey: 'second-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('first', 'second');
+
+    await expect(
+      materializeInlineManifest(
+        writer,
+        manifest,
+        'test',
+        async (path) =>
+          path === 'second' ? '/workspace/redirected' : `/workspace/${path}`,
+        { materializeMount },
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(materializeMount).not.toHaveBeenCalled();
+    expect(writer.mkdir).not.toHaveBeenCalled();
+    expect(writer.writeFile).not.toHaveBeenCalled();
+  });
+
+  test('revalidates effective mount paths immediately before materialization', async () => {
+    const materializeMount = vi.fn();
+    let mountPathResolutions = 0;
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'trusted-key',
+          secretAccessKey: 'trusted-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('data');
+
+    await expect(
+      materializeInlineManifest(
+        { mkdir: vi.fn(), writeFile: vi.fn() },
+        manifest,
+        'test',
+        async (path) => {
+          if (path !== 'data') {
+            return `/workspace/${path}`;
+          }
+          return mountPathResolutions++ === 0
+            ? '/workspace/data'
+            : '/workspace/redirected';
+        },
+        { materializeMount },
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(mountPathResolutions).toBe(2);
+    expect(materializeMount).not.toHaveBeenCalled();
+  });
+
+  test('materializes local source manifest mounts after source entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceFile = join(tempDir, 'source.txt');
+    await writeFile(sourceFile, 'local source');
+
+    const operations: string[] = [];
+    const resolvedPaths: string[] = [];
+    const writer = {
+      mkdir: async (path: string) => {
+        operations.push(`mkdir:${path}`);
+      },
+      writeFile: async (path: string, _content: string | Uint8Array) => {
+        operations.push(`write:${path}`);
+      },
+    };
+
+    await materializeLocalSourceManifest(
+      writer,
+      new Manifest({
+        extraPathGrants: [{ path: dirname(sourceFile), readOnly: true }],
+        entries: {
+          child: mount({
+            mountPath: 'mounted/cache',
+            mountStrategy: { type: 'in_container' },
+          }),
+          'copied/source.txt': {
+            type: 'local_file',
+            src: sourceFile,
+          },
+          parent: mount({
+            mountPath: 'mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      'test',
+      async (path) => {
+        resolvedPaths.push(path);
+        return `/workspace/${path}`;
+      },
+      {
+        materializeMount: async (absolutePath) => {
+          operations.push(`mount:${absolutePath}`);
+        },
+      },
+    );
+
+    expect(operations).toEqual([
+      'write:/workspace/copied/source.txt',
+      'mount:/workspace/mounted',
+      'mount:/workspace/mounted/cache',
+    ]);
+    expect(resolvedPaths).toEqual([
+      'mounted',
+      'mounted/cache',
+      'copied/source.txt',
+    ]);
+  });
+
+  test('materializes single remote manifest entry mounts after nested entries', async () => {
+    const state = {
+      manifest: new Manifest({
+        root: '/workspace',
+      }),
+    };
+    const operations: string[] = [];
+    const resolvedPaths: string[] = [];
+    const writer = {
+      mkdir: async (path: string) => {
+        operations.push(`mkdir:${path}`);
+      },
+      writeFile: async (path: string, _content: string | Uint8Array) => {
+        operations.push(`write:${path}`);
+      },
+    };
+
+    await applyInlineManifestEntryToState(
+      state,
+      '/workspace/project',
+      {
+        type: 'dir',
+        children: {
+          child: mount({
+            mountPath: 'project/mounted/cache',
+            mountStrategy: { type: 'in_container' },
+          }),
+          'note.txt': file({ content: 'note' }),
+          parent: mount({
+            mountPath: 'project/mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      },
+      'test',
+      writer,
+      async (path) => {
+        resolvedPaths.push(path);
+        return `/remote/${path}`;
+      },
+      {
+        materializeMount: async (absolutePath) => {
+          operations.push(`mount:${absolutePath}`);
+        },
+      },
+    );
+
+    expect(operations).toEqual([
+      'mkdir:/remote/project',
+      'write:/remote/project/note.txt',
+      'mount:/remote/project/mounted',
+      'mount:/remote/project/mounted/cache',
+    ]);
+    expect(resolvedPaths).toEqual([
+      'project/mounted',
+      'project/mounted/cache',
+      'project',
+      'project/child',
+      'project/note.txt',
+      'project/parent',
+    ]);
+    expect(state.manifest.entries.project).toMatchObject({
+      type: 'dir',
+    });
+  });
+
+  test('materializes local file and local directory entries with Node sources', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceFile = join(tempDir, 'source.txt');
+    const sourceDir = join(tempDir, 'source-dir');
+    const nestedDir = join(sourceDir, 'nested-dir');
+    await writeFile(sourceFile, 'local file');
+    await mkdir(sourceDir);
+    await writeFile(join(sourceDir, 'nested.txt'), 'nested');
+    await mkdir(nestedDir);
+    await writeFile(join(nestedDir, 'deep.txt'), 'deep');
+
+    const directories: string[] = [];
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (path: string) => {
+        directories.push(path);
+      },
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await materializeLocalSourceManifestEntry(
+      writer,
+      '/workspace/project',
+      {
+        type: 'dir',
+        children: {
+          'README.md': {
+            type: 'file',
+            content: 'readme',
+          },
+          'local.txt': {
+            type: 'local_file',
+            src: sourceFile,
+          },
+          data: {
+            type: 'local_dir',
+            src: sourceDir,
+          },
+        },
+      },
+      'test',
+      {
+        localSourceGrants: [
+          {
+            path: '/mnt/source-file',
+            hostPath: dirname(sourceFile),
+            readOnly: true,
+          },
+          {
+            path: '/mnt/source-dir',
+            hostPath: sourceDir,
+            readOnly: true,
+          },
+        ],
+      },
+    );
+
+    expect(directories).toContain('/workspace/project');
+    expect(directories).toContain('/workspace/project/data');
+    expect(directories).toContain('/workspace/project/data/nested-dir');
+    expect(files.get('/workspace/project/README.md')).toBe('readme');
+    expect(Buffer.from(files.get('/workspace/project/local.txt')!)).toEqual(
+      Buffer.from('local file'),
+    );
+    expect(
+      Buffer.from(files.get('/workspace/project/data/nested.txt')!),
+    ).toEqual(Buffer.from('nested'));
+    expect(
+      Buffer.from(files.get('/workspace/project/data/nested-dir/deep.txt')!),
+    ).toEqual(Buffer.from('deep'));
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/mount',
+        mount({
+          source: 's3://bucket/data',
+          mountStrategy: { type: 'in_container' },
+        }),
+        'test',
+      ),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+  });
+
+  test('rejects local source entries with mismatched source types', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceFile = join(tempDir, 'source.txt');
+    const sourceDir = join(tempDir, 'source-dir');
+    await writeFile(sourceFile, 'local file');
+    await mkdir(sourceDir);
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/source-dir',
+        {
+          type: 'local_dir',
+          src: sourceFile,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_dir source must be a directory/);
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/source.txt',
+        {
+          type: 'local_file',
+          src: sourceDir,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_file entry path changed while materializing/);
+  });
+
+  test('rejects local source entries outside the local source base directory without a grant', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const outside = join(tempDir, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/copied.txt',
+        {
+          type: 'local_file',
+          src: join(outside, 'secret.txt'),
+        },
+        'test',
+      ),
+    ).rejects.toThrow(/local_file source must stay within/);
+
+    expect(files.size).toBe(0);
+  });
+
+  test('allows local source entries outside the local source base directory with a grant', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const outside = join(tempDir, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await materializeLocalSourceManifestEntry(
+      writer,
+      '/workspace/copied.txt',
+      {
+        type: 'local_file',
+        src: join(outside, 'secret.txt'),
+      },
+      'test',
+      {
+        localSourceGrants: [{ path: outside, readOnly: true }],
+      },
+    );
+
+    expect(Buffer.from(files.get('/workspace/copied.txt')!)).toEqual(
+      Buffer.from('secret'),
+    );
+  });
+
+  test('rejects symbolic links inside local directory entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceDir = join(tempDir, 'source-dir');
+    const outsideFile = join(tempDir, 'outside.txt');
+    await mkdir(sourceDir);
+    await writeFile(join(sourceDir, 'safe.txt'), 'safe');
+    await writeFile(outsideFile, 'outside');
+    await symlink(outsideFile, join(sourceDir, 'link.txt'));
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/project',
+        {
+          type: 'local_dir',
+          src: sourceDir,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: sourceDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_dir entries do not support symbolic links/);
+  });
+
+  test('rejects symbolic link ancestors in local directory entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const realRoot = join(tempDir, 'real-root');
+    const linkedRoot = join(tempDir, 'linked-root');
+    const sourceDir = join(realRoot, 'source-dir');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(join(sourceDir, 'safe.txt'), 'safe');
+    await symlink(realRoot, linkedRoot, 'dir');
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/project',
+        {
+          type: 'local_dir',
+          src: join(linkedRoot, 'source-dir'),
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: linkedRoot, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(
+      /local_dir entries do not support symbolic link ancestors/,
+    );
+  });
+
+  test('rejects symbolic links in local file entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const outsideFile = join(tempDir, 'outside.txt');
+    const linkFile = join(tempDir, 'link.txt');
+    await writeFile(outsideFile, 'outside');
+    await symlink(outsideFile, linkFile);
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/copied.txt',
+        {
+          type: 'local_file',
+          src: linkFile,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_file entries do not support symbolic links/);
+  });
+
+  test('rejects symbolic link ancestors in local file entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const realRoot = join(tempDir, 'real-root');
+    const linkedRoot = join(tempDir, 'linked-root');
+    await mkdir(realRoot);
+    await writeFile(join(realRoot, 'source.txt'), 'source');
+    await symlink(realRoot, linkedRoot, 'dir');
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/copied.txt',
+        {
+          type: 'local_file',
+          src: join(linkedRoot, 'source.txt'),
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: linkedRoot, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(
+      /local_file entries do not support symbolic link ancestors/,
+    );
+  });
+
+  test('formats command output and truncates token output', () => {
+    expect(truncateOutput('0123456789abcdef', 1)).toEqual({
+      text: '...4',
+      originalTokenCount: 4,
+    });
+    expect(truncateOutput('one two', 3)).toEqual({ text: 'one two' });
+    expect(truncateOutput('one two')).toEqual({ text: 'one two' });
+
+    const running = formatExecResponse({
+      output: 'partial',
+      wallTimeSeconds: 1.23456,
+      sessionId: 7,
+      originalTokenCount: 10,
+    });
+    expect(running).toContain('Process running with session ID 7');
+    expect(running).toContain('Original token count: 10');
+    expect(running).toContain('partial');
+
+    const exited = formatExecResponse({
+      output: 'done',
+      wallTimeSeconds: 0,
+      exitCode: 0,
+    });
+    expect(exited).toContain('Process exited with code 0');
+    expect(exited).toContain('done');
+  });
+
+  test('formats indeterminate PTY exits as failures', async () => {
+    const registry = new PtyProcessRegistry();
+    const entry = createPtyProcessEntry({});
+    const { sessionId } = registry.register(entry);
+    closePtyOutput(entry);
+
+    const output = await formatPtyExecUpdate({
+      registry,
+      sessionId,
+      entry,
+      startTime: Date.now(),
+      yieldTimeMs: 1,
+    });
+
+    expect(output).toContain('Process exited with code 1');
+  });
+
+  test('opens browser-style PTY WebSockets and handles connection failures', async () => {
+    type FakeListener = (event: unknown) => void;
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      readyState = 0;
+      binaryType = '';
+      readonly listeners = new Map<string, Set<FakeListener>>();
+      readonly url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        FakeWebSocket.instances.push(this);
+      }
+
+      send() {}
+
+      close() {
+        this.readyState = 3;
+        this.emit('close');
+      }
+
+      addEventListener(type: string, listener: FakeListener) {
+        const listeners = this.listeners.get(type) ?? new Set<FakeListener>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: FakeListener) {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      emit(type: string, event: unknown = {}) {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(event);
+        }
+      }
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+
+    const opened = openPtyWebSocket({
+      url: 'wss://pty.example.test/session',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+    const socket = FakeWebSocket.instances[0]!;
+    expect(socket.binaryType).toBe('arraybuffer');
+    socket.readyState = 1;
+    socket.emit('open');
+    await expect(opened).resolves.toBe(socket);
+
+    const failed = openPtyWebSocket({
+      url: 'wss://pty.example.test/fail',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(FakeWebSocket.instances[1]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[1]!.emit('error', { message: 'denied' });
+    await expect(failed).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: denied',
+    );
+
+    const failedWithError = openPtyWebSocket({
+      url: 'wss://pty.example.test/error',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(3);
+      expect(FakeWebSocket.instances[2]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[2]!.emit('error', new Error('socket denied'));
+    await expect(failedWithError).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: socket denied',
+    );
+
+    const failedUnknown = openPtyWebSocket({
+      url: 'wss://pty.example.test/unknown-error',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(4);
+      expect(FakeWebSocket.instances[3]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[3]!.emit('error', {});
+    await expect(failedUnknown).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: unknown error',
+    );
+
+    const closed = openPtyWebSocket({
+      url: 'wss://pty.example.test/closed',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      expect(FakeWebSocket.instances[4]!.listeners.has('close')).toBe(true);
+    });
+    FakeWebSocket.instances[4]!.emit('close');
+    await expect(closed).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket closed before opening.',
+    );
+  });
+
+  test('adapts Node-style PTY WebSocket listeners and cleanup fallbacks', () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const socket = {
+      send: vi.fn(),
+      close: vi.fn(),
+      on: vi.fn((type: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(type, listener);
+      }),
+      removeListener: vi.fn(),
+    };
+    const messageListener = vi.fn();
+
+    const remove = addPtyWebSocketListener(socket, 'message', messageListener);
+    listeners.get('message')?.('payload');
+    remove();
+
+    expect(messageListener).toHaveBeenCalledWith({ data: 'payload' });
+    expect(socket.removeListener).toHaveBeenCalledWith(
+      'message',
+      expect.any(Function),
+    );
+  });
+
+  test('formats PTY shell commands with default and explicit shells', () => {
+    expect(shellCommandForPty({ cmd: 'echo hi' })).toBe("/bin/sh -c 'echo hi'");
+    expect(shellCommandForPty({ cmd: 'echo hi', shell: '/bin/zsh' })).toBe(
+      "/bin/zsh -lc 'echo hi'",
+    );
+    expect(
+      shellCommandForPty({ cmd: 'echo hi', shell: '/bin/zsh', login: false }),
+    ).toBe("/bin/zsh -c 'echo hi'");
+  });
+
+  test('collects PTY output from string and binary chunks', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({
+      entry,
+      yieldTimeMs: 1_000,
+    });
+
+    appendPtyOutput(entry, 'hello ');
+    appendPtyOutput(entry, new TextEncoder().encode('from bytes'));
+    closePtyOutput(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({
+      text: 'hello from bytes',
+      outputClosed: true,
+    });
+  });
+
+  test('decodes UTF-8 sequences split across PTY frames', async () => {
+    const text = 'caf\u00e9 \u2014 \ud83c\udf89 \u5b8c\u4e86';
+    const bytes = new TextEncoder().encode(text);
+
+    // A remote PTY can end a WebSocket frame in the middle of a multi-byte
+    // UTF-8 sequence, so every possible split has to round-trip.
+    for (let splitAt = 1; splitAt < bytes.length; splitAt++) {
+      const entry = createPtyProcessEntry({});
+      const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+      appendPtyOutput(entry, bytes.slice(0, splitAt));
+      appendPtyOutput(entry, bytes.slice(splitAt));
+      closePtyOutput(entry, 0);
+
+      await expect(pendingOutput).resolves.toEqual({
+        text,
+        outputClosed: true,
+      });
+    }
+  });
+
+  test('keeps ordering when string chunks follow partial UTF-8 bytes', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+    const bytes = new TextEncoder().encode('\u5b8c\u4e86');
+    appendPtyOutput(entry, bytes.slice(0, 4));
+    appendPtyOutput(entry, ' done');
+    closePtyOutput(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({
+      text: '\u5b8c\uFFFD done',
+      outputClosed: true,
+    });
+  });
+
+  test('flushes dangling incomplete UTF-8 bytes when the PTY completes', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+    appendPtyOutput(entry, new Uint8Array([0x68, 0x69, 0xf0, 0x9f]));
+    closePtyOutput(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({
+      text: 'hi\uFFFD',
+      outputClosed: true,
+    });
+  });
+
+  test.each(['exec', 'stdin'] as const)(
+    'retains final PTY bytes arriving after the %s collector returns',
+    async (operation) => {
+      const terminate = vi.fn(async () => {});
+      const entry = createPtyProcessEntry({ terminate });
+      const registry = new PtyProcessRegistry();
+      const { sessionId } = registry.register(entry);
+      appendPtyOutput(entry, 'first\n');
+      appendPtyOutput(entry, new Uint8Array([0xe5]));
+
+      // Expire the collection deadline synchronously, then deliver the tail before
+      // the response continuation resumes and decides whether to delete the entry.
+      let clock = 0;
+      const now = vi
+        .spyOn(Date, 'now')
+        .mockImplementation(() => clock++ * 30_000);
+      const pending =
+        operation === 'exec'
+          ? formatPtyExecUpdate({
+              registry,
+              sessionId,
+              entry,
+              startTime: 0,
+              yieldTimeMs: 250,
+            })
+          : writePtyStdin({
+              providerName: 'TestSandbox',
+              registry,
+              sessionId,
+              yieldTimeMs: 250,
+            });
+      now.mockRestore();
+      appendPtyOutput(entry, new Uint8Array([0xae, 0x8c]));
+      closePtyOutput(entry, 7);
+
+      const first = await pending;
+      expect(first).toContain(`Process running with session ID ${sessionId}`);
+      expect(first).toContain('first');
+      expect(first).not.toContain('完');
+      expect(terminate).not.toHaveBeenCalled();
+
+      const last = await writePtyStdin({
+        providerName: 'TestSandbox',
+        registry,
+        sessionId,
+      });
+      expect(last).toContain('完');
+      expect(last).not.toContain('first');
+      expect(last).not.toContain('\uFFFD');
+      expect(last).toContain('Process exited with code 7');
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(registry.get(sessionId)).toBeUndefined();
+    },
+  );
+
+  test('retains PTY UTF-8 carry across a truncated yield and flushes once on closure', async () => {
+    const entry = createPtyProcessEntry({});
+    appendPtyOutput(entry, '0123456789abcdef');
+    appendPtyOutput(entry, new Uint8Array([0xf0, 0x9f]));
+    await expect(
+      collectPtyOutput({ entry, yieldTimeMs: 0, maxOutputTokens: 1 }),
+    ).resolves.toEqual({
+      text: '...4',
+      originalTokenCount: 4,
+      outputClosed: false,
+    });
+    appendPtyOutput(entry, new Uint8Array([0x8e, 0x89]));
+    appendPtyOutput(entry, new Uint8Array([0xe5]));
+    closePtyOutput(entry, 0);
+    closePtyOutput(entry, 1);
+    await expect(collectPtyOutput({ entry, yieldTimeMs: 0 })).resolves.toEqual({
+      text: '🎉\uFFFD',
+      outputClosed: true,
+    });
+    expect(entry.exitCode).toBe(0);
+  });
+
+  test('writes PTY stdin, finalizes completed sessions, and reports missing sessions', async () => {
+    const sendInput = vi.fn(async (chars: string) => {
+      expect(chars).toBe('continue\n');
+    });
+    const registry = new PtyProcessRegistry();
+    const entry = createPtyProcessEntry({ sendInput });
+    const { sessionId } = registry.register(entry);
+
+    appendPtyOutput(entry, 'ready\n');
+    closePtyOutput(entry, 0);
+
+    const output = await writePtyStdin({
+      providerName: 'FakeSandboxClient',
+      registry,
+      sessionId,
+      chars: 'continue\n',
+      yieldTimeMs: 1,
+    });
+
+    expect(sendInput).toHaveBeenCalledWith('continue\n');
+    expect(output).toContain('Process exited with code 0');
+    expect(output).toContain('ready');
+
+    await expect(
+      writePtyStdin({
+        providerName: 'FakeSandboxClient',
+        registry,
+        sessionId: 999_999,
+      }),
+    ).resolves.toContain('write_stdin failed: session not found: 999999');
+  });
+
+  test('rejects PTY stdin for non-interactive process entries', async () => {
+    const registry = new PtyProcessRegistry();
+    const entry = createPtyProcessEntry({ tty: false });
+    const { sessionId } = registry.register(entry);
+
+    await expect(
+      writePtyStdin({
+        providerName: 'FakeSandboxClient',
+        registry,
+        sessionId,
+        chars: 'input',
+      }),
+    ).rejects.toThrow(
+      'FakeSandboxClient stdin is not available for this process.',
+    );
+  });
+
+  test('watches PTY process completion and terminates registry entries best effort', async () => {
+    const registry = new PtyProcessRegistry();
+    const terminate = vi.fn(async () => {
+      throw new Error('already gone');
+    });
+    const successEntry = createPtyProcessEntry({ terminate });
+    const failureEntry = createPtyProcessEntry({});
+    const success = registry.register(successEntry);
+    const failure = registry.register(failureEntry);
+
+    watchPtyOutput(
+      successEntry,
+      async () => ({ exitCode: 2.9 }),
+      (result) => (result as { exitCode: number }).exitCode,
+    );
+    watchPtyOutput(
+      failureEntry,
+      async () => {
+        throw new Error('boom');
+      },
+      (_result, error) => (error ? undefined : 0),
+    );
+
+    await vi.waitFor(() => {
+      expect(successEntry.outputClosed).toBe(true);
+      expect(failureEntry.outputClosed).toBe(true);
+    });
+
+    expect(successEntry.exitCode).toBe(2);
+    expect(failureEntry.exitCode).toBe(1);
+
+    await registry.terminateAll();
+
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(registry.get(success.sessionId)).toBeUndefined();
+    expect(registry.get(failure.sessionId)).toBeUndefined();
+  });
+
+  test('detects image media types', () => {
+    expect(sniffImageMediaType(ONE_BY_ONE_PNG)).toBe('image/png');
+    expect(sniffImageMediaType(ONE_BY_ONE_JPEG)).toBe('image/jpeg');
+    expect(sniffImageMediaType(ONE_BY_ONE_GIF)).toBe('image/gif');
+    expect(sniffImageMediaType(ONE_BY_ONE_WEBP)).toBe('image/webp');
+    expect(
+      sniffImageMediaType(Uint8Array.from([0x89, 0x50, 0x4e, 0x47])),
+    ).toBeNull();
+    expect(sniffImageMediaType(Uint8Array.from([0]))).toBeNull();
+  });
+
+  test('normalizes binary-like values to Uint8Array', async () => {
+    const bytes = Uint8Array.from([1, 2, 3]);
+    const cloned = await toUint8Array(bytes);
+    expect(cloned).toEqual(bytes);
+    expect(cloned).not.toBe(bytes);
+
+    expect(await toUint8Array(undefined)).toEqual(new Uint8Array());
+    expect(await toUint8Array('ok')).toEqual(new TextEncoder().encode('ok'));
+    expect(await toUint8Array(new Uint8Array([4, 5]).buffer)).toEqual(
+      Uint8Array.from([4, 5]),
+    );
+    expect(await toUint8Array(Buffer.from('buf'))).toEqual(
+      new TextEncoder().encode('buf'),
+    );
+    expect(await toUint8Array(new Blob(['blob']))).toEqual(
+      new TextEncoder().encode('blob'),
+    );
+  });
+
+  test('guards unsupported runAs and runs functions without an active trace', async () => {
+    expect(() => assertRunAsUnsupported('Provider')).not.toThrow();
+    expect(() => assertRunAsUnsupported('Provider', 'root')).toThrowError(
+      SandboxUnsupportedFeatureError,
+    );
+    await expect(
+      withSandboxSpan('span', { key: 'value' }, async () => 42),
+    ).resolves.toBe(42);
+  });
+
+  test('guards unsupported manifest metadata for remote providers', () => {
+    expect(() =>
+      assertSandboxManifestMetadataSupported(
+        'Provider',
+        new Manifest({
+          users: [{ name: 'sandbox-user' }],
+        }),
+      ),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+    expect(() =>
+      assertSandboxManifestMetadataSupported(
+        'Provider',
+        new Manifest({
+          groups: [{ name: 'sandbox-group' }],
+        }),
+      ),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+    expect(() =>
+      assertSandboxManifestMetadataSupported(
+        'Provider',
+        new Manifest({
+          extraPathGrants: [{ path: '/tmp/data' }],
+        }),
+      ),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+    expect(() =>
+      assertSandboxManifestMetadataSupported(
+        'Provider',
+        new Manifest({
+          entries: {
+            dir: {
+              type: 'dir',
+              children: {
+                'run.sh': {
+                  type: 'file',
+                  content: '#!/bin/sh\n',
+                  permissions: '-rwx------',
+                },
+              },
+            },
+          },
+        }),
+      ),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+  });
+
+  test('guards unsupported entry group ownership for remote providers', () => {
+    expect(() =>
+      assertSandboxEntryMetadataSupported('Provider', 'bin', {
+        type: 'dir',
+        children: {
+          'run.sh': {
+            type: 'file',
+            content: '#!/bin/sh\n',
+            group: { name: 'sandbox-group' },
+          },
+        },
+      }),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+  });
+
+  test('guards unsupported mount entries for remote providers', () => {
+    expect(() =>
+      assertSandboxEntryMetadataSupported(
+        'Provider',
+        'data',
+        mount({
+          source: 's3://bucket/data',
+          mountStrategy: { type: 'in_container' },
+        }),
+      ),
+    ).toThrowError(SandboxUnsupportedFeatureError);
+  });
+});

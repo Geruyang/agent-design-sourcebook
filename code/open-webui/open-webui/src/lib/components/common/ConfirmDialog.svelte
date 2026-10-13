@@ -1,0 +1,232 @@
+<script lang="ts">
+	import DOMPurify from 'dompurify';
+
+	import { onMount, getContext, createEventDispatcher, onDestroy, tick } from 'svelte';
+	import * as FocusTrap from 'focus-trap';
+	import { settings } from '$lib/stores';
+	import { matchKeybinding, Shortcut } from '$lib/shortcuts';
+
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
+	const dispatch = createEventDispatcher();
+
+	import { fade } from 'svelte/transition';
+	import { flyAndScale } from '$lib/utils/transitions';
+	import { marked } from 'marked';
+	import SensitiveInput from './SensitiveInput.svelte';
+	import NativeSelect from './NativeSelect.svelte';
+
+	export let title = '';
+	export let message = '';
+
+	export let cancelLabel: string | undefined = undefined;
+	export let confirmLabel: string | undefined = undefined;
+
+	export let onConfirm = () => {};
+
+	export let input = false;
+	export let inputPlaceholder = '';
+	export let inputValue = '';
+	export let inputType = '';
+	export let inputOptions: ({ label?: string; value: string } | string)[] = [];
+
+	let _inputValue = inputValue;
+
+	export let show = false;
+
+	$: if (show) {
+		init();
+	}
+
+	let modalElement = null;
+	let mounted = false;
+
+	let focusTrap: FocusTrap.FocusTrap | null = null;
+
+	const init = () => {
+		_inputValue = inputValue;
+	};
+
+	const handleKeyDown = (event: KeyboardEvent) => {
+		if (
+			event.key === 'Escape' ||
+			($settings?.keyboardShortcuts !== false && matchKeybinding(event) === Shortcut.CLOSE_MODAL)
+		) {
+			cancelHandler();
+		}
+
+		if (event.key === 'Enter') {
+			// let the focused control act on Enter itself
+			const target = event.target;
+			if (target instanceof Element && target.closest('a, button, textarea')) {
+				return;
+			}
+
+			event.preventDefault();
+			event.stopPropagation();
+			confirmHandler();
+		}
+	};
+
+	const confirmHandler = async () => {
+		show = false;
+		await tick();
+		await onConfirm();
+		dispatch('confirm', _inputValue);
+	};
+
+	const cancelHandler = () => {
+		show = false;
+		dispatch('cancel');
+	};
+
+	onMount(() => {
+		mounted = true;
+	});
+
+	$: if (mounted) {
+		if (show && modalElement) {
+			document.body.appendChild(modalElement);
+			focusTrap = FocusTrap.createFocusTrap(modalElement);
+			focusTrap.activate();
+
+			window.addEventListener('keydown', handleKeyDown);
+			document.body.style.overflow = 'hidden';
+		} else if (modalElement) {
+			focusTrap.deactivate();
+
+			window.removeEventListener('keydown', handleKeyDown);
+			document.body.removeChild(modalElement);
+
+			document.body.style.overflow = 'unset';
+		}
+	}
+
+	onDestroy(() => {
+		show = false;
+		window.removeEventListener('keydown', handleKeyDown);
+		if (focusTrap) {
+			focusTrap.deactivate();
+		}
+		if (modalElement) {
+			document.body.removeChild(modalElement);
+		}
+	});
+</script>
+
+{#if show}
+	<!-- svelte-ignore a11y-click-events-have-key-events -->
+	<!-- svelte-ignore a11y-no-static-element-interactions -->
+	<div
+		bind:this={modalElement}
+		class="modal fixed top-0 right-0 left-0 bottom-0 bg-black/60 w-full h-screen max-h-[100dvh] flex justify-center z-99999999 overflow-hidden overscroll-contain"
+		in:fade={{ duration: 10 }}
+		on:mousedown={() => {
+			cancelHandler();
+		}}
+	>
+		<div
+			role="dialog"
+			aria-modal="true"
+			aria-label={title !== '' ? title : $i18n.t('Confirm your action')}
+			tabindex="-1"
+			class="m-auto max-w-full w-[32rem] mx-2 bg-white dark:bg-gray-950 rounded-3xl max-h-[100dvh] shadow-3xl border border-white dark:border-gray-900"
+			in:flyAndScale
+			on:mousedown={(e) => {
+				e.stopPropagation();
+			}}
+		>
+			<div class="px-5 py-5 flex flex-col">
+				<div class="text-sm font-medium dark:text-gray-200 mb-2.5">
+					{#if title !== ''}
+						{title}
+					{:else}
+						{$i18n.t('Confirm your action')}
+					{/if}
+				</div>
+
+				<slot>
+					<div class=" text-sm text-gray-500 flex-1">
+						{#if message !== ''}
+							{@const html = DOMPurify.sanitize(marked.parse(message))}
+							{@html html}
+						{:else}
+							{$i18n.t('This action cannot be undone. Do you wish to continue?')}
+						{/if}
+
+						{#if input}
+							{#if inputType === 'password'}
+								<div
+									class="w-full mt-2 rounded-lg px-4 py-2 text-sm dark:text-gray-300 dark:bg-gray-900"
+								>
+									<SensitiveInput
+										id="event-confirm-input"
+										placeholder={inputPlaceholder
+											? inputPlaceholder
+											: $i18n.t('Enter your message')}
+										bind:value={_inputValue}
+										required={true}
+									/>
+								</div>
+							{:else if inputType === 'select' && inputOptions.length}
+								<NativeSelect
+									className="w-full mt-2 rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-900 outline-hidden"
+									bind:value={_inputValue}
+									options={inputOptions}
+									placeholder={inputPlaceholder ? inputPlaceholder : $i18n.t('Select an option')}
+									required
+								/>
+							{:else}
+								<textarea
+									bind:value={_inputValue}
+									aria-label={inputPlaceholder ? inputPlaceholder : $i18n.t('Enter your message')}
+									placeholder={inputPlaceholder ? inputPlaceholder : $i18n.t('Enter your message')}
+									class="w-full mt-2 rounded-lg px-4 py-2 text-sm dark:text-gray-300 dark:bg-gray-900 outline-hidden resize-none"
+									rows="3"
+									required
+								/>
+							{/if}
+						{/if}
+					</div>
+				</slot>
+
+				<div class="mt-5 flex justify-between gap-1.5">
+					<button
+						class="flex h-7 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-normal transition disabled:opacity-60 bg-gray-100 hover:bg-gray-100/70 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-850/60 dark:text-white w-full"
+						on:click={() => {
+							cancelHandler();
+						}}
+						type="button"
+					>
+						{cancelLabel ?? $i18n.t('Cancel')}
+					</button>
+					<button
+						class="flex h-7 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white w-full"
+						on:click={() => {
+							confirmHandler();
+						}}
+						type="button"
+					>
+						{confirmLabel ?? $i18n.t('Confirm')}
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.modal-content {
+		animation: scaleUp 0.1s ease-out forwards;
+	}
+
+	@keyframes scaleUp {
+		from {
+			transform: scale(0.985);
+			opacity: 0;
+		}
+		to {
+			transform: scale(1);
+			opacity: 1;
+		}
+	}
+</style>

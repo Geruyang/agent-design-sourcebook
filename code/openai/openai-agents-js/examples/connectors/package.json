@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "name": "connectors",
+  "dependencies": {
+    "@openai/agents": "workspace:*"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "tsx index.ts"
+  }
+}

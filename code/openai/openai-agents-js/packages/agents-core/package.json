@@ -1,0 +1,193 @@
+{
+  "name": "@openai/agents-core",
+  "repository": "https://github.com/openai/openai-agents-js",
+  "homepage": "https://openai.github.io/openai-agents-js/",
+  "version": "0.20.0",
+  "description": "The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows.",
+  "author": "OpenAI <support@openai.com>",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "node ../../scripts/embedMeta.mts",
+    "build": "tsc",
+    "build-check": "tsc --noEmit -p ./tsconfig.test.json",
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "require": "./dist/model.js",
+      "import": "./dist/model.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "import": "./dist/testing/index.mjs"
+    },
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "require": "./dist/utils/index.js",
+      "import": "./dist/utils/index.mjs"
+    },
+    "./utils/internal": {
+      "types": "./dist/utils/internal.d.ts",
+      "require": "./dist/utils/internal.js",
+      "import": "./dist/utils/internal.mjs"
+    },
+    "./extensions": {
+      "types": "./dist/extensions/index.d.ts",
+      "require": "./dist/extensions/index.js",
+      "import": "./dist/extensions/index.mjs"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "require": "./dist/sandbox/index.js",
+      "import": "./dist/sandbox/index.mjs"
+    },
+    "./sandbox/local": {
+      "types": "./dist/sandbox/local.d.ts",
+      "require": "./dist/sandbox/local.js",
+      "import": "./dist/sandbox/local.mjs"
+    },
+    "./sandbox/internal": {
+      "types": "./dist/sandbox/internal.d.ts",
+      "require": "./dist/sandbox/internal.js",
+      "import": "./dist/sandbox/internal.mjs"
+    },
+    "./sandbox/internal/process": {
+      "types": "./dist/sandbox/internal/process.d.ts",
+      "require": "./dist/sandbox/internal/process.js",
+      "import": "./dist/sandbox/internal/process.mjs"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "require": "./dist/types/index.js",
+      "import": "./dist/types/index.mjs"
+    },
+    "./_shims": {
+      "react-native": {
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "require": "./dist/shims/shims-react-native.js",
+        "import": "./dist/shims/shims-react-native.mjs"
+      },
+      "workerd": {
+        "types": "./dist/shims/shims-workerd.d.ts",
+        "require": "./dist/shims/shims-workerd.js",
+        "import": "./dist/shims/shims-workerd.mjs"
+      },
+      "browser": {
+        "types": "./dist/shims/shims-browser.d.ts",
+        "require": "./dist/shims/shims-browser.js",
+        "import": "./dist/shims/shims-browser.mjs"
+      },
+      "node": {
+        "types": "./dist/shims/shims-node.d.ts",
+        "require": "./dist/shims/shims-node.js",
+        "import": "./dist/shims/shims-node.mjs"
+      },
+      "types": "./dist/shims/shims.d.ts",
+      "require": "./dist/shims/shims.js",
+      "import": "./dist/shims/shims.mjs"
+    },
+    "./_shims/config": {
+      "react-native": {
+        "types": "./dist/shims/config-browser.d.ts",
+        "require": "./dist/shims/config-browser.js",
+        "import": "./dist/shims/config-browser.mjs"
+      },
+      "workerd": {
+        "types": "./dist/shims/config-workerd.d.ts",
+        "require": "./dist/shims/config-workerd.js",
+        "import": "./dist/shims/config-workerd.mjs"
+      },
+      "browser": {
+        "types": "./dist/shims/config-browser.d.ts",
+        "require": "./dist/shims/config-browser.js",
+        "import": "./dist/shims/config-browser.mjs"
+      },
+      "node": {
+        "types": "./dist/shims/config-node.d.ts",
+        "require": "./dist/shims/config-node.js",
+        "import": "./dist/shims/config-node.mjs"
+      },
+      "types": "./dist/shims/config-node.d.ts",
+      "require": "./dist/shims/config-node.js",
+      "import": "./dist/shims/config-node.mjs"
+    }
+  },
+  "keywords": [
+    "openai",
+    "agents",
+    "ai",
+    "agentic"
+  ],
+  "license": "MIT",
+  "optionalDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
+    "debug": "^4.4.3",
+    "openai": "^7.2.0"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "model": [
+        "dist/model.d.ts"
+      ],
+      "testing": [
+        "dist/testing/index.d.ts"
+      ],
+      "utils": [
+        "dist/utils/index.d.ts"
+      ],
+      "utils/internal": [
+        "dist/utils/internal.d.ts"
+      ],
+      "extensions": [
+        "dist/extensions/index.d.ts"
+      ],
+      "sandbox": [
+        "dist/sandbox/index.d.ts"
+      ],
+      "sandbox/local": [
+        "dist/sandbox/local.d.ts"
+      ],
+      "sandbox/internal": [
+        "dist/sandbox/internal.d.ts"
+      ],
+      "sandbox/internal/process": [
+        "dist/sandbox/internal/process.d.ts"
+      ],
+      "types": [
+        "dist/types/index.d.ts"
+      ],
+      "_shims": [
+        "dist/shims/shims-node.d.ts"
+      ],
+      "_shims/config": [
+        "dist/shims/config-node.d.ts"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.13",
+    "zod": "^4.3.5"
+  },
+  "files": [
+    "dist"
+  ]
+}

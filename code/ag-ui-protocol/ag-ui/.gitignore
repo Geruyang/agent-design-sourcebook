@@ -1,0 +1,66 @@
+**/.claude/settings.local.json
+.claude/worktrees
+
+# Test coverage
+coverage/
+
+mastra.db*
+
+**/.DS_Store
+
+test-results/
+
+**/target
+.nx/cache
+.nx/workspace-data
+
+node_modules
+.vscode
+
+**/mastra.db*
+
+.pnpm-store
+
+**/.poetry-cache
+*.egg-info
+
+# Not limited to **/python/**: Python also lives outside the SDKs and
+# integrations (scripts/release/), where a bare interpreter run would
+# otherwise leave a committable __pycache__.
+**/__pycache__/
+*.pyc
+**/python/**/.venv/
+
+**/typescript/**/node_modules/
+**/typescript/**/dist/
+
+# Turborepo
+.turbo
+**/.turbo
+
+# Build artifacts and binaries
+**/build/
+*.dSYM/
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+*.wasm
+
+# VS Code
+*.lscache
+
+# actionlint linter binary (dev tool, do not commit)
+/actionlint
+.idea/
+
+# Internal agent planning documents stay local.
+/docs/superpowers/plans/
+/docs/superpowers/specs/
+
+# apps/dojo/scripts/published-mode.js state (published-release Dojo runs)
+.published-mode/

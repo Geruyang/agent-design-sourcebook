@@ -1,0 +1,1981 @@
+import {
+  EnvValueReference,
+  Manifest,
+  registerEnvValueReference,
+  SandboxProviderError,
+  SandboxUnsupportedFeatureError,
+} from '@openai/agents-core/sandbox';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
+import {
+  E2BCloudBucketMountStrategy,
+  E2BSandboxClient,
+  type E2BSandboxClientOptions,
+} from '../../src/sandbox/e2b';
+import {
+  decodeNativeSnapshotRef,
+  markRemoteSandboxSessionStateUnsafe,
+} from '../../src/sandbox/shared';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
+import { makeTarArchive } from './tarFixture';
+
+const processMocks = vi.hoisted(() => ({
+  runSandboxProcess: vi.fn(),
+}));
+const createMock = vi.fn();
+const connectMock = vi.fn();
+const runMock = vi.fn();
+const writeMock = vi.fn();
+const readMock = vi.fn();
+const removeMock = vi.fn();
+const makeDirMock = vi.fn();
+const getHostMock = vi.fn();
+const createSnapshotMock = vi.fn();
+const killMock = vi.fn();
+const pauseMock = vi.fn();
+const files = new Map<string, string | Uint8Array>();
+
+vi.mock('e2b', () => ({
+  Sandbox: {
+    create: createMock,
+    connect: connectMock,
+  },
+}));
+
+vi.mock('../../src/sandbox/shared/process', () => ({
+  runSandboxProcess: processMocks.runSandboxProcess,
+  formatSandboxProcessError: (result: {
+    stderr?: string;
+    stdout?: string;
+    error?: Error;
+  }) => result.stderr || result.stdout || result.error?.message || 'failed',
+}));
+
+const processSuccess = (stdout = '') => ({
+  status: 0,
+  signal: null,
+  stdout,
+  stderr: '',
+  timedOut: false,
+});
+
+const processFailure = (stderr: string) => ({
+  status: 1,
+  signal: null,
+  stdout: '',
+  stderr,
+  timedOut: false,
+});
+
+describe('E2BSandboxClient', () => {
+  beforeEach(() => {
+    files.clear();
+    createMock.mockReset();
+    connectMock.mockReset();
+    runMock.mockReset();
+    writeMock.mockReset();
+    readMock.mockReset();
+    removeMock.mockReset();
+    makeDirMock.mockReset();
+    getHostMock.mockReset();
+    createSnapshotMock.mockReset();
+    killMock.mockReset();
+    pauseMock.mockReset();
+    processMocks.runSandboxProcess.mockReset();
+
+    writeMock.mockImplementation(
+      async (path: string, data: string | Uint8Array) => {
+        files.set(path, data);
+      },
+    );
+    readMock.mockImplementation(
+      async (path: string, opts?: { format?: 'text' | 'bytes' }) => {
+        const value = files.get(path) ?? '';
+        if (opts?.format === 'bytes') {
+          return typeof value === 'string'
+            ? new TextEncoder().encode(value)
+            : value;
+        }
+        return typeof value === 'string'
+          ? value
+          : new TextDecoder().decode(value);
+      },
+    );
+    removeMock.mockImplementation(async (path: string) => {
+      files.delete(path);
+    });
+    createMock.mockResolvedValue({
+      sandboxId: 'sbx_test',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+    connectMock.mockResolvedValue({
+      sandboxId: 'sbx_test',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+    runMock.mockImplementation(async (command: string) => {
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
+      if (resolvedPath) {
+        return {
+          stdout: `${resolvedPath}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (command === 'ls') {
+        return {
+          stdout: 'README.md\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (command.startsWith('test -e ')) {
+        const path = command.match(/^test -e '(.+)'$/)?.[1] ?? '';
+        return {
+          stdout: '',
+          stderr: '',
+          exitCode: files.has(path) ? 0 : 1,
+        };
+      }
+      if (command.startsWith('base64 -- ')) {
+        const path = command.match(/^base64 -- '(.+)'$/)?.[1] ?? '';
+        const value = files.get(path) ?? new Uint8Array();
+        const bytes =
+          typeof value === 'string' ? new TextEncoder().encode(value) : value;
+        return {
+          stdout: `${Buffer.from(bytes).toString('base64')}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+    pauseMock.mockResolvedValue(true);
+    createSnapshotMock.mockResolvedValue({ snapshotId: 'snap_test' });
+    killMock.mockResolvedValue(undefined);
+  });
+
+  test.each(['constructor', 'create options', 'undefined override'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new E2BSandboxClient({
+        archiveLimits: source !== 'create options' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options:
+          source === 'create options'
+            ? { archiveLimits }
+            : source === 'undefined override'
+              ? { archiveLimits: undefined }
+              : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      writeMock.mockClear();
+      runMock.mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(writeMock).not.toHaveBeenCalled();
+      expect(runMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['constructor', 'create options', 'top-level'] as const)(
+    'rejects invalid archive limits from %s before provisioning',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 0 };
+      const client = new E2BSandboxClient({
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      await expect(
+        client.create({
+          options: source === 'create options' ? { archiveLimits } : undefined,
+          archiveLimits: source === 'top-level' ? archiveLimits : undefined,
+        }),
+      ).rejects.toThrow('archiveLimits.maxExtractedBytes must be at least 1.');
+      expect(createMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([null, { maxExtractedBytes: 5 }])(
+    'validates only the effective archive policy %j',
+    async (archiveLimits) => {
+      const client = new E2BSandboxClient({
+        archiveLimits: { maxExtractedBytes: 0 },
+      });
+      const session = await client.create({
+        options: { archiveLimits: { maxExtractedBytes: 0 } },
+        archiveLimits,
+      });
+      await expect(
+        session.hydrateWorkspace(
+          makeTarArchive([{ name: 'ok.txt', content: 'small' }]),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test.each(['create options', 'top-level', 'manifest overload'] as const)(
+    'preserves explicit null archive limits from %s',
+    async (source) => {
+      const client = new E2BSandboxClient({
+        archiveLimits: { maxExtractedBytes: 1 },
+      });
+      const session =
+        source === 'manifest overload'
+          ? await client.create(new Manifest(), { archiveLimits: null })
+          : await client.create(
+              source === 'top-level'
+                ? { archiveLimits: null }
+                : { options: { archiveLimits: null } },
+            );
+      await expect(
+        session.hydrateWorkspace(
+          makeTarArchive([{ name: 'README.md', content: 'large' }]),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test('top-level archive limits override provider options', async () => {
+    const client = new E2BSandboxClient({ archiveLimits: null });
+    const session = await client.create({
+      options: { archiveLimits: null },
+      archiveLimits: { maxExtractedBytes: 5 },
+    });
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'ok.txt', content: 'small' }]),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'large.txt', content: 'too large' }]),
+      ),
+    ).rejects.toThrow('archive extracted size exceeds limit');
+  });
+
+  test('rejects unsupported core create options instead of ignoring them', async () => {
+    const client = new E2BSandboxClient();
+
+    await expect(
+      client.create({
+        manifest: new Manifest(),
+        snapshot: { type: 'remote' },
+      }),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('creates a sandbox, materializes the manifest, and executes commands', async () => {
+    const client = new E2BSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        'README.md': {
+          type: 'file',
+          content: '# Hello\n',
+        },
+      },
+    });
+
+    const session = await client.create(manifest);
+    const output = await session.execCommand({ cmd: 'ls' });
+
+    expect(createMock).toHaveBeenCalledOnce();
+    expect(makeDirMock).toHaveBeenCalledWith('/workspace');
+    expect(runMock).toHaveBeenCalledWith("mkdir -p -- '/workspace'", {
+      cwd: '/',
+      envs: {},
+    });
+    expect(writeMock).toHaveBeenCalledWith('/workspace/README.md', '# Hello\n');
+    expect(runMock).toHaveBeenCalledWith('ls', {
+      cwd: '/workspace',
+      envs: {},
+      timeoutMs: undefined,
+      user: undefined,
+    });
+    expect(output).toContain('Process exited with code 0');
+    expect(output).toContain('README.md');
+  });
+
+  test('omits E2B lifecycle defaults when lifecycle options are omitted', async () => {
+    const client = new E2BSandboxClient();
+
+    const session = await client.create(new Manifest());
+
+    expect(createMock.mock.calls[0]).toEqual([]);
+    expect(session.state.onTimeout).toBeUndefined();
+    expect(session.state.autoResume).toBeUndefined();
+  });
+
+  test('treats missing command exit codes as failures', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+    runMock.mockResolvedValueOnce({
+      stdout: 'lost exit\n',
+      stderr: '',
+      exitCode: null,
+    });
+
+    const output = await session.execCommand({ cmd: 'lost-exit' });
+
+    expect(output).toContain('Process exited with code 1');
+    expect(output).toContain('lost exit');
+  });
+
+  test('formats non-zero command errors returned by the E2B SDK', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+    runMock.mockRejectedValueOnce(
+      Object.assign(new Error('command failed'), {
+        stdout: 'partial\n',
+        stderr: 'boom\n',
+        exitCode: 2,
+      }),
+    );
+
+    const output = await session.execCommand({ cmd: 'bad-command' });
+
+    expect(output).toContain('Process exited with code 2');
+    expect(output).toContain('partial');
+    expect(output).toContain('boom');
+  });
+
+  test('rejects repository options before provider creation or update effects', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+    vi.clearAllMocks();
+    const manifest = new Manifest({
+      entries: { app: { type: 'git_repo', repo: 'owner/repo' } },
+    });
+    manifest.entries.app.repo = '--upload-pack=unused #://';
+    await expect(client.create(manifest)).rejects.toThrow(
+      'git_repo repository URL must not start with "-".',
+    );
+    await expect(session.applyManifest(manifest)).rejects.toThrow(
+      'git_repo repository URL must not start with "-".',
+    );
+    expect(createMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  test('clones a local Git source before uploading its selected file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agents-e2b-git-test-'));
+    const exec = promisify(execFile);
+    try {
+      await exec('git', ['init', root]);
+      await writeFile(join(root, 'selected.txt'), 'local Git contents');
+      await exec('git', ['-C', root, 'add', 'selected.txt']);
+      await exec('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'fixture',
+      ]);
+      // Keep the provider mocked but exercise the actual host Git materializer.
+      processMocks.runSandboxProcess.mockImplementation(
+        async (command: string, args: string[]) => {
+          const { stdout } = await exec(command, args);
+          return processSuccess(stdout);
+        },
+      );
+      await new E2BSandboxClient().create(
+        new Manifest({
+          entries: {
+            'selected.txt': {
+              type: 'git_repo',
+              repo: `file://${root}`,
+              subpath: 'selected.txt',
+            },
+          },
+        }),
+      );
+      expect(
+        Buffer.from(files.get('/workspace/selected.txt')!).toString(),
+      ).toBe('local Git contents');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('materializes git_repo file subpaths as files', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === '--version') {
+          return processSuccess('git version 2.0.0');
+        }
+        if (args[0] === 'clone') {
+          expect(args.slice(-3, -1)).toEqual([
+            '--',
+            'https://example.test/repo.git',
+          ]);
+          const tempDir = args[args.length - 1];
+          await mkdir(join(tempDir, 'nested'), { recursive: true });
+          await writeFile(join(tempDir, 'nested', 'selected.txt'), 'selected');
+          return processSuccess();
+        }
+        return processFailure('unexpected command');
+      },
+    );
+    const client = new E2BSandboxClient();
+
+    await client.create(
+      new Manifest({
+        entries: {
+          'selected.txt': {
+            type: 'git_repo',
+            repo: 'https://example.test/repo.git',
+            subpath: 'nested/selected.txt',
+          },
+        },
+      }),
+    );
+
+    expect(Buffer.from(files.get('/workspace/selected.txt')!)).toEqual(
+      Buffer.from('selected'),
+    );
+  });
+
+  test('passes template, timeout, and pauseOnExit options through', async () => {
+    const client = new E2BSandboxClient({
+      template: 'base',
+      timeout: 30,
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const manifest = new Manifest();
+
+    const session = await client.create(manifest);
+    await session.close();
+
+    expect(createMock).toHaveBeenCalledWith('base', {
+      timeoutMs: 30000,
+    });
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+  });
+
+  test('delete terminates even when pauseOnExit is enabled', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.delete();
+
+    expect(pauseMock).not.toHaveBeenCalled();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('cleanup lifecycle pauses persistable sessions instead of killing them', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.shutdown({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+  });
+
+  test('cleanup lifecycle kills pauseOnExit sessions unless preservation is requested', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.shutdown({ reason: 'cleanup' });
+    await session.delete({ reason: 'cleanup' });
+
+    expect(pauseMock).not.toHaveBeenCalled();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('kills the sandbox when close cannot pause a persistable session', async () => {
+    pauseMock.mockRejectedValueOnce(new Error('pause failed'));
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.close();
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).toHaveBeenCalledOnce();
+    expect(session.state.pauseOnExit).toBe(false);
+    expect(session.state.pauseOnExitSupported).toBe(false);
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(false);
+  });
+
+  test('treats false pause results as already-paused close success', async () => {
+    pauseMock.mockResolvedValueOnce(false);
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.close();
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
+  });
+
+  test('kills the sandbox when cleanup delete cannot pause a persistable session', async () => {
+    pauseMock.mockRejectedValueOnce(new Error('pause failed'));
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).toHaveBeenCalledOnce();
+    expect(session.state.pauseOnExit).toBe(false);
+    expect(session.state.pauseOnExitSupported).toBe(false);
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(false);
+  });
+
+  test('treats false pause results as already-paused cleanup success', async () => {
+    pauseMock.mockResolvedValueOnce(false);
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
+  });
+
+  test('does not persist owned state when pauseOnExit is unsupported', async () => {
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_test',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+    });
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    expect(session.state.pauseOnExitSupported).toBe(false);
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(false);
+
+    await session.close();
+
+    expect(pauseMock).not.toHaveBeenCalled();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('does not terminate twice across shutdown and delete lifecycle', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    await session.shutdown();
+    await session.delete();
+
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('passes SDK create options through without forwarding workspace persistence', async () => {
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'tar',
+      metadata: { owner: 'tests' },
+      secure: true,
+      allowInternetAccess: false,
+      exposedPorts: [3000],
+      onTimeout: 'pause',
+      autoResume: true,
+      mcp: { servers: [] },
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
+      commandTimeoutMs: 3000,
+    } satisfies E2BSandboxClientOptions);
+
+    const session = await client.create(new Manifest());
+    await session.execCommand({ cmd: 'ls' });
+
+    expect(createMock).toHaveBeenCalledWith({
+      metadata: { owner: 'tests' },
+      secure: true,
+      allowInternetAccess: false,
+      network: { allowPublicTraffic: true },
+      lifecycle: {
+        onTimeout: 'pause',
+        autoResume: true,
+      },
+      mcp: { servers: [] },
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
+      commandTimeoutMs: 3000,
+    });
+    expect(runMock).toHaveBeenLastCalledWith('ls', {
+      cwd: '/workspace',
+      envs: {},
+      timeoutMs: 3000,
+      user: undefined,
+    });
+  });
+
+  test('maps legacy timeoutAction to lifecycle and omits autoResume for kill', async () => {
+    const client = new E2BSandboxClient({
+      timeoutAction: 'kill',
+      autoResume: true,
+    } satisfies E2BSandboxClientOptions);
+
+    await client.create(new Manifest());
+
+    expect(createMock).toHaveBeenCalledWith({
+      lifecycle: {
+        onTimeout: 'kill',
+      },
+    });
+  });
+
+  test('does not force an onTimeout default for autoResume without pause', async () => {
+    const client = new E2BSandboxClient({
+      autoResume: true,
+    } satisfies E2BSandboxClientOptions);
+
+    const session = await client.create(new Manifest());
+
+    expect(createMock.mock.calls[0]).toEqual([]);
+    expect(session.state.onTimeout).toBeUndefined();
+    expect(session.state.autoResume).toBe(true);
+  });
+
+  test('rejects invalid workspace persistence before creating a sandbox', async () => {
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'native',
+    } as unknown as E2BSandboxClientOptions);
+
+    await expect(client.create(new Manifest())).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsupported PTY execution with a typed error', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.execCommand({ cmd: 'sh', tty: true }),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+  });
+
+  test('supports PTY execution and stdin when the E2B SDK exposes PTY APIs', async () => {
+    let onData!: (data: Uint8Array) => void;
+    let finishWait!: (result: { exitCode: number }) => void;
+    const ptyCreateMock = vi.fn(async (options: Record<string, unknown>) => {
+      onData = options.onData as (data: Uint8Array) => void;
+      return {
+        pid: 42,
+        wait: async () =>
+          await new Promise<{ exitCode: number }>((resolve) => {
+            finishWait = resolve;
+          }),
+        kill: async () => true,
+      };
+    });
+    const ptySendInputMock = vi.fn(async (_pid: number, data: Uint8Array) => {
+      onData(new TextEncoder().encode(new TextDecoder().decode(data)));
+    });
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_test',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      pty: {
+        create: ptyCreateMock,
+        sendInput: ptySendInputMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    const started = await session.execCommand({
+      cmd: 'echo ready',
+      tty: true,
+      yieldTimeMs: 250,
+    });
+    const sessionId = Number(
+      started.match(/Process running with session ID (\d+)/)?.[1],
+    );
+    const next = await session.writeStdin({
+      sessionId,
+      chars: 'echo next\n',
+      yieldTimeMs: 250,
+    });
+    // Deliver the final character in separate callbacks before the SDK reader closes.
+    onData(new Uint8Array([0xe5]));
+    const pendingDone = session.writeStdin({ sessionId, yieldTimeMs: 250 });
+    await Promise.resolve();
+    onData(new Uint8Array([0xae, 0x8c]));
+    finishWait({ exitCode: 0 });
+    const done = await pendingDone;
+    expect(done).toContain('完');
+    expect(done).not.toContain('\uFFFD');
+    const missing = await session.writeStdin({
+      sessionId,
+      yieldTimeMs: 250,
+    });
+
+    expect(missing).toContain('session not found');
+    expect(next).toContain('echo next');
+    expect(done).toContain('Process exited with code 0');
+    expect(ptyCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/workspace',
+        envs: {},
+      }),
+    );
+    expect(ptySendInputMock).toHaveBeenCalledWith(
+      42,
+      new TextEncoder().encode("/bin/sh -c 'echo ready'\n"),
+      expect.objectContaining({
+        requestTimeoutMs: undefined,
+      }),
+    );
+  });
+
+  test('terminates PTY execution when the initial stdin write fails', async () => {
+    let failCleanup!: (error: Error) => void;
+    const handleKillMock = vi.fn(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          failCleanup = reject;
+        }),
+    );
+    const failure = new Error('stdin unavailable');
+    const ptyCreateMock = vi.fn(async () => ({
+      pid: 42,
+      wait: async () => ({ exitCode: 1 }),
+      kill: handleKillMock,
+    }));
+    const ptySendInputMock = vi.fn(async () => {
+      throw failure;
+    });
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_test',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      pty: {
+        create: ptyCreateMock,
+        sendInput: ptySendInputMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    let settled = false;
+    const result = session
+      .execCommand({ cmd: 'echo ready', tty: true })
+      .catch((error) => {
+        settled = true;
+        return error;
+      });
+    await vi.waitFor(() => expect(handleKillMock).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    failCleanup(new Error('kill failed'));
+    expect(await result).toBe(failure);
+
+    expect(ptySendInputMock).toHaveBeenCalledOnce();
+    expect(handleKillMock).toHaveBeenCalledOnce();
+  });
+
+  test('rejects runAs for PTY execution', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.execCommand({ cmd: 'id', tty: true, runAs: 'root' }),
+    ).rejects.toMatchObject({
+      details: {
+        provider: 'e2b',
+        feature: 'tty.runAs',
+      },
+    });
+  });
+
+  test('serializes state and reconnects paused sandboxes by id', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+      timeout: 30,
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
+      env: {
+        CLIENT_ONLY: 'override',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          MANIFEST_FLAG: 'enabled',
+        },
+      }),
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    const restored = await client.deserializeSessionState(serialized);
+    const resumed = await client.resume(restored);
+
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
+    expect(restored.pauseOnExitSupported).toBe(true);
+    expect(connectMock).toHaveBeenCalledWith('sbx_test', {
+      timeoutMs: 30000,
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
+    });
+    expect(resumed.state.environment).toEqual({
+      CLIENT_ONLY: 'override',
+      MANIFEST_FLAG: 'enabled',
+    });
+  });
+
+  test('recreates sandboxes when reconnect reports missing sandbox', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+      template: 'base',
+    });
+    const session = await client.create(new Manifest());
+    createMock.mockClear();
+    connectMock.mockRejectedValueOnce(new Error('not found'));
+
+    const recreated = await client.resume(session.state);
+
+    expect(connectMock).toHaveBeenCalledWith('sbx_test', undefined);
+    expect(createMock).toHaveBeenCalledWith('base', {});
+    expect(recreated.state.sandboxId).toBe('sbx_test');
+  });
+
+  test('reuses refreshed environment references when recreating a missing sandbox', async () => {
+    let resolveCount = 0;
+    class E2BSecretReference extends EnvValueReference {
+      static readonly type = 'test.e2b_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCount += 1;
+        return `credential-${resolveCount}:${this.key}`;
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      E2BSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('E2B secret reference key must be a string.');
+        }
+        return new E2BSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new E2BSandboxClient({
+        pauseOnExit: true,
+        template: 'base',
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new E2BSecretReference('openai-key'),
+          },
+        }),
+      );
+      const serialized = await client.serializeSessionState(session.state);
+      resolveCount = 0;
+      const restored = await client.deserializeSessionState(serialized);
+      expect(resolveCount).toBe(1);
+      expect(restored.environment).toEqual({
+        TOKEN: 'credential-1:openai-key',
+      });
+      createMock.mockClear();
+      connectMock.mockRejectedValueOnce(new Error('not found'));
+
+      const recreated = await client.resume(restored);
+
+      expect(resolveCount).toBe(1);
+      expect(createMock).toHaveBeenCalledWith('base', {
+        envs: {
+          TOKEN: 'credential-1:openai-key',
+        },
+      });
+      expect(recreated.state.manifest.environment.TOKEN).toBeInstanceOf(
+        E2BSecretReference,
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  test('fails fast when reconnect fails with a provider error', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+      template: 'base',
+    });
+    const session = await client.create(new Manifest());
+    createMock.mockClear();
+    connectMock.mockRejectedValueOnce(new Error('request timeout'));
+
+    let thrown: unknown;
+    try {
+      await client.resume(session.state);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxProviderError);
+    expect((thrown as SandboxProviderError).details).toMatchObject({
+      provider: 'e2b',
+      operation: 'resume',
+      sandboxId: 'sbx_test',
+      cause: 'request timeout',
+    });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('persists and hydrates tar workspaces', async () => {
+    const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
+    runMock.mockImplementation(async (command: string) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath) {
+        return {
+          stdout: `${resolvedPath}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      const archivePath = command.match(/-cf '([^']+)'/)?.[1];
+      if (archivePath) {
+        files.set(archivePath, archive);
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'tar',
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+    await session.hydrateWorkspace(archive);
+
+    expect(readMock).toHaveBeenCalledWith(expect.any(String), {
+      format: 'bytes',
+    });
+    expect(writeMock).toHaveBeenCalledWith(
+      expect.stringContaining('/tmp/openai-agents-e2bsandboxclient-'),
+      archive,
+    );
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes('tar -C'),
+      ),
+    ).toBe(true);
+  });
+
+  test('persists native snapshots and restores them through E2B templates', async () => {
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(new Manifest());
+
+    const ref = decodeNativeSnapshotRef(await session.persistWorkspace());
+
+    expect(ref).toEqual({
+      provider: 'e2b',
+      snapshotId: 'snap_test',
+      workspacePersistence: undefined,
+    });
+
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_restored',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+
+    await session.hydrateWorkspace(await session.persistWorkspace());
+
+    expect(createMock).toHaveBeenLastCalledWith('snap_test', {});
+    expect(session.state.sandboxId).toBe('sbx_restored');
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('clears cached exposed ports after restoring a native snapshot sandbox', async () => {
+    getHostMock
+      .mockReturnValueOnce('3000-sbx-test.e2b.dev')
+      .mockReturnValueOnce('3000-sbx-restored.e2b.dev');
+    const client = new E2BSandboxClient({
+      exposedPorts: [3000],
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(new Manifest());
+    const initialEndpoint = await session.resolveExposedPort(3000);
+    const snapshot = await session.persistWorkspace();
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_restored',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: killMock,
+      pause: pauseMock,
+    });
+
+    await session.hydrateWorkspace(snapshot);
+    const restoredEndpoint = await session.resolveExposedPort(3000);
+
+    expect(initialEndpoint.host).toBe('3000-sbx-test.e2b.dev');
+    expect(session.state.sandboxId).toBe('sbx_restored');
+    expect(restoredEndpoint.host).toBe('3000-sbx-restored.e2b.dev');
+    expect(getHostMock).toHaveBeenCalledTimes(2);
+    expect(session.state.exposedPorts?.['3000']).toBe(restoredEndpoint);
+  });
+
+  test('keeps previous sandbox state when native snapshot restore cannot kill the old sandbox', async () => {
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(new Manifest());
+    const snapshot = await session.persistWorkspace();
+    const restoredKillMock = vi.fn().mockResolvedValue(undefined);
+    createMock.mockResolvedValueOnce({
+      sandboxId: 'sbx_restored',
+      commands: {
+        run: runMock,
+      },
+      files: {
+        write: writeMock,
+        read: readMock,
+        remove: removeMock,
+        makeDir: makeDirMock,
+      },
+      getHost: getHostMock,
+      createSnapshot: createSnapshotMock,
+      kill: restoredKillMock,
+      pause: pauseMock,
+    });
+    killMock.mockRejectedValueOnce(new Error('kill failed'));
+
+    await expect(session.hydrateWorkspace(snapshot)).rejects.toMatchObject({
+      details: {
+        provider: 'e2b',
+        operation: 'restore snapshot',
+        sandboxId: 'sbx_test',
+        replacementSandboxId: 'sbx_restored',
+        snapshotId: 'snap_test',
+        cause: 'kill failed',
+      },
+    });
+
+    expect(restoredKillMock).toHaveBeenCalledOnce();
+    expect(session.state.sandboxId).toBe('sbx_test');
+    await session.execCommand({ cmd: 'ls' });
+    expect(runMock).toHaveBeenLastCalledWith('ls', {
+      cwd: '/workspace',
+      envs: {},
+      timeoutMs: undefined,
+      user: undefined,
+    });
+  });
+
+  test('falls back to tar snapshots when native snapshots cannot exclude ephemeral paths', async () => {
+    const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
+    runMock.mockImplementation(async (command: string) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath) {
+        return {
+          stdout: `${resolvedPath}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      const archivePath = command.match(/-cf '([^']+)'/)?.[1];
+      if (archivePath) {
+        files.set(archivePath, archive);
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'tmp.txt': {
+            type: 'file',
+            content: 'tmp',
+            ephemeral: true,
+          },
+        },
+      }),
+    );
+
+    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+    expect(createSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
+    const client = new E2BSandboxClient({
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          '': {
+            type: 'dir',
+            ephemeral: true,
+          },
+        },
+      }),
+    );
+    runMock.mockClear();
+
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      makeTarArchive([]),
+    );
+    expect(createSnapshotMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('resolves configured exposed ports through E2B hosts', async () => {
+    getHostMock.mockReturnValue('3000-sbx-test.e2b.dev');
+    const client = new E2BSandboxClient({
+      exposedPorts: [3000],
+    });
+
+    const session = await client.create(new Manifest());
+    const endpoint = await session.resolveExposedPort(3000);
+    const cachedEndpoint = await session.resolveExposedPort(3000);
+
+    expect(createMock).toHaveBeenCalledWith({
+      network: { allowPublicTraffic: true },
+    });
+    expect(getHostMock).toHaveBeenCalledWith(3000);
+    expect(getHostMock).toHaveBeenCalledOnce();
+    expect(endpoint).toMatchObject({
+      host: '3000-sbx-test.e2b.dev',
+      port: 443,
+      tls: true,
+    });
+    expect(cachedEndpoint).toBe(endpoint);
+    expect(session.state.exposedPorts?.['3000']).toBe(endpoint);
+  });
+
+  test('rejects unsupported manifest metadata before creating a sandbox', async () => {
+    const client = new E2BSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          extraPathGrants: [{ path: '/tmp/data' }],
+        }),
+      ),
+    ).rejects.toThrow(/does not support extra path grants yet/);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('provisions manifest accounts and applies entry metadata', async () => {
+    const client = new E2BSandboxClient();
+
+    await client.create(
+      new Manifest({
+        users: [{ name: 'sandbox-user' }],
+        groups: [
+          {
+            name: 'sandbox-group',
+            users: [{ name: 'sandbox-user' }],
+          },
+        ],
+        entries: {
+          'notes.txt': {
+            type: 'file',
+            content: 'hello\n',
+            group: { name: 'sandbox-group' },
+            permissions: '-rw-r-----',
+          },
+        },
+      }),
+    );
+
+    const commands = runMock.mock.calls.map(([command]) => String(command));
+    expect(commands.some((command) => command.includes('groupadd'))).toBe(true);
+    expect(commands.some((command) => command.includes('useradd'))).toBe(true);
+    expect(commands.some((command) => command.includes('usermod'))).toBe(true);
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("chgrp 'sandbox-group'") &&
+          command.includes("chmod 0640 -- '/workspace/notes.txt'"),
+      ),
+    ).toBe(true);
+    expect(writeMock).toHaveBeenCalledWith('/workspace/notes.txt', 'hello\n');
+  });
+
+  test.each([
+    ['drwxrwxrwt', '1777'],
+    ['drwxrwxrwT', '1776'],
+  ])(
+    'applies sticky directory metadata through the provider: %s',
+    async (permissions, mode) => {
+      const client = new E2BSandboxClient();
+      await client.create(
+        new Manifest({
+          entries: { shared: { type: 'dir', permissions } },
+        }),
+      );
+      const commands = runMock.mock.calls.map(([command]) => String(command));
+      expect(
+        commands.some((command) =>
+          command.includes(`chmod ${mode} -- '/workspace/shared'`),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  test('preserves client env while manifest values take precedence', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        CLIENT_ONLY: 'override',
+        TOKEN: 'client',
+      },
+    });
+    const manifest = new Manifest({
+      environment: {
+        MANIFEST_FLAG: 'enabled',
+        TOKEN: 'manifest',
+      },
+    });
+
+    const session = await client.create(manifest);
+    expect(createMock).toHaveBeenCalledWith({
+      envs: {
+        CLIENT_ONLY: 'override',
+        MANIFEST_FLAG: 'enabled',
+        TOKEN: 'manifest',
+      },
+    });
+
+    await session.applyManifest(
+      new Manifest({
+        environment: {
+          MANIFEST_FLAG: 'updated',
+          EXTRA_FLAG: 'present',
+          TOKEN: 'manifest-updated',
+        },
+      }),
+    );
+    await session.execCommand({ cmd: 'ls' });
+
+    expect(runMock).toHaveBeenCalledWith('ls', {
+      cwd: '/workspace',
+      envs: {
+        CLIENT_ONLY: 'override',
+        MANIFEST_FLAG: 'updated',
+        EXTRA_FLAG: 'present',
+        TOKEN: 'manifest-updated',
+      },
+      timeoutMs: undefined,
+      user: undefined,
+    });
+  });
+
+  test('materializes a single lazy skill entry', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        remoteMountCommandAllowlist: ['cat'],
+      }),
+    );
+
+    await session.materializeEntry?.({
+      path: '.agents/lazy/SKILL.md',
+      entry: {
+        type: 'file',
+        content: '# Lazy\n',
+      },
+    });
+
+    expect(writeMock).toHaveBeenLastCalledWith(
+      '/workspace/.agents/lazy/SKILL.md',
+      '# Lazy\n',
+    );
+    expect(await session.pathExists('.agents/lazy/SKILL.md')).toBe(true);
+    expect(session.state.manifest.remoteMountCommandAllowlist).toEqual(['cat']);
+  });
+
+  test('returns false when E2B throws for missing path existence checks', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+    runMock.mockImplementation(async (command: string) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath) {
+        return {
+          stdout: `${resolvedPath}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (command.startsWith('test -e ')) {
+        if (command.includes('OPENAI_AGENTS_READ_PATH_PROBE_V1')) {
+          return {
+            stdout: '',
+            stderr: 'find: /workspace/missing.txt: No such file or directory',
+            exitCode: 1,
+          };
+        }
+        throw Object.assign(new Error('missing path'), {
+          exitCode: 1,
+          stderr: 'missing path',
+        });
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+
+    await expect(session.pathExists('missing.txt')).resolves.toBe(false);
+  });
+
+  test('mounts cloud buckets with the E2B rclone mount strategy', async () => {
+    const client = new E2BSandboxClient();
+
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new E2BCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+    );
+    await session.close();
+
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(true);
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes('/workspace/mounted/logs'),
+      ),
+    ).toBe(true);
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes('fusermount3 -u'),
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects a retargeted effective path before credentialed mounts', async () => {
+    const defaultRun = runMock.getMockImplementation();
+    let mountPathResolutions = 0;
+    runMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath === '/workspace/mounted/logs') {
+        mountPathResolutions += 1;
+        return {
+          stdout: `${
+            mountPathResolutions === 1 ? resolvedPath : '/workspace/redirected'
+          }\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return await defaultRun!(command, ...args);
+    });
+
+    const client = new E2BSandboxClient();
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountPath: 'mounted/logs',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(mountPathResolutions).toBe(2);
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects ambient mount credentials before creating a sandbox', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'access-key',
+        AWS_SECRET_ACCESS_KEY: 'secret-key',
+      },
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('requires broad acknowledgement for ambient credentials shadowed by inline credentials', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'ambient-access-key',
+        AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+      },
+    });
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          accessKeyId: 'inline-access-key',
+          secretAccessKey: 'inline-secret-key',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('data');
+
+    await expect(client.create(manifest)).rejects.toThrow(
+      /broad credential authority/iu,
+    );
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              serviceAccountCredentials: 'inline-service-account-credentials',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              mountStrategy: {
+                type: 'e2b_cloud_bucket',
+                pattern: { type: 'mountpoint' },
+              },
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      /SDK-supported strategy, provider, mount type, and pattern/iu,
+    );
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: 'partial-access-key',
+        },
+      }).create(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'data',
+        ),
+      ),
+    ).rejects.toThrow(/both ACCESS_KEY_ID and SECRET_ACCESS_KEY/iu);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects dynamic ambient mount credentials before remote effects', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'access-key',
+        AWS_SECRET_ACCESS_KEY: 'secret-key',
+      },
+    });
+    const session = await client.create(new Manifest());
+    runMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'data',
+        entry: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('blocks retained PTY input after a privileged transition tombstone', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    markRemoteSandboxSessionStateUnsafe(session.state);
+
+    await expect(
+      session.writeStdin({ sessionId: 1, chars: 'blocked' }),
+    ).rejects.toThrow(/privileged manifest transition failed/u);
+  });
+
+  test('reuses live ambient mount authority only while values are exact', async () => {
+    const environment = {
+      AWS_ACCESS_KEY_ID: 'access-key',
+      AWS_SECRET_ACCESS_KEY: 'secret-key',
+    };
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
+    const client = new E2BSandboxClient({ env: environment });
+    const session = await client.create(manifest);
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: {
+          env: {
+            ...environment,
+            AWS_SECRET_ACCESS_KEY: 'rotated-secret',
+          },
+        },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: undefined },
+      }),
+    ).resolves.toBe(false);
+  });
+
+  test('rejects live reuse when exact rclone config authority changes', async () => {
+    const environment = { RCLONE_CONFIG: '/run/rclone-a.conf' };
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
+    const client = new E2BSandboxClient({ env: environment });
+    const session = await client.create(manifest);
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: { RCLONE_CONFIG: '/run/rclone-b.conf' } },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: undefined },
+      }),
+    ).resolves.toBe(false);
+  });
+
+  test('uses the installed rclone path when E2B PATH excludes it', async () => {
+    let rcloneProbeFailures = 0;
+    runMock.mockImplementation(async (command: string) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath) {
+        return {
+          stdout: `${resolvedPath}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (
+        command.includes('command -v rclone') &&
+        rcloneProbeFailures++ === 0
+      ) {
+        throw Object.assign(new Error('rclone missing'), {
+          exitCode: 1,
+          stderr: 'rclone missing',
+        });
+      }
+      if (command === 'uname -m') {
+        return {
+          stdout: 'x86_64\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+    const client = new E2BSandboxClient();
+
+    await client.create(
+      new Manifest({
+        environment: {
+          PATH: '/usr/bin:/bin',
+        },
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new E2BCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+    );
+
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes('command -v apt-get'),
+      ),
+    ).toBe(true);
+    const installCommand = runMock.mock.calls
+      .map(([command]) => String(command))
+      .find((command) => command.includes('sha256sum --check --strict -'));
+    expect(installCommand).toContain('rclone-v1.74.4-linux-amd64.zip');
+    expect(installCommand).not.toContain('https://rclone.org/install.sh');
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes("'/usr/local/bin/rclone' 'mount'"),
+      ),
+    ).toBe(true);
+  });
+
+  test('resolves mount credential files without the configured PATH', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        PATH: '/home/user/model-bin',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      },
+    });
+    const session = await client.create(
+      new Manifest().withInContainerMountBroadCredentialExposureAcknowledged(
+        'data',
+      ),
+    );
+    runMock.mockClear();
+
+    await session.materializeEntry({
+      path: 'data',
+      entry: {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: new E2BCloudBucketMountStrategy(),
+      },
+    });
+
+    expect(
+      runMock.mock.calls.find(([command]) =>
+        String(command).includes(
+          "/usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+        ),
+      ),
+    ).toEqual([
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+      expect.objectContaining({ envs: {} }),
+    ]);
+  });
+
+  test('reads images with runAs through remote commands', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'pixel.png': {
+            type: 'file',
+            content: '',
+          },
+        },
+      }),
+    );
+    const png = ONE_BY_ONE_PNG;
+    files.set('/workspace/pixel.png', png);
+    runMock.mockClear();
+
+    const image = await session.viewImage({
+      path: 'pixel.png',
+      runAs: 'sandbox-user',
+    });
+
+    expect((image.image as { data: Uint8Array }).data).toEqual(png);
+    expect(runMock).toHaveBeenCalledWith("base64 -- '/workspace/pixel.png'", {
+      cwd: '/',
+      envs: {},
+      timeoutMs: undefined,
+      user: 'sandbox-user',
+    });
+    expect(readMock).not.toHaveBeenCalled();
+  });
+
+  test('reads images through the E2B byte file format', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+    files.set('/workspace/pixel.png', ONE_BY_ONE_PNG);
+    readMock.mockClear();
+
+    const image = await session.viewImage({ path: 'pixel.png' });
+    const payload = image.image as { data: Uint8Array; mediaType?: string };
+
+    expect(readMock).toHaveBeenCalledWith('/workspace/pixel.png', {
+      format: 'bytes',
+    });
+    expect(payload.mediaType).toBe('image/png');
+    expect([...payload.data]).toEqual([...ONE_BY_ONE_PNG]);
+  });
+
+  test('supports filesystem editor hooks with absolute workspace paths', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'README.md': {
+            type: 'file',
+            content: '# Hello\n',
+          },
+        },
+      }),
+    );
+    const editor = session.createEditor?.();
+    if (!editor) {
+      throw new Error('Expected E2BSandboxSession.createEditor().');
+    }
+
+    await editor.updateFile({
+      type: 'update_file',
+      path: '/workspace/README.md',
+      diff: '@@\n-# Hello\n+# Updated\n',
+    });
+    const exists = await session.pathExists?.('/workspace/README.md');
+
+    expect(readMock).toHaveBeenCalledWith('/workspace/README.md');
+    expect(writeMock).toHaveBeenLastCalledWith(
+      '/workspace/README.md',
+      '# Updated\n',
+    );
+    expect(exists).toBe(true);
+    await expect(
+      session.pathExists('/workspace/../tmp/README.md'),
+    ).rejects.toThrow(/escapes the workspace root/);
+  });
+
+  test('supports filesystem and command runAs', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(new Manifest());
+
+    expect(() => session.createEditor?.('sandbox-user')).not.toThrow();
+    await expect(
+      session.pathExists?.('/workspace/README.md', 'sandbox-user'),
+    ).resolves.toBe(false);
+    await expect(
+      session.applyManifest?.(
+        new Manifest({
+          entries: {
+            'owned.txt': {
+              type: 'file',
+              content: 'owned\n',
+            },
+          },
+        }),
+        'sandbox-user',
+      ),
+    ).resolves.toBeUndefined();
+    expect(writeMock).toHaveBeenCalledWith('/workspace/owned.txt', 'owned\n');
+    expect(runMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "chown 'sandbox-user':'sandbox-user' -- '/workspace/owned.txt'",
+      ),
+      expect.objectContaining({
+        cwd: '/',
+        user: undefined,
+      }),
+    );
+
+    await session.execCommand({ cmd: 'ls', runAs: 'sandbox-user' });
+    expect(runMock).toHaveBeenLastCalledWith('ls', {
+      cwd: '/workspace',
+      envs: {},
+      timeoutMs: undefined,
+      user: 'sandbox-user',
+    });
+  });
+});

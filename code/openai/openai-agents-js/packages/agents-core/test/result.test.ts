@@ -1,0 +1,562 @@
+import { describe, it, expect, vi } from 'vitest';
+import { RunResult, StreamedRunResult } from '../src/result';
+import { RunState } from '../src/runState';
+import { Agent } from '../src/agent';
+import { RunContext } from '../src/runContext';
+import { RunRawModelStreamEvent } from '../src/events';
+import logger from '../src/logger';
+import { getEventListeners } from 'node:events';
+import { runStreamedRunResultLeakCheck } from './manual/streamedRunResultLeakCheck';
+import { runStreamedRunResultLeakStress } from './manual/streamedRunResultLeakStress';
+
+const agent = new Agent({ name: 'A' });
+
+function createState(): RunState<unknown, Agent<any, any>> {
+  return new RunState(new RunContext(), '', agent, 1);
+}
+
+describe('RunResult', () => {
+  it('returns final output when completed', () => {
+    const state = createState();
+    state._currentStep = { type: 'next_step_final_output', output: 'done' };
+    const result = new RunResult(state);
+    expect(result.finalOutput).toBe('done');
+  });
+
+  it('warns and returns undefined when not completed', () => {
+    const state = createState();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const result = new RunResult(state);
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('exposes the active agent', () => {
+    const state = createState();
+    const result = new RunResult(state);
+    expect(result.activeAgent).toBe(agent);
+  });
+
+  it('exposes the top-level run context', () => {
+    const state = createState();
+    const result = new RunResult(state);
+
+    expect(result.runContext).toBe(state._context);
+    expect(result.agentToolInvocation).toBeUndefined();
+  });
+
+  it('exposes nested agent-tool metadata', () => {
+    const state = new RunState(new RunContext(), '', agent, 1);
+    state._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const result = new RunResult(state as any);
+
+    expect(result.runContext).toBe(state._context);
+    expect(result.agentToolInvocation).toEqual({
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    });
+  });
+
+  it('exposes nested agent-tool metadata without changing custom run contexts', () => {
+    class ExtendedRunContext extends RunContext<{ locale: string }> {
+      describe() {
+        return `${this.context.locale}:${(this.toolInput as { input?: string } | undefined)?.input}`;
+      }
+
+      get summary() {
+        return this.context.locale;
+      }
+    }
+
+    const state = new RunState(
+      new ExtendedRunContext({ locale: 'en-US' }),
+      '',
+      agent,
+      1,
+    );
+    state._context.toolInput = { input: 'hello' };
+    state._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const result = new RunResult(state as any);
+    const firstContext = result.runContext as ExtendedRunContext;
+    const secondContext = result.runContext as ExtendedRunContext;
+
+    expect(firstContext).toBe(secondContext);
+    expect(firstContext).toBeInstanceOf(ExtendedRunContext);
+    expect(firstContext.describe()).toBe('en-US:hello');
+    expect(
+      (firstContext as ExtendedRunContext & { summary: string }).summary,
+    ).toBe('en-US');
+    expect(result.agentToolInvocation).toEqual({
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    });
+
+    firstContext.toolInput = { input: 'updated' };
+    expect(
+      (result.runContext as RunContext<{ locale: string }>).toolInput,
+    ).toEqual({
+      input: 'updated',
+    });
+    expect(state._context.toolInput).toEqual({ input: 'updated' });
+    expect(state.toJSON().context.toolInput).toEqual({ input: 'updated' });
+  });
+
+  it('does not carry nested agent-tool metadata into a new top-level run', () => {
+    const nestedState = new RunState(new RunContext(), '', agent, 1);
+    nestedState._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+
+    const nestedResult = new RunResult(nestedState as any);
+    const reusedState = new RunState(
+      nestedResult.runContext as RunContext<unknown>,
+      '',
+      agent,
+      1,
+    );
+    const reusedResult = new RunResult(reusedState as any);
+
+    expect(reusedState._context).toBe(nestedState._context);
+    expect(reusedState._agentToolInvocation).toBeUndefined();
+    expect(reusedResult.agentToolInvocation).toBeUndefined();
+    expect(reusedState.toJSON()).not.toHaveProperty('agentToolInvocation');
+  });
+});
+
+describe('StreamedRunResult', () => {
+  it('collects streamed text', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'he' }),
+    );
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'llo' }),
+    );
+    sr._done();
+
+    const vs = sr.toTextStream().values();
+    let text = '';
+    for await (const value of vs) {
+      text += value;
+    }
+
+    await sr.completed;
+    expect(text).toBe('hello');
+    expect(sr.error).toBe(null);
+  });
+
+  it('currentTurn starts at 0 for a fresh run and stays a writable field', () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    expect(sr.currentTurn).toBe(0);
+    // Deliberately a writable data property, not a getter: `currentTurn` is a
+    // released public field, and turning it into a getter-only property would
+    // change the shape callers already depend on. The streaming runner assigns
+    // it once a turn is admitted.
+    sr.currentTurn = 2;
+    expect(sr.currentTurn).toBe(2);
+    const descriptor = Object.getOwnPropertyDescriptor(sr, 'currentTurn');
+    expect(descriptor?.writable).toBe(true);
+    expect(descriptor?.get).toBeUndefined();
+  });
+
+  it('currentTurn is seeded from a resumed state rather than reset to 0', () => {
+    // A state carried in from a serialized run has already spent turns; the
+    // result must not restart the public counter.
+    const state = createState();
+    state._currentTurn = 3;
+    const sr = new StreamedRunResult({ state });
+    expect(sr.currentTurn).toBe(3);
+  });
+
+  it('currentTurn does NOT track later mutations of the private state counter', () => {
+    // The private counter is bumped at the START of a turn -- before the maxTurns
+    // check and before blocking input guardrails, either of which can reject that
+    // turn. Tracking it live is exactly the over-reporting this field avoids.
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    state._currentTurn = 7;
+    expect(sr.currentTurn).toBe(0);
+  });
+
+  it('records errors and rejects completed promise', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const err = new Error('boom');
+    sr._raiseError(err);
+    await expect(sr.completed).rejects.toBe(err);
+    expect(sr.error).toBe(err);
+  });
+
+  it('drains preserved events before retaining the first stream error', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const persistenceError = new Error('persistence failed');
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+
+    sr._raiseError(persistenceError, { preserveQueuedItems: true });
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBe(persistenceError);
+    const events: RunRawModelStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of sr) {
+          events.push(event as RunRawModelStreamEvent);
+        }
+      })(),
+    ).rejects.toBe(persistenceError);
+    expect(events).toHaveLength(1);
+    expect(sr.error).toBe(persistenceError);
+  });
+
+  it('retains a null preserved error across secondary failures', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+
+    sr._raiseError(null, { preserveQueuedItems: true });
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBeNull();
+    await expect(
+      (async () => {
+        for await (const _event of sr) {
+          // Drain the preserved event before observing the terminal error.
+        }
+      })(),
+    ).rejects.toBeNull();
+    expect(sr.error).toBeNull();
+  });
+
+  it('drains committed events before a later cleanup error', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+    sr._preserveQueuedItemsOnError();
+
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBe(cleanupError);
+    const events: RunRawModelStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of sr) {
+          events.push(event as RunRawModelStreamEvent);
+        }
+      })(),
+    ).rejects.toBe(cleanupError);
+    expect(events).toHaveLength(1);
+  });
+
+  it('drains a large queued stream in order', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const eventCount = 4096;
+    for (let index = 0; index < eventCount; index += 1) {
+      sr._addItem(
+        new RunRawModelStreamEvent({
+          type: 'output_text_delta',
+          delta: String(index),
+        }),
+      );
+    }
+    sr._done();
+
+    let receivedCount = 0;
+    for await (const _event of sr) {
+      receivedCount += 1;
+    }
+
+    expect(receivedCount).toBe(eventCount);
+  });
+
+  it('clears delayed terminal buffering when the consumer cancels', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    for (let index = 0; index < 4096; index += 1) {
+      sr._addItem(
+        new RunRawModelStreamEvent({
+          type: 'output_text_delta',
+          delta: String(index),
+        }),
+      );
+    }
+    sr._done();
+
+    const reader = (sr.toStream() as any).getReader();
+    await reader.cancel();
+
+    expect(sr.cancelled).toBe(true);
+  });
+
+  it('propagates consumer cancellation before fallback cleanup', async () => {
+    vi.spyOn(
+      AbortSignal as typeof AbortSignal & { any: typeof AbortSignal.any },
+      'any',
+    ).mockImplementation(() => {
+      throw new Error('AbortSignal.any failed');
+    });
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+    const reader = (sr.toStream() as any).getReader();
+
+    await reader.cancel();
+
+    expect(signal?.aborted).toBe(true);
+    expect(sr.cancelled).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts streamed run errors when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const state = createState();
+      const sr = new StreamedRunResult({ state });
+      const secret = 'SECRET_STREAMED_RUN_ERROR_123';
+      const err = new Error(secret);
+
+      sr._raiseError(err);
+
+      await expect(sr.completed).rejects.toBe(err);
+      expect(sr.error).toBe(err);
+      expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it('keeps rejecting when redacted streamed run logging receives a revoked Proxy', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+
+    sr._raiseError(proxy);
+
+    await expect(sr.completed).rejects.toBe(proxy);
+    expect(sr.error).toBe(proxy);
+    expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+    vi.restoreAllMocks();
+  });
+
+  it('handles abort while iterating without throwing', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+
+    const consumePromise = (async () => {
+      for await (const _ of sr) {
+        // Intentionally empty.
+      }
+    })();
+
+    await Promise.resolve();
+
+    controller.abort();
+
+    await expect(consumePromise).resolves.toBeUndefined();
+    sr._done();
+    await expect(sr.completed).resolves.toBeUndefined();
+    expect(sr.cancelled).toBe(true);
+    expect(sr.error).toBe(null);
+  });
+
+  it('waits for the background run loop after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+
+    let completedSettled = false;
+    void sr.completed.then(() => {
+      completedSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(completedSettled).toBe(false);
+
+    sr._done();
+    await expect(sr.completed).resolves.toBeUndefined();
+  });
+
+  it('reports a background run error after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+    const error = new Error('failed after cancellation');
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    sr._raiseError(error);
+
+    await expect(sr.completed).rejects.toBe(error);
+    expect(sr.error).toBe(error);
+  });
+
+  it('preserves an already-aborted signal for the run loop', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    controller.abort();
+
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    await Promise.resolve();
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(true);
+    expect(sr.cancelled).toBe(true);
+    sr._done();
+    await expect(sr.completed).resolves.toBeUndefined();
+  });
+
+  it('removes abort listeners when the stream is cancelled by the consumer', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    const reader = (sr.toStream() as any).getReader();
+    await reader.cancel();
+    sr._done();
+    await sr.completed;
+
+    expect(sr.cancelled).toBe(true);
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('ignores external aborts after the run has already completed', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    sr._done();
+    await sr.completed;
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+
+    controller.abort();
+
+    expect(sr.cancelled).toBe(false);
+    expect(sr.error).toBe(null);
+  });
+
+  it('removes abort listeners after completion', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    sr._done();
+    await sr.completed;
+
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('removes abort listeners after errors', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    const err = new Error('boom');
+    sr._raiseError(err);
+    await expect(sr.completed).rejects.toBe(err);
+
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('does not retain state when the abort signal is retained', async () => {
+    const result = await runStreamedRunResultLeakCheck();
+
+    expect(result.doneCollected).toBe(true);
+    expect(result.errorCollected).toBe(true);
+  }, 20_000);
+
+  it('stress-checks retained abort signals without leaking run state', async () => {
+    const result = await runStreamedRunResultLeakStress({
+      iterations: 250,
+      snapshotEvery: 250,
+      abortAfterDone: false,
+      removeMode: 'noop',
+      minFinalizedRatio: 0.9,
+      pressureSize: 120000,
+    });
+
+    expect(result.finalizedRatio).toBeGreaterThanOrEqual(
+      result.minFinalizedRatio,
+    );
+    expect(result.postDoneAbortMutations).toBeLessThanOrEqual(
+      result.maxPostDoneAbortMutations,
+    );
+  }, 20_000);
+});

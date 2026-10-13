@@ -1,0 +1,18 @@
+{
+    "compilerOptions": {
+      "target": "ES2017",
+      "lib": ["ES2018", "DOM"],
+      "module": "ESNext",
+      "moduleResolution": "node",
+      "noUncheckedSideEffectImports": true,
+      "declaration": true,
+      "sourceMap": true,
+      "stripInternal": true,
+      "esModuleInterop": true,
+      "forceConsistentCasingInFileNames": true,
+      "strict": true,
+      "noUnusedLocals": true,
+      "skipLibCheck": true
+    }
+  }
+  

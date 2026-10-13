@@ -1,0 +1,1016 @@
+"""Resolve accepted resources and one sticky Thread configuration into a Run composition."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
+
+from a13n_harness import RunConfiguration
+from a13n_harness.environment import (
+    EnvironmentRunExtensionFactoryContext,
+    EnvironmentRunExtensionFactoryRegistration,
+)
+from a13n_harness.errors import PluginError
+from a13n_harness.plugin_factories import (
+    HarnessPluginFactoryCatalog,
+    HarnessPluginFactoryRegistration,
+)
+from a13n_harness.tools import ToolIdentity, ToolPermissionsCapability
+from a13n_harness.tools.permissions import match_selector
+from a13n_logging import get_logger
+from pydantic import JsonValue
+
+from a13n_harness_ui.configuration import (
+    AgentResource,
+    AgentSubagentSelection,
+    ApiKeyAuthentication,
+    CanonicalSubagent,
+    ChatGPTSubscriptionAuthentication,
+    CodexSubscriptionAuthentication,
+    CopilotSubscriptionAuthentication,
+    GrokSubscriptionAuthentication,
+    LoadedHarnessUiConfiguration,
+    ModelResource,
+    canonical_digest,
+)
+from a13n_harness_ui.configuration.models import CapabilitySelection, MarkdownSubagentSelection, SidekickConfiguration
+from a13n_harness_ui.environment_bindings import EnvironmentBindingSelection, validate_environment_selection
+from a13n_harness_ui.environment_profiles import (
+    FULL_CONTROL_PROFILE_ID,
+    built_in_environment_profile,
+)
+from a13n_harness_ui.errors import CompositionError
+from a13n_harness_ui.extensions import HarnessUiExtensionCatalog
+from a13n_harness_ui.guardian_credits import supports_guardian_credits
+from a13n_harness_ui.memory import ORGANIZATION_PROMPT
+from a13n_harness_ui.model_adapters import PydanticAiModelAdapter, service_tier_setting
+from a13n_harness_ui.model_controls import apply_model_controls
+from a13n_harness_ui.prompts import DEFAULT_SYSTEM_PROMPT
+from a13n_harness_ui.storage.contracts import Thread
+from a13n_harness_ui.surfaces import RunModelOverrides
+
+from .models import (
+    DependencyProvenance,
+    ResolvedAgentNode,
+    ResolvedCapabilityRecipe,
+    ResolvedContentPlugin,
+    ResolvedEnvironmentBinding,
+    ResolvedEnvironmentProfile,
+    ResolvedMcpRecipe,
+    ResolvedModelRecipe,
+    ResolvedPluginRecipe,
+    ResolvedRunComposition,
+    ResolvedRunExtensionRecipe,
+    ResolvedSubagent,
+)
+
+PACKAGE_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+PACKAGE_PROMPT_REVISION = "a13n-harness-ui/1"
+IMPLICIT_NATIVE_PROFILE = FULL_CONTROL_PROFILE_ID
+_MAX_RESOLVED_NODES = 1024
+_MAX_RESOLVED_DEPTH = 128
+_LOGGER = get_logger(__name__)
+_SKIPPABLE_CAPABILITY_ERRORS = frozenset(
+    {
+        "capability_catalog_invalid",
+        "capability_configuration_invalid",
+        "capability_model_missing",
+        "extension_catalog_ambiguous",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadCompositionSelection:
+    thread_id: str
+    version: int
+    project_id: str | None
+    agent_source_kind: Literal["agent", "markdown"]
+    agent_source_id: str
+    environment_profile_id: str
+    harness_plugin_ids: tuple[str, ...]
+    environment_run_extension_ids: tuple[str, ...]
+    mcp_server_ids: tuple[str, ...]
+    local_roots: tuple[str, ...] = ()
+    default_model_id: str | None = None
+    environment_bindings: tuple[EnvironmentBindingSelection, ...] = ()
+    default_environment: str | None = None
+    role: Literal["ordinary", "coordinator", "worker"] = "ordinary"
+    coordinator_thread_id: str | None = None
+
+    @classmethod
+    def from_thread(cls, thread: Thread) -> ThreadCompositionSelection:
+        configuration = thread.configuration
+        source = configuration.agent_source
+        if source.kind == "memory":
+            raise CompositionError("Memory Threads have no interactive Agent selection.", code="thread_scope_invalid")
+        return cls(
+            thread_id=thread.thread_id,
+            version=configuration.version,
+            project_id=configuration.project_id,
+            local_roots=configuration.local_roots,
+            agent_source_kind=source.kind,
+            agent_source_id=source.id,
+            default_model_id=configuration.default_model_id,
+            environment_profile_id=configuration.environment_profile_id,
+            environment_bindings=configuration.environment_bindings,
+            default_environment=configuration.default_environment,
+            harness_plugin_ids=configuration.harness_plugin_ids,
+            environment_run_extension_ids=configuration.environment_run_extension_ids,
+            mcp_server_ids=configuration.mcp_server_ids,
+        )
+
+
+class AgentCompositionResolver:
+    """Validate installed selections and capture a complete immutable Run value."""
+
+    def __init__(
+        self, catalog: HarnessUiExtensionCatalog | None = None, *, host_mode: Literal["local", "webui"] = "local"
+    ) -> None:
+        self.catalog = catalog or HarnessUiExtensionCatalog()
+        self._host_mode = host_mode
+        self._model_adapter = PydanticAiModelAdapter()
+
+    def effective_mcp_server_ids(
+        self, source: LoadedHarnessUiConfiguration, generic_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Add WebUI Apps without changing the Agent or Thread's generic selection."""
+        apps = source.document.webui.mcp_apps
+        injected = apps.servers if self._host_mode == "webui" and apps.enabled else ()
+        return tuple(dict.fromkeys((*generic_ids, *injected)))
+
+    def _mcp_recipes(
+        self, source: LoadedHarnessUiConfiguration, generic_ids: tuple[str, ...]
+    ) -> tuple[ResolvedMcpRecipe, ...]:
+        apps = source.document.webui.mcp_apps
+        return tuple(
+            ResolvedMcpRecipe(
+                server_id=item,
+                transport=source.mcp_servers[item].transport,
+                apps_enabled=self._host_mode == "webui" and apps.enabled and item in apps.servers,
+                generic_selected=item in generic_ids,
+                host_owned=item in source.document.mcp.host_owned_servers,
+                protocol=source.document.mcp.protocol_overrides.get(item, "auto"),
+            )
+            for item in self.effective_mcp_server_ids(source, generic_ids)
+        )
+
+    def validate_generation(self, source: LoadedHarnessUiConfiguration, *, warnings: list[str] | None = None) -> None:
+        """Validate a generation, reporting unusable Agent Capabilities separately."""
+
+        plugin_keys = tuple(item.plugin_key for item in source.harness_plugins.values())
+        plugin_catalog = self.catalog.plugin_catalog(plugin_keys)
+        for item in source.harness_plugins.values():
+            try:
+                plugin_catalog.validate_configuration(item.plugin_key, item.configuration)
+            except PluginError as exc:
+                raise CompositionError(
+                    "Harness Plugin configuration is invalid.",
+                    code="plugin_configuration_invalid",
+                    details={"plugin_id": item.id, "plugin_key": item.plugin_key},
+                ) from exc
+
+        provider_keys = tuple(item.provider_key for item in source.environment_profiles.values())
+        if provider_keys:
+            providers = self.catalog.provider_catalog(provider_keys)
+            for item in source.environment_profiles.values():
+                provider = providers.require(item.provider_key)
+                adapter = self.catalog.environment_adapter(item.adapter_key, item.provider_key)
+                adapter.validate_profile(
+                    provider_configuration=item.provider_configuration,
+                    adapter_configuration=item.adapter_configuration,
+                    provider=provider,
+                )
+
+        extension_keys = tuple(item.extension_key for item in source.environment_run_extensions.values())
+        extension_catalog = self.catalog.run_extension_catalog(extension_keys)
+        for item in source.environment_run_extensions.values():
+            extension_catalog.create_extension(
+                EnvironmentRunExtensionFactoryContext(
+                    extension_key=item.extension_key,
+                    extension_id=item.id,
+                    configuration=item.configuration,
+                )
+            )
+
+        for model in source.models.values():
+            self.model_recipe(model)
+        for agent in source.agents.values():
+            self._capability_recipes(source, agent, warnings=warnings)
+
+    def resolve_agent(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        selection: ThreadCompositionSelection,
+        *,
+        parent_node: ResolvedAgentNode | None = None,
+        model_overrides: RunModelOverrides | None = None,
+    ) -> ResolvedAgentNode:
+        """Resolve current Agent policy without publishing a Run or preparing an Environment."""
+
+        self._validate_selection(source, selection)
+        if selection.default_model_id is not None and (model_overrides is None or model_overrides.model_id is None):
+            model_overrides = (model_overrides or RunModelOverrides()).model_copy(
+                update={"model_id": selection.default_model_id}
+            )
+        plugin_catalog = self.catalog.plugin_catalog(tuple(item.plugin_key for item in source.harness_plugins.values()))
+        budget = [_MAX_RESOLVED_NODES]
+        if selection.agent_source_kind == "agent":
+            root = self._agent_node(
+                source,
+                source.agents[selection.agent_source_id],
+                plugin_catalog=plugin_catalog,
+                root_plugins=selection.harness_plugin_ids,
+                root_mcp=selection.mcp_server_ids,
+                budget=budget,
+                depth=1,
+                included_subagents=source.document.subagents.include if parent_node is None else (),
+                model_overrides=model_overrides,
+            )
+        else:
+            if parent_node is None:
+                raise CompositionError(
+                    "A Markdown child Run requires its admitting parent composition.",
+                    code="markdown_parent_missing",
+                )
+            root = self._markdown_node(
+                source,
+                source.subagents[selection.agent_source_id],
+                parent=parent_node,
+                plugin_ids=selection.harness_plugin_ids,
+                mcp_ids=selection.mcp_server_ids,
+                budget=budget,
+                depth=1,
+            )
+
+        return root
+
+    def resolve_run(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        selection: ThreadCompositionSelection,
+        *,
+        parent_node: ResolvedAgentNode | None = None,
+        model_overrides: RunModelOverrides | None = None,
+        run_configuration: RunConfiguration | None = None,
+    ) -> ResolvedRunComposition:
+        """Resolve one exact Thread head against one accepted source generation."""
+        root = self.resolve_agent(source, selection, parent_node=parent_node, model_overrides=model_overrides)
+        environment = self._environment_profile(source, selection.environment_profile_id)
+        run_extensions, extension_dependencies = self._run_extensions(source, selection.environment_run_extension_ids)
+        dependencies = [
+            *self._agent_dependencies(source, root),
+            *self._environment_dependencies(source, environment),
+            *extension_dependencies,
+        ]
+        unique = {
+            (
+                item.kind,
+                item.key,
+                item.source,
+                item.class_module,
+                item.class_qualname,
+                item.import_target,
+                item.distribution_name,
+                item.distribution_version,
+            ): item
+            for item in dependencies
+        }
+        return ResolvedRunComposition(
+            package_prompt_revision=PACKAGE_PROMPT_REVISION,
+            generation_digest=source.source_digest,
+            thread_id=selection.thread_id,
+            thread_configuration_version=selection.version,
+            project_id=selection.project_id,
+            memory_enabled=source.document.memory.enabled,
+            run_configuration=run_configuration or source.document.run_configuration,
+            role=selection.role,
+            coordinator_thread_id=selection.coordinator_thread_id,
+            project_roots=selection.local_roots,
+            media_understanding={
+                kind: self.model_recipe(source.models[model_id])
+                for kind, model_id in source.document.media_understanding.selections().items()
+            },
+            webui_sidekick=(
+                SidekickConfiguration(
+                    agent=source.document.webui.sidekick.agent, model=source.document.webui.sidekick.model
+                )
+                if source.document.webui.sidekick is not None
+                else None
+            ),
+            content_plugins=tuple(
+                ResolvedContentPlugin(
+                    plugin_id=item.plugin_id,
+                    version=item.version,
+                    commit=item.commit,
+                    path=item.path,
+                    skills_path=item.skills_path,
+                )
+                for item in sorted(source.content_plugins, key=lambda plugin: plugin.plugin_id)
+            ),
+            root=root,
+            environment_profile=environment,
+            environment_bindings=tuple(
+                ResolvedEnvironmentBinding(selection=item, device=source.devices[item.device_id].model_copy(deep=True))
+                for item in selection.environment_bindings
+            ),
+            default_environment=selection.default_environment,
+            environment_run_extensions=run_extensions,
+            dependencies=tuple(sorted(unique.values(), key=lambda item: (item.kind, item.key))),
+        )
+
+    def _validate_selection(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        selection: ThreadCompositionSelection,
+    ) -> None:
+        if selection.project_id is not None and selection.project_id not in source.projects:
+            raise CompositionError("The Thread Project is unavailable.", code="project_missing")
+        if selection.default_model_id is not None and selection.agent_source_kind != "agent":
+            raise CompositionError("A Markdown child follows its parent Model.", code="thread_model_invalid")
+        sources = source.agents if selection.agent_source_kind == "agent" else source.subagents
+        if selection.agent_source_id not in sources:
+            raise CompositionError("The Thread Agent source is unavailable.", code="agent_source_missing")
+        if (
+            built_in_environment_profile(selection.environment_profile_id) is None
+            and selection.environment_profile_id not in source.environment_profiles
+        ):
+            raise CompositionError("The Thread Environment profile is unavailable.", code="environment_profile_missing")
+        _require_ids(tuple(item.device_id for item in selection.environment_bindings), source.devices, "Device")
+        try:
+            validate_environment_selection(
+                selection.environment_bindings,
+                selection.default_environment,
+                local_root_count=len(selection.local_roots),
+            )
+        except ValueError as error:
+            raise CompositionError(str(error), code="environment_selection_invalid") from error
+        _require_ids(selection.harness_plugin_ids, source.harness_plugins, "Harness Plugin")
+        _require_ids(selection.environment_run_extension_ids, source.environment_run_extensions, "Run Extension")
+        _require_ids(selection.mcp_server_ids, source.mcp_servers, "MCP server")
+
+    def _agent_node(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        agent: AgentResource,
+        *,
+        plugin_catalog: HarnessPluginFactoryCatalog,
+        root_plugins: tuple[str, ...] | None,
+        root_mcp: tuple[str, ...] | None,
+        budget: list[int],
+        depth: int,
+        included_subagents: tuple[str, ...] = (),
+        model_overrides: RunModelOverrides | None = None,
+    ) -> ResolvedAgentNode:
+        _consume_budget(budget, depth)
+        plugin_ids = source.selected_plugins(agent) if root_plugins is None else root_plugins
+        mcp_ids = source.selected_mcp_servers(agent) if root_mcp is None else root_mcp
+        plugins = self._plugins(source, plugin_ids, plugin_catalog)
+        mcp = self._mcp_recipes(source, mcp_ids)
+        selected_model = model_overrides.model_id if model_overrides and model_overrides.model_id else agent.model
+        if selected_model is None:
+            raise CompositionError(
+                "This Agent has no model yet. Open Setup to connect a model and select a configured Agent before sending.",
+                code="agent_model_required",
+            )
+        if selected_model not in source.models:
+            raise CompositionError("The selected model is unavailable.", code="model_missing")
+        resource = source.models[selected_model]
+        if model_overrides is not None:
+            effective = apply_model_controls(resource.route, resource.settings, model_overrides)
+            if model_overrides.service_tier is not None:
+                # Preserve the existing raw tier override; it is exclusive with Fast.
+                effective.pop(service_tier_setting(resource.route), None)
+                effective["service_tier"] = model_overrides.service_tier
+            resource = resource.model_copy(update={"settings": effective})
+        model = self.model_recipe(resource)
+        if model_overrides is not None and model_overrides.thinking is not None:
+            model = model.model_copy(update={"thinking_override": model_overrides.thinking})
+        capabilities = self._capability_recipes(source, agent, active_model=model)
+        children: list[ResolvedSubagent] = []
+        provisional = ResolvedAgentNode(
+            source_kind="agent",
+            source_id=agent.id,
+            roster_name=agent.id,
+            system_prompt=(PACKAGE_SYSTEM_PROMPT,),
+            instructions=(agent.instructions,) if agent.instructions.strip() else (),
+            global_guidance=source.global_guidance,
+            model=model,
+            capabilities=capabilities,
+            harness_plugins=plugins,
+            mcp_servers=mcp,
+            tools=agent.tools,
+            tool_proxy=(
+                agent.tool_proxy.selected(
+                    mcp_servers=self.effective_mcp_server_ids(source, mcp_ids), harness_plugins=plugin_ids
+                )
+                if agent.tool_proxy is not None
+                else None
+            ),
+            children=(),
+        )
+        edges = list(agent.subagents)
+        if included_subagents:
+            explicit_markdown = {edge.markdown for edge in edges if isinstance(edge, MarkdownSubagentSelection)}
+            edges.extend(
+                MarkdownSubagentSelection(markdown=f"subagent-builtin-{name}")
+                for name in included_subagents
+                if f"subagent-builtin-{name}" not in explicit_markdown
+            )
+        for edge in edges:
+            if isinstance(edge, AgentSubagentSelection):
+                child_resource = source.agents[edge.agent]
+                child = self._agent_node(
+                    source,
+                    child_resource,
+                    plugin_catalog=plugin_catalog,
+                    root_plugins=None,
+                    root_mcp=None,
+                    budget=budget,
+                    depth=depth + 1,
+                )
+                children.append(
+                    ResolvedSubagent(
+                        name=child_resource.id,
+                        description=f"Delegate suitable work to {child_resource.name}.",
+                        source_kind="agent",
+                        source_id=child_resource.id,
+                        definition=child,
+                    )
+                )
+            else:
+                markdown = source.subagents.get(edge.markdown)
+                if markdown is None:
+                    raise CompositionError(
+                        "A selected Markdown subagent is unavailable; repair its source or remove the selection.",
+                        code="composition_subagent_unavailable",
+                        details={"agent_id": agent.id, "subagent_id": edge.markdown},
+                    )
+                child = self._markdown_node(
+                    source,
+                    markdown,
+                    parent=provisional,
+                    plugin_ids=plugin_ids,
+                    mcp_ids=mcp_ids,
+                    budget=budget,
+                    depth=depth + 1,
+                )
+                children.append(
+                    ResolvedSubagent(
+                        name=markdown.name,
+                        description=markdown.description,
+                        instruction=markdown.instruction,
+                        source_kind="markdown",
+                        source_id=markdown.id,
+                        definition=child,
+                    )
+                )
+        if len({child.name for child in children}) != len(children):
+            raise CompositionError(
+                "The selected Agent has duplicate roster names.",
+                code="composition_subagent_conflict",
+                details={"agent_id": agent.id},
+            )
+        return provisional.model_copy(update={"children": tuple(children)})
+
+    def _markdown_node(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        child: CanonicalSubagent,
+        *,
+        parent: ResolvedAgentNode,
+        plugin_ids: tuple[str, ...],
+        mcp_ids: tuple[str, ...],
+        budget: list[int],
+        depth: int,
+    ) -> ResolvedAgentNode:
+        _consume_budget(budget, depth)
+        # Only retained pre-inheritance generations can carry a Markdown model.
+        # New file parsing rejects that field; old admitted children keep their recipe.
+        if child.model is not None and child.model not in source.models:
+            raise CompositionError(
+                "The retained Markdown subagent model is unavailable.",
+                code="composition_subagent_model_unavailable",
+                details={"subagent_id": child.id, "model_id": child.model},
+            )
+        model = parent.model if child.model is None else self.model_recipe(source.models[child.model])
+        capabilities = parent.capabilities
+        if not supports_guardian_credits(model.route) and any(item.guardian_credits for item in capabilities):
+            _LOGGER.warning(
+                "guardian_credits_unavailable",
+                extra={
+                    "warning": f"Subagent {child.id}: main Model is not Responses-compatible; retaining ordinary review."
+                },
+            )
+            capabilities = tuple(item.model_copy(update={"guardian_credits": False}) for item in capabilities)
+        return ResolvedAgentNode(
+            source_kind="markdown",
+            source_id=child.id,
+            roster_name=child.name,
+            system_prompt=(PACKAGE_SYSTEM_PROMPT,),
+            instructions=(child.body,) if child.body.strip() else (),
+            global_guidance=source.global_guidance,
+            model=model,
+            capabilities=capabilities,
+            harness_plugins=self._plugins(
+                source,
+                plugin_ids,
+                self.catalog.plugin_catalog(tuple(item.plugin_key for item in source.harness_plugins.values())),
+            ),
+            mcp_servers=self._mcp_recipes(source, mcp_ids),
+            tools=parent.tools if child.tools is None else child.tools,
+            tool_proxy=(
+                parent.tool_proxy.selected(
+                    mcp_servers=self.effective_mcp_server_ids(source, mcp_ids), harness_plugins=plugin_ids
+                )
+                if parent.tool_proxy is not None
+                else None
+            ),
+            children=(),
+        )
+
+    def resolve_memory(self, source: LoadedHarnessUiConfiguration, thread: Thread) -> ResolvedRunComposition:
+        settings = source.document.memory.auto_organize
+        model_id = source.memory_organization_model_id
+        assert model_id is not None and thread.memory_scope is not None
+        return ResolvedRunComposition(
+            package_prompt_revision=PACKAGE_PROMPT_REVISION,
+            generation_digest=source.source_digest,
+            thread_id=thread.thread_id,
+            thread_configuration_version=thread.configuration.version,
+            project_id=thread.configuration.project_id,
+            memory_organization=True,
+            run_configuration=source.document.run_configuration,
+            root=ResolvedAgentNode(
+                source_kind="memory",
+                source_id="memory",
+                roster_name="memory",
+                system_prompt=(ORGANIZATION_PROMPT,),
+                instructions=(settings.instructions,) if settings.instructions else (),
+                model=self.model_recipe(source.models[model_id]),
+            ),
+            # Retained for the shared composition schema; memory execution never
+            # enters this profile or grants Environment capabilities.
+            environment_profile=self._environment_profile(source, FULL_CONTROL_PROFILE_ID),
+        )
+
+    def model_recipe(self, item: ModelResource) -> ResolvedModelRecipe:
+        _validate_auth_route(item)
+        normalized = self._model_adapter.validate(
+            route=item.route,
+            settings=item.settings,
+            model_cfg=item.model_configuration,
+        )
+        return ResolvedModelRecipe(
+            model_id=item.id,
+            route=normalized.route,
+            authentication=item.authentication,
+            settings=normalized.settings,
+            model_configuration=normalized.model_cfg,
+            model_characteristics=item.model_characteristics,
+        )
+
+    def _capability_recipes(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        agent: AgentResource,
+        *,
+        active_model: ResolvedModelRecipe | None = None,
+        warnings: list[str] | None = None,
+    ) -> tuple[ResolvedCapabilityRecipe, ...]:
+        recipes: list[ResolvedCapabilityRecipe] = []
+        tools = source.document.tools
+        disabled = {
+            name
+            for name, enabled in (
+                ("user_interaction", tools.enable_ask_user_question),
+                ("codeact", tools.enable_codeact),
+            )
+            if not enabled
+        }
+        selections = self._shell_review_selections(source, agent)
+        for item in selections:
+            if item.capability in disabled:
+                continue
+            configuration = dict(item.configuration)
+            characteristics = None if active_model is None else active_model.model_characteristics
+            if (
+                item.capability == "runtime_context"
+                and "context_window_tokens" not in configuration
+                and characteristics is not None
+                and characteristics.context_window_tokens is not None
+            ):
+                configuration["context_window_tokens"] = characteristics.context_window_tokens
+            model = None
+            try:
+                review = configuration.get("review") if item.capability == "ToolPermissionsCapability" else None
+                if isinstance(review, dict):
+                    review = dict(review)
+                    model_id = review.get("model")
+                    if model_id is None and source.document.security.shell_review.enable:
+                        if active_model is None and agent.model is None:
+                            raise self._review_model_error(source, agent, model_id=None, inherited=True)
+                        model = active_model
+                        if model is None:
+                            assert agent.model is not None
+                            model = self.model_recipe(source.models[agent.model])
+                        review["model"] = model.model_id
+                        configuration["review"] = review
+                    else:
+                        if not isinstance(model_id, str) or model_id not in source.models:
+                            raise self._review_model_error(source, agent, model_id=model_id)
+                        model = self.model_recipe(source.models[model_id])
+                    overrides = review.get("model_settings", {})
+                    if not isinstance(overrides, dict):
+                        raise CompositionError(
+                            "Auxiliary Model settings must be an object.", code="capability_model_settings_invalid"
+                        )
+                    self._model_adapter.validate(
+                        route=model.route,
+                        settings={**model.settings, **overrides},
+                        model_cfg=model.model_configuration,
+                    )
+                validated = self.catalog.capabilities(((item.capability, configuration),))
+            except CompositionError as exc:
+                # Never drop authorization rules because optional review is misconfigured.
+                if exc.code not in _SKIPPABLE_CAPABILITY_ERRORS or item.capability == "ToolPermissionsCapability":
+                    raise
+                warning = f"Agent {agent.id}: skipped Capability {item.capability}: {exc} ({exc.code})"
+                if warnings is not None:
+                    warnings.append(warning)
+                else:
+                    _LOGGER.warning("capability_skipped", extra={"warning": warning})
+                continue
+            guardian_credits = False
+            capability = validated[0].capability
+            if (
+                source.document.security.shell_review.guardian_credits
+                and isinstance(capability, ToolPermissionsCapability)
+                and capability.config is not None
+                and capability.permissions.resolve(ToolIdentity("environment.shell_exec")) == "review"
+            ):
+                guardian_credits = (
+                    active_model is not None
+                    and supports_guardian_credits(active_model.route)
+                    and model is not None
+                    and supports_guardian_credits(model.route)
+                )
+                if not guardian_credits:
+                    warning = (
+                        f"Agent {agent.id}: Guardian credits require Responses-compatible main and review Models; "
+                        "ordinary shell review remains enabled."
+                    )
+                    if warnings is not None:
+                        warnings.append(warning)
+                    else:
+                        _LOGGER.warning("guardian_credits_unavailable", extra={"warning": warning})
+            recipes.append(
+                ResolvedCapabilityRecipe(
+                    capability=item.capability,
+                    configuration=configuration,
+                    model=model,
+                    guardian_credits=guardian_credits,
+                )
+            )
+        for default in ("file_context", "working_state", "user_interaction", "codeact"):
+            # An invalid explicit selection is skipped, never replaced with broader defaults.
+            if default not in disabled and not any(item.capability == default for item in agent.capabilities):
+                recipes.append(
+                    ResolvedCapabilityRecipe(
+                        capability=default,
+                        configuration={},
+                    )
+                )
+        return tuple(recipes)
+
+    @staticmethod
+    def _review_model_error(
+        source: LoadedHarnessUiConfiguration,
+        agent: AgentResource,
+        *,
+        model_id: JsonValue,
+        inherited: bool = False,
+    ) -> CompositionError:
+        shortcut = source.document.security.shell_review
+        if shortcut.enable and shortcut.model is not None:
+            path = source.sources[0].relative_path
+            field = "security.shell_review.model"
+        else:
+            path = next(
+                (item.relative_path for item in source.sources if agent.id in item.indexed_resource_ids),
+                agent.id,
+            )
+            field = "model" if inherited else "capabilities.ToolPermissionsCapability.review.model"
+        # Do not include arbitrary malformed configuration values in diagnostics.
+        selected = model_id if isinstance(model_id, str) else None
+        return CompositionError(
+            f"{path}: {field} must reference an available Model resource; selected {selected!r} (Agent {agent.id}).",
+            code="capability_model_missing",
+            details={"agent_id": agent.id, "path": path, "field": field, "model_id": selected},
+        )
+
+    def _shell_review_selections(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        agent: AgentResource,
+    ) -> tuple[CapabilitySelection, ...]:
+        selections = agent.capabilities
+        shortcut = source.document.security.shell_review
+        if not shortcut.enable:
+            return selections
+        permission_key = "ToolPermissionsCapability"
+        permissions: dict[str, JsonValue] = {}
+        remaining: list[CapabilitySelection] = []
+        for item in selections:
+            if item.capability == permission_key:
+                permissions.update(item.configuration)
+            else:
+                remaining.append(item)
+        authored_review = permissions.get("review", {})
+        if not isinstance(authored_review, dict):
+            raise CompositionError("Tool review must be an object.", code="capability_configuration_invalid")
+        review: dict[str, JsonValue] = {"on_flagged": "approval_required", "on_error": "allow", **authored_review}
+        permission_rules = permissions.get("rules", {})
+        if not isinstance(permission_rules, dict):
+            raise CompositionError("Tool policy rules must be a mapping.", code="capability_configuration_invalid")
+        permissions["rules"] = {**permission_rules, "environment.shell_exec": "review"}
+        if shortcut.model is not None:
+            review["model"] = shortcut.model
+        if shortcut.on_error is not None:
+            review["on_error"] = shortcut.on_error
+        shell_overrides = {
+            key: value
+            for key, value in {"risk_threshold": shortcut.risk_threshold, "on_flagged": shortcut.on_flagged}.items()
+            if value is not None
+        }
+        if shell_overrides:
+            review_rules = review.get("rules", {})
+            if not isinstance(review_rules, dict):
+                raise CompositionError("Tool review rules must be a mapping.", code="capability_configuration_invalid")
+            shell_rule = match_selector(review_rules, "environment.shell_exec")
+            if shell_rule is not None and not isinstance(shell_rule, dict):
+                raise CompositionError("Tool review rules must be mappings.", code="capability_configuration_invalid")
+            review["rules"] = {
+                **review_rules,
+                "environment.shell_exec": {**(shell_rule or {}), **shell_overrides},
+            }
+        permissions["review"] = review
+        return (*remaining, CapabilitySelection(capability=permission_key, configuration=permissions))
+
+    def _plugins(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        plugin_ids: tuple[str, ...],
+        plugin_catalog: HarnessPluginFactoryCatalog,
+    ) -> tuple[ResolvedPluginRecipe, ...]:
+        result: list[ResolvedPluginRecipe] = []
+        for resource_id in plugin_ids:
+            resource = source.harness_plugins[resource_id]
+            try:
+                normalized = plugin_catalog.validate_configuration(resource.plugin_key, resource.configuration)
+            except PluginError as exc:
+                raise CompositionError(
+                    "Harness Plugin configuration is invalid.", code="plugin_configuration_invalid"
+                ) from exc
+            result.append(
+                ResolvedPluginRecipe(
+                    plugin_id=resource.id,
+                    plugin_key=resource.plugin_key,
+                    configuration=dict(normalized),
+                )
+            )
+        return tuple(result)
+
+    def _environment_profile(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        profile_id: str,
+    ) -> ResolvedEnvironmentProfile:
+        built_in = built_in_environment_profile(profile_id)
+        if built_in is not None:
+            behavior = {
+                "provider_key": built_in.provider_key,
+                "provider_configuration": {},
+                "adapter_key": built_in.adapter_key,
+                "adapter_configuration": {},
+            }
+            return ResolvedEnvironmentProfile(
+                profile_id=profile_id,
+                behavior_digest=canonical_digest(behavior),
+                provider_key=built_in.provider_key,
+                provider_configuration={},
+                adapter_key=built_in.adapter_key,
+                adapter_configuration={},
+            )
+        item = source.environment_profiles[profile_id]
+        provider = self.catalog.provider_catalog((item.provider_key,)).require(item.provider_key)
+        adapter = self.catalog.environment_adapter(item.adapter_key, item.provider_key)
+        provider_configuration, adapter_configuration = adapter.validate_profile(
+            provider_configuration=item.provider_configuration,
+            adapter_configuration=item.adapter_configuration,
+            provider=provider,
+        )
+        behavior: dict[str, JsonValue] = {
+            "provider_key": item.provider_key,
+            "provider_configuration": provider_configuration,
+            "adapter_key": item.adapter_key,
+            "adapter_configuration": adapter_configuration,
+        }
+        return ResolvedEnvironmentProfile(
+            profile_id=item.id,
+            behavior_digest=canonical_digest(behavior),
+            provider_key=item.provider_key,
+            provider_configuration=provider_configuration,
+            adapter_key=item.adapter_key,
+            adapter_configuration=adapter_configuration,
+        )
+
+    def _run_extensions(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        resource_ids: tuple[str, ...],
+    ) -> tuple[tuple[ResolvedRunExtensionRecipe, ...], tuple[DependencyProvenance, ...]]:
+        resources = tuple(source.environment_run_extensions[item] for item in resource_ids)
+        catalog = self.catalog.run_extension_catalog(tuple(item.extension_key for item in resources))
+        registrations = {item.extension_key: item for item in catalog.registrations}
+        recipes: list[ResolvedRunExtensionRecipe] = []
+        dependencies: list[DependencyProvenance] = []
+        for item in resources:
+            catalog.create_extension(
+                EnvironmentRunExtensionFactoryContext(
+                    extension_key=item.extension_key,
+                    extension_id=item.id,
+                    configuration=item.configuration,
+                )
+            )
+            registration = registrations[item.extension_key]
+            recipes.append(
+                ResolvedRunExtensionRecipe(
+                    extension_id=item.id,
+                    extension_key=item.extension_key,
+                    configuration=item.configuration,
+                )
+            )
+            dependencies.append(
+                _registration_provenance(
+                    "environment_run_extension",
+                    registration,
+                    source=self.catalog.run_extension_source(item.extension_key),
+                )
+            )
+        return tuple(recipes), tuple(dependencies)
+
+    def _agent_dependencies(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        root: ResolvedAgentNode,
+    ) -> tuple[DependencyProvenance, ...]:
+        nodes = [root]
+        plugin_keys: set[str] = set()
+        capability_keys: set[str] = set()
+        while nodes:
+            node = nodes.pop()
+            plugin_keys.update(item.plugin_key for item in node.harness_plugins)
+            capability_keys.update(item.capability for item in node.capabilities)
+            nodes.extend(item.definition for item in node.children)
+        dependencies: list[DependencyProvenance] = []
+        if plugin_keys:
+            catalog = self.catalog.plugin_catalog(tuple(sorted(plugin_keys)))
+            registrations = {item.plugin_key: item for item in catalog.registrations}
+            dependencies.extend(
+                _registration_provenance(
+                    "harness_plugin",
+                    registrations[key],
+                    source=self.catalog.plugin_source(key),
+                )
+                for key in sorted(plugin_keys)
+            )
+        for key in sorted(capability_keys):
+            selected = self.catalog.capabilities(((key, self._capability_configuration(root, key)),))[0]
+            reference = selected.implementation
+            dependencies.append(
+                DependencyProvenance(
+                    kind="capability",
+                    key=key,
+                    source=reference.source,
+                    class_module=reference.implementation_type.__module__,
+                    class_qualname=reference.implementation_type.__qualname__,
+                    import_target=reference.import_target,
+                    distribution_name=reference.distribution_name,
+                    distribution_version=reference.distribution_version,
+                )
+            )
+        return tuple(dependencies)
+
+    def _capability_configuration(self, root: ResolvedAgentNode, key: str) -> dict[str, JsonValue]:
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            for item in node.capabilities:
+                if item.capability == key:
+                    return item.configuration
+            stack.extend(item.definition for item in node.children)
+        raise KeyError(key)
+
+    def _environment_dependencies(
+        self,
+        source: LoadedHarnessUiConfiguration,
+        profile: ResolvedEnvironmentProfile,
+    ) -> tuple[DependencyProvenance, ...]:
+        provider = self.catalog.provider_catalog((profile.provider_key,))
+        definition = provider.require(profile.provider_key)
+        reference = self.catalog.provider_reference(profile.provider_key)
+        adapter = self.catalog.adapter_reference(profile.adapter_key)
+        return (
+            DependencyProvenance(
+                kind="environment_provider",
+                key=definition.type,
+                source=self.catalog.provider_source(profile.provider_key),
+                class_module=definition.connector_factory.__module__,
+                class_qualname=definition.connector_factory.__qualname__,
+                import_target=reference.import_target,
+                distribution_name=reference.distribution_name,
+                distribution_version=reference.distribution_version,
+            ),
+            DependencyProvenance(
+                kind="environment_adapter",
+                key=profile.adapter_key,
+                source=adapter.source,
+                class_module=adapter.implementation_type.__module__,
+                class_qualname=adapter.implementation_type.__qualname__,
+                import_target=adapter.import_target,
+                distribution_name=adapter.distribution_name,
+                distribution_version=adapter.distribution_version,
+            ),
+        )
+
+
+def _registration_provenance(
+    kind: Literal["harness_plugin", "environment_run_extension"],
+    registration: HarnessPluginFactoryRegistration | EnvironmentRunExtensionFactoryRegistration,
+    *,
+    source: Literal["installed", "host"],
+) -> DependencyProvenance:
+    if isinstance(registration, HarnessPluginFactoryRegistration):
+        key = registration.plugin_key
+    else:
+        key = registration.extension_key
+    return DependencyProvenance(
+        kind=kind,
+        key=key,
+        source=source,
+        class_module=registration.class_module,
+        class_qualname=registration.class_qualname,
+        import_target=registration.import_target,
+        distribution_name=registration.distribution_name,
+        distribution_version=registration.distribution_version,
+    )
+
+
+def _validate_auth_route(item: ModelResource) -> None:
+    prefix = item.route.split(":", 1)[0]
+    authentication = item.authentication
+    if not isinstance(authentication, ApiKeyAuthentication) and item.model_configuration:
+        raise CompositionError(
+            "Subscription connection configuration cannot be overridden.", code="model_configuration_unsupported"
+        )
+    if isinstance(authentication, ChatGPTSubscriptionAuthentication) and prefix != "openai-chatgpt":
+        raise CompositionError("ChatGPT authentication requires an openai-chatgpt route.", code="model_auth_invalid")
+    if isinstance(authentication, CodexSubscriptionAuthentication) and prefix != "openai-codex":
+        raise CompositionError(
+            "Codex subscription authentication requires an openai-codex route.", code="model_auth_invalid"
+        )
+    if isinstance(authentication, CopilotSubscriptionAuthentication) and prefix != "github-copilot":
+        raise CompositionError(
+            "Copilot subscription authentication requires a github-copilot route.", code="model_auth_invalid"
+        )
+    if isinstance(authentication, GrokSubscriptionAuthentication) and prefix not in {"grok", "grok-build"}:
+        raise CompositionError("Grok subscription authentication requires a Grok route.", code="model_auth_invalid")
+    if isinstance(authentication, ApiKeyAuthentication) and prefix in {"openai-chatgpt", "openai-codex", "grok-build"}:
+        raise CompositionError(
+            "The selected subscription route does not accept API-key authentication.", code="model_auth_invalid"
+        )
+
+
+def _consume_budget(budget: list[int], depth: int) -> None:
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _MAX_RESOLVED_DEPTH:
+        raise CompositionError("Resolved Agent graph exceeds its bounds.", code="agent_graph_too_large")
+
+
+def _require_ids(values: tuple[str, ...], resources: Mapping[str, object], label: str) -> None:
+    if len(values) != len(set(values)):
+        raise CompositionError(f"{label} selections must be unique.", code="thread_configuration_invalid")
+    for value in values:
+        if value not in resources:
+            raise CompositionError(f"The selected {label} is unavailable.", code="thread_resource_missing")
+
+
+__all__ = [
+    "IMPLICIT_NATIVE_PROFILE",
+    "PACKAGE_PROMPT_REVISION",
+    "PACKAGE_SYSTEM_PROMPT",
+    "AgentCompositionResolver",
+    "ThreadCompositionSelection",
+]

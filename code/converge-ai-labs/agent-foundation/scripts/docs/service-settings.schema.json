@@ -1,0 +1,1595 @@
+{
+  "$defs": {
+    "Authentication": {
+      "additionalProperties": false,
+      "properties": {
+        "session_seconds": {
+          "default": 43200,
+          "maximum": 604800,
+          "minimum": 60,
+          "title": "Session Seconds",
+          "type": "integer"
+        },
+        "login_limit": {
+          "default": 10,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Login Limit",
+          "type": "integer"
+        },
+        "login_window_seconds": {
+          "default": 60,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Login Window Seconds",
+          "type": "integer"
+        },
+        "invitation_seconds": {
+          "default": 604800,
+          "maximum": 2592000,
+          "minimum": 3600,
+          "title": "Invitation Seconds",
+          "type": "integer"
+        },
+        "link_seconds": {
+          "default": 3600,
+          "maximum": 86400,
+          "minimum": 300,
+          "title": "Link Seconds",
+          "type": "integer"
+        },
+        "expiry_scan_seconds": {
+          "default": 60,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Expiry Scan Seconds",
+          "type": "number"
+        },
+        "mail": {
+          "$ref": "#/$defs/Mail"
+        }
+      },
+      "title": "Authentication",
+      "type": "object"
+    },
+    "Composer": {
+      "additionalProperties": false,
+      "properties": {
+        "models": {
+          "default": [
+            "gpt-5.6-luna",
+            "claude-sonnet-5",
+            "deepseek-v4.1-flash",
+            "gemini-3.8-flash"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "array"
+        }
+      },
+      "title": "Composer",
+      "type": "object"
+    },
+    "Control": {
+      "additionalProperties": false,
+      "properties": {
+        "scan_seconds": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Scan Seconds",
+          "type": "number"
+        },
+        "sweep_batch": {
+          "default": 100,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Sweep Batch",
+          "type": "integer"
+        },
+        "inbox_count": {
+          "default": 128,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Inbox Count",
+          "type": "integer"
+        },
+        "inbox_bytes": {
+          "default": 2097152,
+          "maximum": 16777216,
+          "minimum": 1024,
+          "title": "Inbox Bytes",
+          "type": "integer"
+        },
+        "subscriptions": {
+          "default": 32,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Subscriptions",
+          "type": "integer"
+        },
+        "webhook_timeout": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Webhook Timeout",
+          "type": "number"
+        },
+        "import_timeout": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 120,
+          "title": "Import Timeout",
+          "type": "number"
+        },
+        "stream_refresh_seconds": {
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Stream Refresh Seconds",
+          "type": "number"
+        }
+      },
+      "title": "Control",
+      "type": "object"
+    },
+    "Database": {
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "default": "**********",
+          "format": "password",
+          "title": "Url",
+          "type": "string",
+          "writeOnly": true
+        },
+        "auto_migrate": {
+          "default": true,
+          "title": "Auto Migrate",
+          "type": "boolean"
+        },
+        "pool_size": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Pool Size",
+          "type": "integer"
+        },
+        "connect_timeout": {
+          "default": 5,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Connect Timeout",
+          "type": "integer"
+        },
+        "statement_timeout": {
+          "default": 10,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Statement Timeout",
+          "type": "integer"
+        },
+        "migration_advisory_lock_timeout": {
+          "default": 900,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Migration Advisory Lock Timeout",
+          "type": "integer"
+        },
+        "migration_lock_timeout": {
+          "default": 3,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Migration Lock Timeout",
+          "type": "integer"
+        },
+        "migration_statement_timeout": {
+          "default": 900,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Migration Statement Timeout",
+          "type": "integer"
+        },
+        "migration_idle_transaction_timeout": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Migration Idle Transaction Timeout",
+          "type": "integer"
+        }
+      },
+      "title": "Database",
+      "type": "object"
+    },
+    "DefaultGuides": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record"
+        }
+      },
+      "title": "DefaultGuides",
+      "type": "object"
+    },
+    "DockerProvisioning": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "pull_policy": {
+          "default": "if_missing",
+          "enum": [
+            "never",
+            "if_missing"
+          ],
+          "title": "Pull Policy",
+          "type": "string"
+        }
+      },
+      "title": "DockerProvisioning",
+      "type": "object"
+    },
+    "Encryption": {
+      "additionalProperties": false,
+      "properties": {
+        "active_key_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Key Id"
+        },
+        "keys": {
+          "additionalProperties": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "title": "Keys",
+          "type": "object"
+        },
+        "key_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key File"
+        }
+      },
+      "title": "Encryption",
+      "type": "object"
+    },
+    "Environments": {
+      "additionalProperties": false,
+      "properties": {
+        "scan_seconds": {
+          "default": 5,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Scan Seconds",
+          "type": "number"
+        },
+        "batch": {
+          "default": 16,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Batch",
+          "type": "integer"
+        },
+        "operation_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Operation Seconds",
+          "type": "number"
+        },
+        "renewal_seconds": {
+          "default": 20,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Renewal Seconds",
+          "type": "number"
+        },
+        "wait_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Wait Seconds",
+          "type": "number"
+        },
+        "managed_count": {
+          "default": 100,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Managed Count",
+          "type": "integer"
+        },
+        "docker_host": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Docker Host"
+        },
+        "docker_mount_roots": {
+          "default": [],
+          "items": {
+            "format": "path",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Docker Mount Roots",
+          "type": "array"
+        }
+      },
+      "title": "Environments",
+      "type": "object"
+    },
+    "LocalProvisioning": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Root"
+        }
+      },
+      "title": "LocalProvisioning",
+      "type": "object"
+    },
+    "LogFormat": {
+      "description": "Supported process log formats.",
+      "enum": [
+        "pretty",
+        "json"
+      ],
+      "title": "LogFormat",
+      "type": "string"
+    },
+    "Mail": {
+      "additionalProperties": false,
+      "description": "SMTP delivery of identity mail. Without a host, invitation links are returned once to the inviter and\npassword reset and email change are unavailable; no link is ever written to logs.",
+      "properties": {
+        "smtp_host": {
+          "anyOf": [
+            {
+              "maxLength": 253,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Smtp Host"
+        },
+        "smtp_port": {
+          "default": 587,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Smtp Port",
+          "type": "integer"
+        },
+        "smtp_security": {
+          "default": "starttls",
+          "enum": [
+            "starttls",
+            "tls"
+          ],
+          "title": "Smtp Security",
+          "type": "string"
+        },
+        "smtp_username": {
+          "anyOf": [
+            {
+              "maxLength": 320,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Smtp Username"
+        },
+        "smtp_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Smtp Password"
+        },
+        "sender": {
+          "anyOf": [
+            {
+              "maxLength": 320,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sender"
+        },
+        "timeout": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "title": "Mail",
+      "type": "object"
+    },
+    "McpAuth": {
+      "enum": [
+        "none",
+        "bearer",
+        "headers",
+        "oauth"
+      ],
+      "type": "string"
+    },
+    "McpServer": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2048,
+          "pattern": "^https?://\\S+$",
+          "title": "Url",
+          "type": "string"
+        },
+        "auth": {
+          "$ref": "#/$defs/McpAuth"
+        },
+        "header_names": {
+          "default": [],
+          "items": {
+            "pattern": "^[!#$%&'*+.^_`|~0-9a-z-]{1,128}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Header Names",
+          "type": "array"
+        },
+        "documentation_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Documentation Url"
+        },
+        "logo_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logo Url"
+        },
+        "requirements": {
+          "default": "",
+          "maxLength": 2048,
+          "title": "Requirements",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "description",
+        "url",
+        "auth"
+      ],
+      "title": "McpServer",
+      "type": "object"
+    },
+    "McpServers": {
+      "items": {
+        "$ref": "#/$defs/McpServer"
+      },
+      "type": "array"
+    },
+    "MemorySettings": {
+      "additionalProperties": false,
+      "description": "Memory limits. Lowering a file limit keeps existing content readable; the next write to a file enforces it.",
+      "properties": {
+        "max_file_bytes": {
+          "default": 65536,
+          "maximum": 1048576,
+          "minimum": 1024,
+          "title": "Max File Bytes",
+          "type": "integer"
+        },
+        "revisions_per_file": {
+          "default": 10,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Revisions Per File",
+          "type": "integer"
+        },
+        "max_total_bytes": {
+          "default": 33554432,
+          "maximum": 1073741824,
+          "minimum": 65536,
+          "title": "Max Total Bytes",
+          "type": "integer"
+        },
+        "mounts_per_thread": {
+          "default": 8,
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Mounts Per Thread",
+          "type": "integer"
+        },
+        "guide_bytes": {
+          "default": 4096,
+          "maximum": 65536,
+          "minimum": 256,
+          "title": "Guide Bytes",
+          "type": "integer"
+        },
+        "context_bytes": {
+          "default": 32768,
+          "maximum": 1048576,
+          "minimum": 1024,
+          "title": "Context Bytes",
+          "type": "integer"
+        },
+        "always_load_bytes": {
+          "default": 8192,
+          "maximum": 1048576,
+          "minimum": 0,
+          "title": "Always Load Bytes",
+          "type": "integer"
+        },
+        "description_chars": {
+          "default": 200,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Description Chars",
+          "type": "integer"
+        },
+        "frontmatter_bytes": {
+          "default": 2048,
+          "maximum": 16384,
+          "minimum": 128,
+          "title": "Frontmatter Bytes",
+          "type": "integer"
+        },
+        "path_bytes": {
+          "default": 256,
+          "maximum": 1024,
+          "minimum": 16,
+          "title": "Path Bytes",
+          "type": "integer"
+        },
+        "write_retries": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Write Retries",
+          "type": "integer"
+        },
+        "recall_limit": {
+          "default": 5,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Recall Limit",
+          "type": "integer"
+        },
+        "recall_bytes": {
+          "default": 8192,
+          "maximum": 65536,
+          "minimum": 512,
+          "title": "Recall Bytes",
+          "type": "integer"
+        },
+        "recall_seconds": {
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Recall Seconds",
+          "type": "number"
+        },
+        "record_chars": {
+          "default": 8000,
+          "maximum": 8000,
+          "minimum": 1,
+          "title": "Record Chars",
+          "type": "integer"
+        },
+        "default_guide": {
+          "$ref": "#/$defs/DefaultGuides"
+        }
+      },
+      "title": "MemorySettings",
+      "type": "object"
+    },
+    "Objects": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "local",
+          "enum": [
+            "local",
+            "s3"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "root": {
+          "default": "var/service/objects",
+          "format": "path",
+          "title": "Root",
+          "type": "string"
+        },
+        "bucket": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bucket"
+        },
+        "prefix": {
+          "default": "",
+          "title": "Prefix",
+          "type": "string"
+        },
+        "endpoint_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endpoint Url"
+        },
+        "path_style": {
+          "default": false,
+          "title": "Path Style",
+          "type": "boolean"
+        },
+        "addressing_style": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "path",
+                "virtual"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Addressing Style"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        },
+        "access_key_id": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Access Key Id"
+        },
+        "secret_access_key": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Secret Access Key"
+        },
+        "max_bytes": {
+          "default": 16777216,
+          "maximum": 67108864,
+          "minimum": 65536,
+          "title": "Max Bytes",
+          "type": "integer"
+        },
+        "timeout": {
+          "default": 5,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Timeout",
+          "type": "number"
+        },
+        "upload_bytes": {
+          "default": 1048576,
+          "maximum": 33554432,
+          "minimum": 1,
+          "title": "Upload Bytes",
+          "type": "integer"
+        },
+        "upload_limit": {
+          "default": 60,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Upload Limit",
+          "type": "integer"
+        },
+        "upload_window_seconds": {
+          "default": 60,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Upload Window Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "Objects",
+      "type": "object"
+    },
+    "Outbox": {
+      "additionalProperties": false,
+      "properties": {
+        "purge_interval_seconds": {
+          "default": 60,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Purge Interval Seconds",
+          "type": "number"
+        },
+        "purge_batch": {
+          "default": 1000,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Purge Batch",
+          "type": "integer"
+        },
+        "purge_budget_seconds": {
+          "default": 5,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Purge Budget Seconds",
+          "type": "number"
+        },
+        "defaults": {
+          "$ref": "#/$defs/Policy"
+        },
+        "by_kind": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Policy"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/OutboxKind"
+          },
+          "title": "By Kind",
+          "type": "object"
+        }
+      },
+      "title": "Outbox",
+      "type": "object"
+    },
+    "OutboxKind": {
+      "enum": [
+        "webhook",
+        "child_result",
+        "email",
+        "memory_purge",
+        "checkpoint_cleanup"
+      ],
+      "type": "string"
+    },
+    "Plugins": {
+      "additionalProperties": false,
+      "properties": {
+        "keys": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        }
+      },
+      "title": "Plugins",
+      "type": "object"
+    },
+    "Policy": {
+      "additionalProperties": false,
+      "description": "One kind's resolved delivery and retention limits; startup merges partial overrides.",
+      "properties": {
+        "delivered_retention_seconds": {
+          "default": 86400,
+          "maximum": 31536000,
+          "minimum": 1,
+          "title": "Delivered Retention Seconds",
+          "type": "integer"
+        },
+        "dead_retention_seconds": {
+          "default": 1209600,
+          "maximum": 31536000,
+          "minimum": 1,
+          "title": "Dead Retention Seconds",
+          "type": "integer"
+        },
+        "max_attempts": {
+          "default": 12,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "batch": {
+          "default": 32,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Batch",
+          "type": "integer"
+        },
+        "parallel": {
+          "default": 8,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Parallel",
+          "type": "integer"
+        },
+        "lease_seconds": {
+          "default": 60,
+          "maximum": 600,
+          "minimum": 10,
+          "title": "Lease Seconds",
+          "type": "number"
+        },
+        "backlog_count": {
+          "default": 10000,
+          "maximum": 1000000,
+          "minimum": 1,
+          "title": "Backlog Count",
+          "type": "integer"
+        },
+        "backlog_age_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Backlog Age Seconds",
+          "type": "number"
+        },
+        "backlog_alert_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Backlog Alert Seconds",
+          "type": "number"
+        }
+      },
+      "title": "Policy",
+      "type": "object"
+    },
+    "Providers": {
+      "additionalProperties": false,
+      "description": "Outbound network policy, call bounds and browser authorization flows for every provider and connection.",
+      "properties": {
+        "http_origins": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Http Origins",
+          "type": "array"
+        },
+        "require_https": {
+          "default": true,
+          "title": "Require Https",
+          "type": "boolean"
+        },
+        "return_urls": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Return Urls",
+          "type": "array"
+        },
+        "mcp_servers": {
+          "$ref": "#/$defs/McpServers",
+          "default": []
+        },
+        "flow_seconds": {
+          "default": 600,
+          "maximum": 1800,
+          "minimum": 30,
+          "title": "Flow Seconds",
+          "type": "integer"
+        },
+        "operation_seconds": {
+          "default": 10,
+          "maximum": 30,
+          "minimum": 2,
+          "title": "Operation Seconds",
+          "type": "number"
+        },
+        "operation_scan_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Operation Scan Seconds",
+          "type": "number"
+        },
+        "discovery_ttl": {
+          "default": 300,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Discovery Ttl",
+          "type": "integer"
+        },
+        "tool_call_seconds": {
+          "default": 60,
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "Tool Call Seconds",
+          "type": "number"
+        },
+        "model_timeout": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Model Timeout",
+          "type": "number"
+        },
+        "response_bytes": {
+          "default": 16777216,
+          "maximum": 268435456,
+          "minimum": 65536,
+          "title": "Response Bytes",
+          "type": "integer"
+        },
+        "chatgpt_client_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chatgpt Client Id"
+        },
+        "chatgpt_redirect_uri": {
+          "default": "http://127.0.0.1:1456/auth/callback",
+          "maxLength": 2048,
+          "title": "Chatgpt Redirect Uri",
+          "type": "string"
+        }
+      },
+      "title": "Providers",
+      "type": "object"
+    },
+    "Provisioning": {
+      "additionalProperties": false,
+      "properties": {
+        "local": {
+          "$ref": "#/$defs/LocalProvisioning"
+        },
+        "docker": {
+          "$ref": "#/$defs/DockerProvisioning"
+        }
+      },
+      "title": "Provisioning",
+      "type": "object"
+    },
+    "RedisSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "default": "**********",
+          "format": "password",
+          "title": "Url",
+          "type": "string",
+          "writeOnly": true
+        },
+        "timeout": {
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "title": "RedisSettings",
+      "type": "object"
+    },
+    "Server": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8000,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "public_url": {
+          "default": "http://127.0.0.1:8000",
+          "maxLength": 2048,
+          "title": "Public Url",
+          "type": "string"
+        },
+        "trusted_proxies": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Trusted Proxies",
+          "type": "array"
+        },
+        "request_bytes": {
+          "default": 2097152,
+          "maximum": 33554432,
+          "minimum": 1024,
+          "title": "Request Bytes",
+          "type": "integer"
+        },
+        "request_timeout": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Request Timeout",
+          "type": "number"
+        },
+        "readiness_timeout": {
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Readiness Timeout",
+          "type": "number"
+        },
+        "shutdown_timeout": {
+          "default": 15,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Shutdown Timeout",
+          "type": "integer"
+        },
+        "tls_certificate": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tls Certificate"
+        },
+        "tls_key": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tls Key"
+        }
+      },
+      "title": "Server",
+      "type": "object"
+    },
+    "Telemetry": {
+      "additionalProperties": false,
+      "description": "Logs, metrics, and the one trace backend Harness spans are exported to and trace queries read.",
+      "properties": {
+        "log_level": {
+          "default": "INFO",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR"
+          ],
+          "title": "Log Level",
+          "type": "string"
+        },
+        "log_format": {
+          "$ref": "#/$defs/LogFormat",
+          "default": "json"
+        },
+        "log_stdout": {
+          "default": true,
+          "title": "Log Stdout",
+          "type": "boolean"
+        },
+        "log_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log File"
+        },
+        "log_file_max_mb": {
+          "default": 100,
+          "maximum": 10240,
+          "minimum": 1,
+          "title": "Log File Max Mb",
+          "type": "integer"
+        },
+        "log_file_backups": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Log File Backups",
+          "type": "integer"
+        },
+        "metrics_port": {
+          "anyOf": [
+            {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metrics Port"
+        },
+        "trace_backend": {
+          "default": "none",
+          "enum": [
+            "none",
+            "langfuse",
+            "logfire"
+          ],
+          "title": "Trace Backend",
+          "type": "string"
+        },
+        "trace_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://[^\\s?#@]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trace Url"
+        },
+        "langfuse_public_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Langfuse Public Key"
+        },
+        "langfuse_secret_key": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Langfuse Secret Key"
+        },
+        "logfire_write_token": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logfire Write Token"
+        },
+        "logfire_read_token": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logfire Read Token"
+        },
+        "trace_content": {
+          "default": "standard",
+          "enum": [
+            "none",
+            "standard",
+            "full"
+          ],
+          "title": "Trace Content",
+          "type": "string"
+        },
+        "trace_query_timeout": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "title": "Trace Query Timeout",
+          "type": "number"
+        }
+      },
+      "title": "Telemetry",
+      "type": "object"
+    },
+    "Worker": {
+      "additionalProperties": false,
+      "properties": {
+        "slots": {
+          "default": 4,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Slots",
+          "type": "integer"
+        },
+        "max_attempts": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "lease_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 3,
+          "title": "Lease Seconds",
+          "type": "integer"
+        },
+        "scan_seconds": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Scan Seconds",
+          "type": "number"
+        },
+        "authority_seconds": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Authority Seconds",
+          "type": "number"
+        },
+        "drain_seconds": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Drain Seconds",
+          "type": "number"
+        },
+        "delivery_count": {
+          "default": 8,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Delivery Count",
+          "type": "integer"
+        },
+        "delivery_bytes": {
+          "default": 262144,
+          "maximum": 16777216,
+          "minimum": 1024,
+          "title": "Delivery Bytes",
+          "type": "integer"
+        },
+        "output_bytes": {
+          "default": 1048576,
+          "maximum": 16777216,
+          "minimum": 1024,
+          "title": "Output Bytes",
+          "type": "integer"
+        },
+        "page_items": {
+          "default": 256,
+          "maximum": 4096,
+          "minimum": 16,
+          "title": "Page Items",
+          "type": "integer"
+        },
+        "page_bytes": {
+          "default": 1048576,
+          "maximum": 16777216,
+          "minimum": 65536,
+          "title": "Page Bytes",
+          "type": "integer"
+        },
+        "content_bytes": {
+          "default": 65536,
+          "maximum": 16777216,
+          "minimum": 1024,
+          "title": "Content Bytes",
+          "type": "integer"
+        },
+        "compression_level": {
+          "default": 3,
+          "maximum": 19,
+          "minimum": 1,
+          "title": "Compression Level",
+          "type": "integer"
+        },
+        "stream_length": {
+          "default": 10000,
+          "maximum": 100000,
+          "minimum": 16,
+          "title": "Stream Length",
+          "type": "integer"
+        },
+        "stream_ttl": {
+          "default": 600,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Stream Ttl",
+          "type": "integer"
+        },
+        "stream_coalesce_seconds": {
+          "default": 0.1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Stream Coalesce Seconds",
+          "type": "number"
+        },
+        "stream_trim_seconds": {
+          "default": 10,
+          "maximum": 600,
+          "minimum": 0,
+          "title": "Stream Trim Seconds",
+          "type": "number"
+        },
+        "child_depth": {
+          "default": 4,
+          "maximum": 16,
+          "minimum": 0,
+          "title": "Child Depth",
+          "type": "integer"
+        },
+        "child_count": {
+          "default": 16,
+          "maximum": 256,
+          "minimum": 0,
+          "title": "Child Count",
+          "type": "integer"
+        }
+      },
+      "title": "Worker",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "server": {
+      "$ref": "#/$defs/Server"
+    },
+    "database": {
+      "$ref": "#/$defs/Database"
+    },
+    "objects": {
+      "$ref": "#/$defs/Objects"
+    },
+    "redis": {
+      "$ref": "#/$defs/RedisSettings"
+    },
+    "auth": {
+      "$ref": "#/$defs/Authentication"
+    },
+    "encryption": {
+      "$ref": "#/$defs/Encryption"
+    },
+    "control": {
+      "$ref": "#/$defs/Control"
+    },
+    "outbox": {
+      "$ref": "#/$defs/Outbox"
+    },
+    "worker": {
+      "$ref": "#/$defs/Worker"
+    },
+    "environments": {
+      "$ref": "#/$defs/Environments"
+    },
+    "provisioning": {
+      "$ref": "#/$defs/Provisioning"
+    },
+    "memory": {
+      "$ref": "#/$defs/MemorySettings"
+    },
+    "providers": {
+      "$ref": "#/$defs/Providers"
+    },
+    "plugins": {
+      "$ref": "#/$defs/Plugins"
+    },
+    "composer": {
+      "$ref": "#/$defs/Composer"
+    },
+    "telemetry": {
+      "$ref": "#/$defs/Telemetry"
+    },
+    "extensions": {
+      "additionalProperties": true,
+      "title": "Extensions",
+      "type": "object"
+    }
+  },
+  "title": "Settings",
+  "type": "object"
+}

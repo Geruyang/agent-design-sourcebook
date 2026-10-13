@@ -1,0 +1,23 @@
+{
+  "adv-duplicate-mechanism-reworded": {
+    "expected_gate": "novelty_human_review_or_duplicate"
+  },
+  "adv-credible-generic-source": {
+    "expected_gate": "content_reject"
+  },
+  "adv-unretrieved-cited-evidence": {
+    "expected_gate": "run_readiness_fail"
+  },
+  "adv-wrong-rubric-math": {
+    "expected_gate": "repo_validation_fail"
+  },
+  "adv-verbose-no-behavior": {
+    "expected_gate": "model_or_human_review"
+  },
+  "adv-self-approved-rubric-change": {
+    "expected_gate": "human_review_stop"
+  },
+  "adv-high-novelty-weak-evidence": {
+    "expected_gate": "human_review"
+  }
+}

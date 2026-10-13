@@ -1,0 +1,335 @@
+# Contributing
+
+Contributions to Agent Foundation are welcome: documentation fixes, reproducible bug reports, examples, tests, and focused features all help. Harness is the agent execution foundation; Harness UI is its interactive playground for individuals and trusted small teams; Service is the managed-agent runtime. Start with the component your change affects.
+
+The project uses GitHub Issues for discussion and progress tracking, and pull requests for reviewed changes. Repository-wide engineering standards live in [DEVELOPMENT.md](DEVELOPMENT.md); this guide owns setup, validation, and contribution workflow.
+
+For suspected security vulnerabilities, follow [SECURITY.md](SECURITY.md) and report privately to [support@converge.ai](mailto:support@converge.ai). Do not post vulnerability details in public issues or pull requests.
+
+## Find your path
+
+| Contribution                             | Start here                                                                                                         | Validation                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Report a bug                             | Search existing issues; include the component, version or commit, reproduction, expected result, and actual result | Remove credentials and private content from logs and diagnostic reports |
+| Improve user documentation               | Edit `docs/` and preview with `make docs-serve`; see [Documentation Changes](#documentation-changes)               | `make docs-build` and formatting for changed Markdown                   |
+| Improve Harness                          | [Harness quickstart](docs/a13n-harness/getting-started.md) and [local scenarios](dev/harness/README.md)            | Focused package tests and affected consumers                            |
+| Improve Harness UI                       | [Local UI development](dev/harness-ui/README.md); `make cli` or `make webui`                                       | Checks for the affected App, terminal, or browser behavior              |
+| Improve Service or Console               | [Local Service development](dev/service/README.md); `make dev`                                                     | Relevant Service/Console checks; migration checks when applicable       |
+| Propose a product or architecture change | An issue describing the problem and unresolved decisions                                                           | Accepted contracts and implementation stay aligned in the PR            |
+
+For a first change: fork the repository, create a focused branch, make the smallest useful change, run the relevant checks, and open a pull request explaining the outcome. A typo or clear documentation correction does not need a design proposal. You do not need the full Service stack for a documentation-only change.
+
+Read [Local setup](#local-setup) and [Local validation](#local-validation) for the toolchain and exact check-selection policy. [Documentation changes](#documentation-changes), [Writing issues and pull requests](#writing-issues-and-pull-requests), and [Releases](#releases) cover those specific workflows.
+
+## Repository Language
+
+Write repository code, specifications, and canonical documentation in English. UI translation resources and localized user documentation contain their target-language text.
+
+## Before You Start
+
+Search the existing [issues](https://github.com/converge-ai-labs/agent-foundation/issues) before opening new work.
+
+Open an issue before implementing a change with unresolved product, architecture, security, compatibility, or scope questions. Use the issue to describe the problem, constraints, alternatives, and progress. Trivial corrections may go directly to a pull request when no material discussion is needed.
+
+Do not add proposals, RFC drafts, discussion logs, or progress tracking to `spec/`. Once an issue reaches an accepted conclusion, update the specification directly in the same pull request as the implementation or as a focused specification pull request.
+
+Before changing a surface, read the relevant sections of this guide, [DEVELOPMENT.md](DEVELOPMENT.md), and the directly owning specification. Service, persistence, migration, streaming, worker, logging, and container changes require their applicable engineering rules. Reuse sections already read unless they changed.
+
+## Local Setup
+
+Install the tools needed for the surface you are changing. Documentation and Python work use Git, Python 3.13, uv, and Make. Frontend work adds Node.js and pnpm; Rust work adds the Rust toolchain; Service development and container-backed checks add Docker. `make install` prepares the full development checkout, including frontends and Git hooks.
+
+Full-checkout requirements:
+
+- Git
+- Python 3.13
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+- Make
+- Node.js 24 and pnpm (frontend workspace)
+- A stable Rust toolchain with `rustfmt` and Clippy
+- Docker when generating PostgreSQL migrations, running container-backed integration tests, or validating images
+
+Clone your fork and install the locked development environment and Git hooks:
+
+```bash
+git clone git@github.com:YOUR_NAME/agent-foundation.git
+cd agent-foundation
+make install
+```
+
+The frontend pnpm workspace lives under `frontend/`: applications in `frontend/apps/` and shared UI source in `frontend/packages/`. `frontend/package.json` pins pnpm; install that version before running `make install`. Service SDK development uses the separate repositories' own setup instructions.
+
+`make dev` runs this checkout's Service, scripted model and Console on its own PostgreSQL and Redis and prints the Console URL and local sign-in; `make dev-reset STATE=seeded` adds representative content. See [the local Service guide](dev/service/README.md) for commands, isolation, seeding and private development resources. Service does not automatically load `.env`; deployments override settings with `A13N_` sectioned variables, which local development keeps away from its Service. Local traces go to the machine-shared Langfuse (`make langfuse-up`) whenever it runs.
+
+`dev/harness/.env.example` and `dev/harness-ui/.env.example` provide separate Langfuse-first development profiles with commented Logfire alternatives. `make harness-dev`, `make cli`, `make webui`, and `make harness-ui-smoke` automatically copy a missing `.env` from its sibling `.env.example`, leaving existing private files unchanged even when templates are newer. Use `make env-init` to prepare both files without starting an application. `HARNESS_ENV` and `HARNESS_UI_ENV` select alternate files; a missing alternate file requires its own sibling `<path>.example` rather than silently falling back to the repository defaults. See the [Harness](dev/harness/README.md) and [Harness UI](dev/harness-ui/README.md) development guides. `.env.harness.example` remains optional reference material for other embedded Harness workflows. Existing examples and Service E2E targets load private environment files only at their explicit launcher boundaries.
+
+The repository selects Python 3.13 through `.python-version`. Python packages are uv workspace members under `packages/`; Rust crates under `crates/` are validated by the same top-level merge gate.
+
+For concurrent Service worktrees, the development resolver assigns stable checkout-specific loopback ports, a Console host name and isolated stores while reusing one machine-owned Langfuse stack. Use `make dev-status` to discover URLs; do not assume fixed ports. The [local Service guide](dev/service/README.md) owns lifecycle and recovery details.
+
+## Engineering Standards
+
+Apply [Code Quality and Design](DEVELOPMENT.md#code-quality-and-design) when implementing or reviewing features, bug fixes, and refactoring across repository languages and components. Read additional engineering rules for the boundaries affected by the change. For deployable services, these include:
+
+- service I/O is async-first;
+- database access uses one canonical engine/session factory and short transaction scopes;
+- database sessions never span streams, agent runs, external calls, waits, or background-task boundaries;
+- streaming FastAPI routes complete database-backed authentication and initial reads before constructing the response;
+- logging, process lifespan, role selection, image construction, and graceful shutdown use shared service infrastructure;
+- `a13n-service` uses one artifact for all-in-one, control and worker deployment roles.
+
+Keep transport handling, application orchestration, domain behavior, and infrastructure adapters separated. Update the accepted design in `spec/` when a change alters ownership, lifecycle, compatibility, security, or deployment semantics; do not use the development guide to introduce product architecture implicitly.
+
+## Compatibility Baselines
+
+Harness owns fixed compatibility inputs under `packages/a13n-harness/tests/fixtures/compatibility/`. Its existing package CI reads those committed inputs and checks their meaning, not only parsing. Host-specific configuration persistence and startup retain small consumer integration tests rather than duplicating the Harness baseline. These cases are representative regression coverage, not a guarantee for every historical dependency or package combination.
+
+Before an agent modifies, deletes, moves, or replaces an established baseline, it must obtain explicit human agreement and explain the accepted input or behavior affected. Do not regenerate fixtures, remove legacy spellings, or weaken semantic assertions just to make an implementation change pass. Prefer adding cases while retaining previous inputs. Initial baseline creation and refinement may proceed within an explicitly authorized compatibility task.
+
+PRs changing the baseline must explicitly request human compatibility review and explain the impact. The metadata-only PR workflow posts or updates a review notice when this directory changes, including renames and removals. The notice is not approval or a branch-protection gate; ordinary reviewer routing remains in `MAINTAINERS.md`. Baseline tests run in existing component CI without a separate release matrix or automatic schema-version changes.
+
+## Local Validation
+
+Use the Makefile as the stable development interface:
+
+| Command                          | Purpose                                                            |
+| -------------------------------- | ------------------------------------------------------------------ |
+| `make help`                      | List available commands                                            |
+| `make install`                   | Synchronize locked workspace and application dependencies          |
+| `make setup`                     | Prepare this checkout's stores, schema and local administrator     |
+| `make dev`                       | Prepare and start the model, Service and Console in the background |
+| `make dev-foreground`            | Run the same applications attached to this terminal                |
+| `make dev-stop`                  | Stop this checkout's running applications                          |
+| `make service-dev`               | Run only local Service and the scripted development model          |
+| `make dev-reset STATE=empty`     | Rebuild owned Service storage without example data                 |
+| `make dev-reset STATE=seeded`    | Rebuild owned Service storage with fictional resources and history |
+| `make dev-state-check`           | Check local development tools; seed a disposable instance          |
+| `make dev-status`                | Report this checkout's identity, ports and listener state as JSON  |
+| `make dev-env-list`              | List this machine's checkouts and their local instances            |
+| `make dev-down`                  | Stop this checkout's infrastructure; preserve data and Langfuse    |
+| `make env-init`                  | Initialize missing Harness development `.env` files                |
+| `make cli`                       | Run Harness UI with Git-ignored config/data in `var/harness-ui/`   |
+| `make webui`                     | Build browser assets and start WebUI with a generated login link   |
+| `make cli-landing`               | Try CLI first-run setup in temporary state, deleted on exit        |
+| `make webui-landing`             | Try WebUI first-run setup in temporary state; Ctrl+C cleans up     |
+| `make harness-dev`               | Run SDK observation scenarios with `dev/harness/.env`              |
+| `make harness-ui-smoke`          | Run a scripted real-App observation smoke test                     |
+| `make langfuse-up`               | Start the machine-shared local Langfuse trace backend              |
+| `make langfuse-down`             | Stop shared Langfuse while preserving all local trace data         |
+| `make langfuse-reset`            | Explicitly remove all machine-shared local Langfuse data           |
+| `make format`                    | Apply repository formatting hooks                                  |
+| `make lint`                      | Run non-mutating repository lint checks                            |
+| `make deps-check`                | Check each Python package's dependency declarations with deptry    |
+| `make typecheck`                 | Type-check Python package sources with Pyright                     |
+| `make docs-serve`                | Serve the documentation site at `/docs` with live reload           |
+| `make docs-build`                | Test localization, build the documentation site, and check links   |
+| `make site-serve`                | Serve the landing page with live reload                            |
+| `make site-build`                | Build the landing page with the documentation under `/docs`        |
+| `make service-e2e`               | Run Service end-to-end scenarios with disposable stores (Docker)   |
+| `make service-e2e-check`         | Check E2E code, fixtures and selection without Docker              |
+| `make service-e2e-docker`        | Build and test the native Docker environment provider              |
+| `make console-review`            | Launch a disposable Service and Console for manual browser review  |
+| `make test`                      | Run Python workspace tests                                         |
+| `make verify`                    | Run only the checks and tests that local changes can affect        |
+| `make examples-check`            | Lint and type-check the independent examples                       |
+| `make examples-check-all`        | Build and run the complete independent examples gate               |
+| `make eip-check`                 | Verify generated EIP artifacts and shared Python/Rust wire models  |
+| `make service-contract-generate` | Export the Service contract and regenerate Console types           |
+| `make service-contract-check`    | Check Service exports and Console type drift without changes       |
+| `make rust-check`                | Format-check and lint the root Rust workspace                      |
+| `make frontend-sync`             | Install the locked frontend workspace dependencies                 |
+| `make frontend-check`            | Check frontend formatting, types, and generated contracts          |
+| `make frontend-test`             | Run frontend unit and interaction tests                            |
+| `make frontend-check-all`        | Check, test, and build all frontend applications                   |
+| `make build`                     | Build all workspace packages and applications                      |
+| `make images`                    | Build the a13n-service and sandbox images                          |
+| `make image-check`               | Build and smoke-check both container images                        |
+| `make check`                     | Apply formatting, then run fast checks with four parallel workers  |
+| `make check-all`                 | Run the complete component gates, including tests and builds       |
+
+This section owns validation policy; agent guides and skills refer here rather than adding separate gates. Select local checks by the behavior changed and its dependency impact. Start with the smallest checks that cover that impact, include consumers of changed shared behavior or contracts, and stop when those risks are covered. Full application suites, builds, and container checks need a corresponding runtime, packaging, or deployment risk. Ordinary implementation and PR handoff do not require running every gate locally; CI retains the complete applicable suites.
+
+`make verify` assists selection: it lints changed files, selects Python tests through impact maps or imports, and selects frontend tests through Vitest's import graph and declared file dependencies. Inspect `make verify VERIFY_ARGS=--dry-run` before executing a broad plan. Focused Make targets or explicit test files are equally valid when the required scope is already known. `VERIFY_ARGS=--consumers` includes affected downstream Python tests; use it when the shared behavior warrants consumer checks. `VERIFY_ARGS=--base origin/main` selects the whole branch; the default starts there and, after a passing run, selects changes since that run. Without prior results, cover the complete intended change. Merge and rebase updates must account for incoming changes and interactions, not only textual conflicts.
+
+Manifest metadata and static-tool settings do not select application tests. Lockfile selection follows resolved dependency consumers; shared environment changes and unknown lock structure conservatively widen the scope. Independent Vite build configuration selects declared build fixtures, or a project build when none exists, while shared Vitest configuration selects its project suite. Package documentation and license text do not select runtime tests unless a test declares them as inputs. Unknown runtime resources and unmapped Python modules still fall back to the owning suite, with a reason in the plan: missing dependency evidence is not proof of no impact.
+
+Python test selection uses a recorded impact map when available and the import graph otherwise. `make impact-record` explicitly runs package suites under coverage and stores per-test function mappings in the machine cache (`~/.cache/a13n/impact/`), shared across worktrees. Recording is optional maintenance, not a prerequisite for a small change. Selection compares changed functions with the nearest recorded commit; module-level and class-body edits include tests touching that file. A large affected set stays a selected set rather than expanding by test-count threshold. `make impact-status` reports map age, and the import graph covers unmeasured sources. Migration revisions declare their database migration checks; changed models and callers additionally select their own tests. CI and `make test` still run every applicable suite.
+
+Changed Python test files run in full so new, renamed, and reparametrized tests are included; a test file changed since its map was recorded also runs in full instead of its recorded node IDs. Deleted Python sources select their recorded dependents, or the owning package suite when no map covers the source; renamed files retain the old path for dependency selection. Deleted frontend files select their project, including application consumers for shared frontend packages. Missing files are excluded from formatting and type-check commands.
+
+Tooling changes use the Python import graph, including script-local imports, plus explicit file and command dependencies in `scripts/verify_dependencies.py`. Declared inputs may also name package or frontend tests. A changed test selects itself and its importers; ordinary tooling Markdown does not select Python tests unless explicitly declared as a test input. Add a dependency entry when a tooling test reads a file, dynamically loads a script, or launches a subprocess instead of importing the implementation. Declarations are additive, including transitive callers of Python entry points. Unknown tools and deleted Python sources conservatively select `scripts/tests`; shared `conftest.py` changes select their existing subtree. The plan explains dependency selections and fallbacks. Workflow changes also select their declared tests and run actionlint using Automation CI's version and options; deleting a workflow or changing actionlint configuration validates the remaining workflows. CI keeps its full applicable suites rather than using this local selection.
+
+The Service contract pre-commit hook runs `make service-contract-generate` on relevant source changes and leaves exports and Console types unstaged for review. Commit `proto/a13n-service/` and the Console generated types together. `make service-contract-check` verifies drift without modifying files. Service CI checks the exports; Console CI checks its generated client. See [Service contract exports](proto/a13n-service/README.md) for owned inputs and downstream notifications.
+
+For frontend test design and simplification, follow [Frontend Tests](DEVELOPMENT.md#frontend-tests).
+
+Start with the fastest relevant Make targets and add meaningful tests for behavior changes. Run affected tests within each component and include the relevant consumer tests when a shared contract changes. A change spanning several components requires the relevant checks within each component. Use `make check` for repository-wide static validation; it does not run tests or application builds. Use `make check-all` to reproduce the complete repository gate, or when validation/build changes affect all components. Ordinary implementation and commit/PR handoff do not require a local full-repository run; CI retains the complete applicable component gates. Complete applicable [migration checks](#database-changes), [image checks](DEVELOPMENT.md#container-image), and `make docs-build` for changes to `docs/` or the documentation site. Instruction-only changes need formatting, link checks, and structural validation of changed skills; they do not require unrelated application suites.
+
+Reuse successful results whose relevant source, dependency, configuration, and environment inputs remain unchanged. `make verify` saves each successful check even when another fails; Python selections run separately by package so one package failure does not discard another's result. Reuse checks the command, tracked inputs, transitive workspace dependencies, and local tool environment. Cache scopes are conservative and may rerun a check after another change within its owning package. Verification runs in the same worktree share an OS-backed lock at `git rev-parse --git-path a13n-verify.lock`, held before snapshot/cache reads through the final result write, including `--full`, explicit paths, and `--no-cache`. A competing run waits, then reads the completed run's records. Other worktrees and test workers within a run remain independent. The OS releases the lock when its owner exits; read-only `--dry-run` does not wait. This lock does not impose a machine-wide CPU or memory limit. Use `VERIFY_ARGS=--no-cache` after changing external services or ignored runtime inputs, or to force a fresh branch validation; `--full` always runs its gates afresh. A commit or PR update alone does not invalidate them. After a fix, rerun affected checks; expand only for new changes, failures, or unresolved risk. Do not repeat covered checks merely to run both `make check` and `make check-all`. Report exact commands and outcomes, including failures and unavailable checks; a partial gate is not a passing full gate. Required CI checks remain unchanged.
+
+Use `make format` for formatting alone; `make check` applies the same formatters before its fast checks, while `make check-all` does not apply them. Installed pre-commit hooks format supported changed files automatically. Review formatter edits and, if a commit hook rewrites a file, stage the intended result before committing again. Never bypass hooks.
+
+The Markdown hook runs `uv run --locked mdformat`, sharing the repository's Python environment and locked formatter plugins with direct Make checks. Keep `uv` on PATH; activating `.venv` or wrapping `git commit` in `uv run` is unnecessary. Formatter dependencies belong in `pyproject.toml` and `uv.lock`, not a separate hook environment. The shared `.mdformat.toml` exclusion requires Python 3.13 or newer.
+
+`a13n-service` integration tests use fixture-owned Testcontainers. Application `A13N_*` variables never select test infrastructure. Loopback SSE and fixture-owned S3 clients bypass ambient proxies.
+
+Testcontainers is pinned to 4.13.1 because 4.15.0 can read Ryuk port mappings before Docker publishes them; upgrades must verify mapped-port startup with Ryuk enabled. Unreturned SQL connections, unhandled thread exceptions, and unraisable exceptions fail the test gate.
+
+a13n Service CI runs service tests with three workers on a standard GitHub-hosted runner, with logging tests, type checks, and builds in a separate standard-runner job. The `a13n Service Python` check requires both jobs to pass. See [the workflow](.github/workflows/ci-a13n-service.yml) for worker counts, timing output, and timeout settings. Local `make test` uses seven workers for a13n Service and sizes the other Python suites to the machine's CPU count; a selection starts at most one worker per selected test file, a single file runs without xdist workers, and `make verify` runs a selection whose recorded impact-map time is under ten seconds without workers; whole-workspace runs are serialized per machine so concurrent checkouts do not starve each other. Tests are grouped by file unless explicitly marked with `xdist_group`; each worker owns its containers. PostgreSQL fixtures give each test an independent database cloned from a template built from the ORM metadata plus its table rules; `test_migrations.py` upgrades an empty database through the generated revisions and checks that they build the same schema and rules. The `service`, `serve`, and `executing` fixtures reuse a copy of the fixed OSS OpenAPI contract per application within each worker, while keeping applications, MCP tools, runtimes, and stores independent. Extended Distributions and direct `build_app` calls compile their own contracts; contract tests retain the production generation path.
+
+UI Tests runs the Linux suite with three file-grouped workers on a standard GitHub-hosted runner on pull requests and `main`; local UI tests size their workers to the machine. Independent PTY scenarios use separate `xdist_group` marks because each owns its process and temporary home. A path-classification job selects Python tests, Console/shared frontend checks, and WebUI distribution verification, which then run in parallel. Console-only changes do not run UI Python or WebUI packaging checks; WebUI-only changes retain generated-contract, formatting, and distribution verification without the Python/native suites. Package test-only changes do not rebuild frontend assets. Shared frontend and Python runtime/dependency changes retain their affected consumers. The `UI (Linux)` check requires classification and every selected job to succeed; only unselected jobs may be skipped. Distribution tooling tests run with packaging, outside the application test path. There is no dedicated browser integration workflow or Python WebUI startup/HTTP test suite. The browser application remains build input for distribution verification; that job also runs its TypeScript, generated-contract and Vitest/jsdom checks, including isolated App HTTP/WebSocket/SSE protocol tests. Distribution uses a standard GitHub-hosted runner with two Vitest workers, leaving capacity for isolated Python App fixtures; local WebUI runs use four workers. Its test-only dependency optimizer prebundles external UI module graphs without disabling per-file isolation, and separate check/test/build steps expose their timings. These tests do not depend on a real browser, Playwright, or paid models. Pull requests selecting Python inputs run a focused Windows native integration suite; the full Windows UI suite runs weekly and through `workflow_dispatch`, not on every merge. Manual runs also retain the Linux gate. The [workflow](.github/workflows/ci-a13n-harness-ui.yml) owns the native test selection and schedule. Windows smoke coverage does not replace full platform coverage: less common storage, plugin, and interaction regressions may only be detected by the full Windows run.
+
+a13n-envd CI runs protocol verification and the native daemon platform matrix in parallel after path classification. The `a13n-envd checks` job requires every selected protocol, client, and daemon check to succeed; unselected checks may be skipped.
+
+Service E2E CI builds the native Docker execution image and runs every Service E2E scenario with `--require-all`, so a journey whose dependency is missing fails instead of skipping; it then reports the collected, executed and skipped journeys. Ordinary journeys share Control and two Workers through the installed CLI against disposable PostgreSQL, Redis and object stores, with a fresh Workspace per journey; process-fault journeys own a dedicated Service stack. Run `make service-e2e` locally with Docker, `make service-e2e-docker` for the native Docker environment journey, and `make service-e2e-check` to check fixtures, configuration and journey selection without Docker. The `Service E2E` aggregate check requires both support checks and scenarios to succeed. These opt-in tests stay outside `make test`; manual browser checks use `make console-review` and the [Console review guide](dev/service/console-review.md). The [Service E2E guide](e2e/service/README.md) owns the journeys and their dependencies.
+
+Select directories, files, or pytest node IDs with `PYTHON_TEST_DIRS`. Paths in the same package run in one pytest process; packages run separately in first-selected order, stopping on failure. Without a selection, all workspace suites run. Use `PYTHON_TEST_WORKERS` to override concurrency, including `0` for a small serial reproduction:
+
+```bash
+make test PYTHON_TEST_DIRS='packages/a13n-service/tests/test_secrets.py packages/a13n-service/tests/test_uploads_assets.py' PYTHON_TEST_WORKERS=2
+```
+
+For frontend work, `check` performs static checks, `test` runs tests, and `build` produces assets. `test` runs one project at a time so each project's Vitest workers have the machine to themselves. Run the complete frontend gate once when all three are needed; builds do not repeat type checking. Use the existing package filter and test-file arguments for focused validation:
+
+```bash
+pnpm --dir frontend --filter a13n-console run check
+pnpm --dir frontend --filter a13n-console test src/features/skills/import.test.tsx
+```
+
+## PR Change Overview
+
+The [PR Change Overview workflow](.github/workflows/pr-change-breakdown.yml) maintains one `github-actions[bot]` comment on each PR, including drafts. It refreshes on opening, pushes, reopening, readiness, and base-branch edits without changing the PR body or adding a merge gate. The comment identifies the head and base commits, summarizes file counts and textual additions/deletions by purpose, highlights Core libraries & services in a native GitHub alert, separates UI & presentation, and provides colored category markers, component totals, and collapsible file tables with diff links. The focus alert shows each code area’s share of textual changes; percentages are omitted when the entire diff has no textual delta.
+
+[Classification rules](.github/scripts/pr-change-rules.cjs) own ordered path matching and component ownership. Core libraries & services covers runtime libraries and services, including Harness UI application/server logic. UI & presentation covers browser sources and the Python terminal adapter (`interactive/`, `terminal.py`, `terminal_projection.py`, and `display_history.py`), independent of programming language. Tests, generated files, documentation, and tooling retain their own categories. Each file belongs to exactly one category; specific rules precede source-directory fallbacks, and unmatched paths remain visible as Unclassified. Generated EIP paths reuse the existing generator manifest. Update these rules when introducing a new repository surface. Classification uses the trusted base revision, so rule changes take effect after merging. The workflow never executes PR head code or requires a model key or third-party bot.
+
+Statistics cover the current PR diff, not accumulated commits. Renames count once under their new path, removals retain their old path, and inline tests remain classified with their source file. GitHub line counts describe textual changes, not review risk; binary changes and pure renames may report no textual delta. If the files API returns fewer files than the PR reports (including its 3,000-file limit), the comment explicitly marks all statistics as incomplete. Long file and component lists are shortened to fit the comment while preserving statistics for every returned file. Reports collected across a concurrent head/base change are discarded; the next PR event refreshes the comment.
+
+## PR Labels
+
+The labeling job in the [PR Labels workflow](.github/workflows/pr-labels.yml) adds changelog labels when a PR is opened or marked ready for review. That job does not run on each push or label edit; the independent compatibility-review notice also refreshes on pushes and reopening. Draft PRs skip code CI; marking a PR ready starts the applicable path-filtered checks, and later code pushes rerun them. Labels do not gate CI. Open work in progress as a draft to avoid spending CI time before review. Write the usual Conventional Commit title; no manual label step or extra merge gate is required:
+
+| Title type                                          | Label           |
+| --------------------------------------------------- | --------------- |
+| `feat`, `perf`                                      | `enhancement`   |
+| `fix`, `revert`                                     | `bug`           |
+| `docs`                                              | `documentation` |
+| `chore`, `refactor`, `test`, `ci`, `build`, `style` | `chore`         |
+
+A `!` in the title or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer adds `breaking-change`. Describe the impact and migration in the PR body. Existing type labels are preserved, and unknown title types produce only a notice. Later title edits do not relabel the PR; adjust labels directly when needed. Use `enhancement` or `bug` for user-visible changes rather than leaving them as `chore`. Labels are classification hints, not a guarantee that compatibility has been reviewed.
+
+Release notes group relevant PRs using these labels. `chore` and the optional `skip-changelog` label omit routine entries, unless `breaking-change` is also present. Mixed-category PRs use the first matching category in this order: breaking changes, features, bug fixes, documentation. PRs without category labels and direct commits fall back to their Conventional Commit titles; no backfill is required. The automatic workflow edits only PR metadata and never checks out or executes PR code.
+
+## Releases
+
+Create a stable release with canonical version `X.Y.Z` or a release candidate with `X.Y.Z-rc.N`, where `N` is a positive integer without leading zeroes. The release tag must point to a commit whose required CI checks have passed. Keep source project versions at `0.0.0` and workspace dependencies unversioned. Do not commit release-only version bumps: each release workflow injects the tag version and owning `[tool.a13n.release-dependencies]` requirements into its known manifests and lock files in the ephemeral checkout, validates the resulting source, and then builds and publishes it. Release workflows do not repeat the full CI test or lint suites. Harness and Harness UI release workflows only prepare versions, build distributions, publish them, and create GitHub Releases; they do not run artifact checks, dependency compatibility matrices, or application/native-runtime smoke checks. Their validation belongs to local development and CI. The canonical cross-ecosystem RC identity is `X.Y.Z-rc.N`; Python package metadata and artifact names use its standard PEP 440 normalization, `X.Y.ZrcN`.
+
+Release workflows reuse the existing GitHub Environments and their secrets; environment names are infrastructure identifiers, not package names. Keep these environment names when renaming components, and update their deployment tag policies to match the owning workflow's canonical release tag pattern instead of creating replacement environments. Preserve other environment protection settings.
+
+GitHub Release creation is retry-safe: when the canonical tag already has a Release, the shared creation script succeeds without changing its notes or assets or comparing them with a rebuild. Lookup failures other than a missing Release remain errors. Read-only notes previews still render even when a Release exists.
+
+When bootstrapping an empty registry namespace, publish dependency owners before their consumers:
+
+1. publish the a13n-envd release so `a13n-envd` and `a13n-envd-client` exist;
+2. publish the independent a13n Logging release so `a13n-logging` exists; this can run independently or in parallel with the a13n-envd release;
+3. publish the Harness release group after compatible `a13n-envd-client` and `a13n-logging` releases are available;
+4. publish Harness UI after compatible releases of its dependencies are available from PyPI;
+5. publish a13n Service after its compatible library dependencies, including `a13n-logging`, are available.
+
+Harness releases use `release/a13n-harness-v<version>`. The workflow assigns exactly the same version to `a13n-harness` and `a13n-stream-protocol`, pins the published Protocol dependency to that exact Harness version, builds both wheels and source distributions, publishes them through the `harness-pypi` environment, and attaches all four artifacts to one GitHub Release.
+
+Cross-group dependencies use the consuming manifest's `[tool.a13n.release-dependencies]` mapping, following the [dependency compatibility lines](spec/repository-model.md#dependency-compatibility-lines). Review these bounds when consuming newer APIs or crossing a breaking compatibility line; do not bump them for every dependency patch. Keep the UI Harness-group requirements identical. Release preparation preserves exact same-version dependencies within the Harness group.
+
+Harness UI releases use `release/a13n-harness-ui-v<version>`. The UI version advances independently. The workflow injects its bounded dependency requirements, builds the private WebUI into the sdist and wheel alongside the Python CLI and reusable App, publishes through `agent-ui-pypi`, and attaches the two artifacts to one GitHub Release. The GitHub Release follows Python publication; no Harness UI image is built or published. The private frontend has no independent npm publication.
+
+Local EIP derives its canonical native version from installed `a13n-envd-client` metadata, not a packaged version file or a latest-release lookup. Automatic acquisition requires public access to the co-versioned daemon's archives; a private repository does not provide anonymous download access. This runtime prerequisite does not gate publication. Source client version `0.0.0`, missing metadata, or invalid metadata blocks only managed acquisition; source development can use an explicit validated executable override. Full Control does not require managed acquisition.
+
+a13n Logging releases use `release/a13n-logging-v<version>` and advance independently of Service, Harness, and Harness UI. The workflow versions only `a13n-logging` and its root lock entry, builds its wheel and source distribution, publishes through the existing `foundation-pypi` environment using `PYPI_TOKEN`, and attaches both artifacts to one GitHub Release. The environment's deployment tag policy must allow `release/a13n-logging-v*` alongside `release/a13n-service-v*`; the token must permit publishing `a13n-logging`. No new environment is required.
+
+a13n Service releases use `release/a13n-service-v<version>`. The workflow versions the repository root and `a13n-service`; it publishes only the `a13n-service` Python distribution through the `foundation-pypi` environment, the a13n-service image for `linux/amd64` and `linux/arm64`, and the Helm Chart at the same version as `oci://ghcr.io/converge-ai-labs/charts/a13n-service`, and attaches the Compose files `a13n-service.yaml` and `a13n-service-quickstart.yaml`, with their images pinned to the release, to the GitHub Release. Service does not publish an execution image. Its reviewed sandbox pin must already exist in GHCR; the release workflow checks availability before publication. Publish Envd `0.1.3` (which owns the unified sandbox) and Harness `0.8.1` (which honors its execution-user label) before releasing consumers of these new defaults. It excludes and does not republish `a13n-logging`, Harness, or Harness UI, and selects compatible published Harness libraries through its own dependency management.
+
+a13n-envd releases use `release/a13n-envd-v<version>`. The workflow versions the Cargo workspace, `a13n-envd-client`, and their lock files with one canonical release identity. It builds the Python wheel and source distribution concurrently with Linux GNU and macOS tar archives plus Windows x64 and ARM64 ZIP archives. After every distribution and the crate package validate, the workflow creates the GitHub Release with the Python distributions, native archives, and `SHA256SUMS`, before publishing `a13n-envd-client` to PyPI with `PYPI_TOKEN` from the `agent-envd-client-pypi` environment. Crate publication uses `CARGO_REGISTRY_TOKEN` from `agent-envd-crates-io` and is independent of client publication. The standard and slim sandbox variants publish only after both registry jobs succeed. Both reuse the same daemon artifacts; `SANDBOX_VARIANT` selects `standard` (the default) or `slim` in the shared Dockerfile. Its Debian 13 (Trixie) runtime copies the two Linux binaries from the same workflow's `build-binaries` artifacts instead of recompiling Rust under QEMU; the Ubuntu 24.04 native/cross-compilation baseline is unchanged. The image job extracts each archive into `tmp/sandbox-binaries/{amd64,arm64}/a13n-envd` and selects `ENVD_BINARY_SOURCE=prebuilt`. Each target image executes the daemon's version check before publication. Local image builds default to `ENVD_BINARY_SOURCE=source`, compiling the current checkout with the Trixie Rust builder and sharing the release runtime stages. Development publication also selects `ENVD_BINARY_SOURCE=prebuilt`: it builds the same checkout on native `ubuntu-24.04` (AMD64) and `ubuntu-24.04-arm` (ARM64) runners with per-target Cargo caches, then downloads both same-run binaries into the image job. QEMU is used only for image packaging, not Rust compilation. Release retries use the published version to skip existing releases; they do not compare rebuilt native or crate bytes. Standalone installers own archive SHA verification using the published `SHA256SUMS` file. A visible GitHub Release proves native assets are available, not that registry or image publication completed. Successful completion of the overall workflow is the all-channel completion signal. Linux binaries target the current GitHub-hosted Ubuntu/glibc baseline; use the sandbox image for `linux/amd64` and `linux/arm64` when a fixed userspace is required.
+
+Service SDKs release from the independent `converge-ai-labs/a13n-sdk-{python,go,rust,typescript}` repositories, and the remote CLI from the Rust SDK repository, not from tags in this repository. Follow the owning repository's contributor and release guides.
+
+An RC publishes the same registry and downloadable artifact set as its corresponding stable channel and creates a GitHub prerelease. A stable release creates a normal GitHub Release. Pushing the component tag also generates its changelog automatically from Git history: only commits affecting that component's paths are included, with one entry per first-parent merge or direct commit. [PR labels](#pr-labels) determine categories and exclusions, with a Conventional Commit fallback for unlabelled PRs and direct commits. Comparison bases come from the same channel and must be ancestors of the release tag: an RC uses an earlier RC for the same target, otherwise the preceding stable release; a stable release uses the preceding stable release. The Full Changelog link is explicitly a repository-wide comparison. Optional reviewed notes at `.github/release-notes/<component>/<version>.md` add highlights or upgrade instructions, without introducing a required release step. See [the release-notes guide](.github/release-notes/README.md) for scope details and read-only preview.
+
+A push to `main` that changes a development image input builds and publishes only the affected images through [Development Images](.github/workflows/images.yml). Service and standard sandbox use mutable `dev` tags; slim sandbox uses `dev-slim`, without per-build `sha-*` tags. Manual development-image publication is restricted to `main`. The OCI revision label retains the source commit; use an image digest when an exact deployment reference is needed. Development publication does not repeat image smoke tests. Overwriting `dev` does not guarantee removal of older GHCR package versions; no automatic registry deletion or retention job is configured. An RC image publishes only its exact `X.Y.Z-rc.N` tag (plus `-slim` for slim sandbox) and never modifies stable selectors. A stable Service or standard sandbox image publishes its exact `X.Y.Z` tag and advances `latest`; slim sandbox publishes `X.Y.Z-slim` and advances `slim`. Development image jobs modify neither stable selector. Release image builds check `BUILD_VERSION` against the installed Python distribution or compiled daemon version, not only OCI labels. Service and Harness UI read their actual installed Python metadata at runtime; Service's optional deployment/Worker build label does not replace its OpenAPI or CLI package version. The sandbox daemon embeds Cargo's package version. Replace each placeholder registry secret in its scoped GitHub Environment before the corresponding release.
+
+## Database Changes
+
+Database changes follow the migration contract in [DEVELOPMENT.md](DEVELOPMENT.md#migrations).
+
+Do not create Alembic revision files manually or autogenerate against an existing developer or shared database. Generate every `a13n-service` revision through the stable repository target:
+
+```bash
+make db-migrate msg="describe the schema change"
+```
+
+The target starts the local PostgreSQL service when needed, rebuilds schema history in a disposable database, autogenerates and formats the revision, and removes the temporary database. Review the generated migration rather than treating a clean model diff as proof of safety. A new table belongs in its package's `tables.py`, declares its trigger rules there and is registered in the distribution's `tables` ([Service layout](spec/a13n-service/02-layout.md)); the migration environment renders those rules into the revision.
+
+A schema-change pull request must explain lock duration, scans or rewrites, rolling old/new compatibility, index strategy, bounded backfill, interruption and rerun behavior, and rollback or forward repair. Prefer additive expand-and-contract changes. The shared image auto-migrates `all` and `control` replicas under advisory locking; deployments with a dedicated migration job disable replica auto migration. Worker-only processes never migrate.
+
+Run migration graph, clean-upgrade, schema-parity, and relevant PostgreSQL lock/concurrency tests. Record any required timeout override and its rationale in the pull request.
+
+## Documentation Changes
+
+- Keep each continuous Markdown paragraph on one source line; preserve semantic line breaks, separate list items, tables, and code blocks. The shared `.mdformat.toml` rule applies through the existing formatting hooks and `make lint`.
+- Keep user-facing documentation in `docs/`.
+- Lead with Agent Foundation's own product boundaries: Harness is the foundation; Harness UI is the playground and interactive workbench; Service operates managed agents. Describe user outcomes before implementation details.
+- Write precisely, borrowing from ASD-STE100: one term for one meaning, as the owning glossary or specification defines it; one fact or instruction per short sentence; numbered imperative steps for procedures; a named referent instead of an ambiguous "it" or "this".
+- Name components as their page titles do: Harness, Harness UI, Service, Console, Stream Protocol, Envd, and WebUI; write `a13n-*` names only as package or binary names in code. Service and overview pages write concept nouns in lowercase (agent, thread, run); Harness and Harness UI pages capitalize defined resources (Agent, Thread, Run, Model, Project). On Service pages a bare "session" is the Service session; elsewhere "Session" is an Envd Session; qualify any other kind. "assistant" names only the model-message role; the actor is the agent.
+- Keep third-party framework branding out of product introductions and feature pitches. Retain exact imports, configuration keys, protocol names, integration names, and attribution where needed for accurate technical instructions and licensing; do not invent replacement APIs to hide a dependency.
+- Keep README, component entry pages, and package descriptions consistent with implemented capabilities. Distinguish Harness UI's trusted shared instance from Service's managed identities, permissions, and durable execution.
+- `docs/` holds Markdown pages and navigation JSON only. English files keep their existing names; Simplified Chinese pages and navigation use `.zh-CN.md`, `.zh-CN.mdx`, and `meta.zh-CN.json`. Each language's navigation orders its pages using the same logical slugs; list every new, moved, or removed page there.
+- Start every page with `title` and `description` front matter, plus `sidebarTitle` when the navigation needs a shorter label. The site renders the title, so the body does not repeat it as a `#` heading.
+- Write plain Markdown that also reads well on GitHub and in the bundled Harness UI configuration Skill. The site enhances a few portable forms: GitHub alerts such as `> [!NOTE]` become callouts, a fence `title="app.py"` labels a code block, consecutive fences with `tab="Python"` become tabs, and `mermaid` fences render diagrams.
+- Keep diagram labels short and prefer top-down layouts that fit the reading column. A diagram may mark node categories with `class Node <category>` using `a13n`, `app`, `store`, `ext`, `success`, `warning`, or `danger` ([Documentation Pages](spec/frontend/design-system.md#documentation-pages)); sequence diagrams write the line as a comment, `%% class Participant <category>`. A diagram must read correctly without categories, as on GitHub. Translated diagrams keep the same node IDs and classes.
+- Translate user-facing prose into natural technical Chinese, preserving meaning, prerequisites, and limitations. Keep product names, identifiers, commands, and terms such as agent and skill where appropriate. Synchronize affected translations when canonical prose changes.
+- Link other pages by relative English file path, such as `models.md#credentials`. The site resolves the target in the current language and keeps the canonical English heading IDs in translated pages. Preserve heading count, order, and depth in translations. The site build fails on any broken internal link or anchor.
+- Use `.mdx` only for composed pages such as the site home page. Pages under `docs/a13n-harness-ui/` stay `.md` because the Skill bundles them verbatim.
+- `frontend/apps/a13n-docs` owns the documentation site: layout, theme, and Service API reference pages generated from `proto/a13n-service/openapi.json`. English pages use unprefixed paths under `/docs/`; Simplified Chinese human pages use `/docs/zh-CN/`. It also publishes `/docs/sitemap.xml` with every page in both languages, and English-only `llms.txt`, `llms-full.txt`, and Markdown under `/docs/md/`; the bundled Harness UI configuration Skill stays English. Machine-readable OpenAPI and Schema downloads remain unchanged.
+- Changes to Service OpenAPI summaries or descriptions also require updating `frontend/apps/a13n-docs/lib/locales/openapi.zh-CN.json`, including summaries generated from route function names. See [Service contract exports](proto/a13n-service/README.md).
+- Run `make docs-build` after documentation or site changes. It runs localization tests before building, then checks exported pages and links; missing API translations fail before the build.
+- The canonical documentation site is [a13n.converge.ai/docs](https://a13n.converge.ai/docs/). The landing page in `frontend/apps/a13n-site` owns the site root.
+- The `Site` GitHub Actions workflow builds both applications, publishes build artifacts for pull requests, and deploys `main` to the `a13n-site` Cloudflare Pages project.
+
+## Specification Changes
+
+- Keep accepted product and architecture design in `spec/`.
+- State the resulting design directly and consistently.
+- Keep alternatives under debate, open questions, meeting notes, progress, and issue history in GitHub Issues.
+- Link the issue that established the motivation and agreement from the pull request rather than copying its discussion into the specification.
+
+See [spec/repository-model.md](spec/repository-model.md) for the normative repository boundaries.
+
+## Writing Issues and Pull Requests
+
+Agents must follow the writing guidance in this section when drafting or updating Issue and PR bodies. Human contributors may adapt it at their discretion; this section adds no mandatory writing format for humans. Existing contribution and validation requirements still apply.
+
+Start the main description with a concise explanation that a reader unfamiliar with the discussion can understand: the triggering scenario, the problem and its impact, and the desired or resulting behavior. Use the existing Issue problem field or PR Summary rather than adding a duplicate overview.
+
+- In Issues, distinguish observed behavior, desired outcomes, and proposed solutions or open decisions. Label uncertain causes and proposed flows explicitly.
+- In PRs, explain the final before/after behavior and material boundaries or compatibility effects. Keep the explanation and any visuals aligned with the final diff as scope changes. Avoid work logs and file inventories as substitutes for explaining the change.
+- Choose the smallest view that clarifies the point: Mermaid for interactions, flows, or states; a short `diff` for a local change; pseudocode for logic; a shallow text tree for calls or file responsibilities; or a table for comparisons. Use a visual when it makes relationships or changes easier to understand; a short paragraph is enough for a simple correction.
+- Place each visual beside the brief text it supports. Keep only the participants, steps, files, or states needed to understand the issue or change. Use concrete names and keep facts separate from proposals in diagrams as well as prose.
+- Use GitHub-native Markdown and fenced code blocks, including `mermaid` for diagrams. Do not rely on HTML artifacts or external interactive pages for the explanation. GitHub supports Mermaid in [Issues and pull requests](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams).
+
+Keep reproduction steps, constraints, implementation details, and validation in the relevant sections after the opening explanation. Scale detail to the change instead of filling every available visual format.
+
+For PR validation, briefly explain how the changed behavior was verified and identify material gaps or known failures. Focus on relevant regression coverage, necessary manual or real-provider checks, and evidence not apparent from CI. Use GitHub checks as the source of CI status rather than copying routine CI, formatting, diff-check, or commit-hook results into the body. Include exact commands only when needed for reproduction or review. Simple changes may need only a sentence; do not invent manual checks or a fixed checklist to fill the section. This presentation guidance does not reduce required local validation or CI gates.
+
+## Pull Requests
+
+A pull request should:
+
+1. Link the relevant issue when one exists.
+2. Explain the motivation and material changes. For significant design changes, explain the current need for added mechanisms and the effect on understanding and maintenance cost, using the [code quality principles](DEVELOPMENT.md#code-quality-and-design). Routine changes need only a proportionate explanation.
+3. Update affected specifications, docs, tests, and automation.
+4. Summarize validation evidence and material gaps following the [PR writing guidance](#writing-issues-and-pull-requests).
+5. Request reviewers according to `MAINTAINERS.md`.
+
+Keep commit messages in English. Do not add an agent as a co-author. If assistant attribution is required, use only:
+
+```text
+Assisted-by: NAME <email>
+```

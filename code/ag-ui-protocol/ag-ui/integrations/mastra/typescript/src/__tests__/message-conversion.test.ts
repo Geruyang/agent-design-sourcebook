@@ -1,0 +1,1208 @@
+import { vi } from "vitest";
+import { convertAGUIMessagesToMastra } from "../utils";
+import type { Message } from "@ag-ui/client";
+
+describe("convertAGUIMessagesToMastra", () => {
+  describe("user messages", () => {
+    it("converts string content", () => {
+      const messages: Message[] = [
+        { id: "1", role: "user", content: "Hello world" },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([{ id: "1", role: "user", content: "Hello world" }]);
+    });
+
+    it("converts array content with text parts", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "First part" },
+            { type: "text", text: "Second part" },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "First part" },
+            { type: "text", text: "Second part" },
+          ],
+        },
+      ]);
+    });
+
+    it("converts array content with single text part", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Single part" },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Single part" },
+          ],
+        },
+      ]);
+    });
+
+    it("converts empty array content", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [],
+        },
+      ]);
+    });
+
+    it("returns empty string for null/undefined content", () => {
+      const messages: Message[] = [
+        { id: "1", role: "user", content: undefined as any },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([{ id: "1", role: "user", content: "" }]);
+    });
+
+    it("preserves non-text parts as structured content", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Keep this" },
+            {
+              type: "image",
+              source: { type: "url", value: "http://example.com/img.png" },
+            } as any,
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Keep this" },
+            { type: "image", image: "http://example.com/img.png" },
+          ],
+        },
+      ]);
+    });
+
+    it("leaves whitespace from text parts as-is", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "  hello  " },
+            { type: "text", text: "   " },
+            { type: "text", text: "world" },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "  hello  " },
+            { type: "text", text: "   " },
+            { type: "text", text: "world" },
+          ],
+        },
+      ]);
+    });
+  });
+
+  describe("multimodal user content", () => {
+    it("converts ImageInputContent with URL source to structured content", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "url",
+                value: "https://example.com/photo.jpg",
+              },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "image", image: "https://example.com/photo.jpg" },
+          ],
+        },
+      ]);
+    });
+
+    it("converts ImageInputContent with data source to structured content", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "data",
+                value: "abc123",
+                mimeType: "image/png",
+              },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "image",
+              image: "data:image/png;base64,abc123",
+              mimeType: "image/png",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("converts AudioInputContent to file format", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "audio",
+              source: {
+                type: "data",
+                value: "audiodata",
+                mimeType: "audio/wav",
+              },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "file",
+              data: "data:audio/wav;base64,audiodata",
+              mimeType: "audio/wav",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("converts DocumentInputContent to file format", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: {
+                type: "data",
+                value: "pdfdata",
+                mimeType: "application/pdf",
+              },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "file",
+              data: "data:application/pdf;base64,pdfdata",
+              mimeType: "application/pdf",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("returns plain string for string content (backwards compat)", () => {
+      const messages: Message[] = [
+        { id: "1", role: "user", content: "Just a string" },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        { id: "1", role: "user", content: "Just a string" },
+      ]);
+    });
+
+    it("converts VideoInputContent to file format", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            {
+              type: "video",
+              source: {
+                type: "url",
+                value: "https://example.com/video.mp4",
+              },
+            } as any,
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+      const content = result[0].content as any[];
+      expect(content).toHaveLength(1);
+      expect(content[0].type).toBe("file");
+      expect(content[0].data).toBe("https://example.com/video.mp4");
+    });
+
+    it("converts mixed text and media to structured array", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Look at this image:" },
+            {
+              type: "image",
+              source: {
+                type: "url",
+                value: "https://example.com/cat.jpg",
+              },
+            },
+            { type: "text", text: "What do you see?" },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "Look at this image:" },
+            { type: "image", image: "https://example.com/cat.jpg" },
+            { type: "text", text: "What do you see?" },
+          ],
+        },
+      ]);
+    });
+  });
+
+  describe("assistant messages", () => {
+    it("converts text content", () => {
+      const messages: Message[] = [
+        { id: "1", role: "assistant", content: "I can help with that" },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "assistant",
+          content: [{ type: "text", text: "I can help with that" }],
+        },
+      ]);
+    });
+
+    it("converts tool calls", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "get_weather",
+                arguments: JSON.stringify({ city: "NYC" }),
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "tc-1",
+              toolName: "get_weather",
+              args: { city: "NYC" },
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("includes both text and tool calls when present", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "Let me check",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "search",
+                arguments: JSON.stringify({ q: "test" }),
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me check" },
+            {
+              type: "tool-call",
+              toolCallId: "tc-1",
+              toolName: "search",
+              args: { q: "test" },
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("recovers the first JSON object when replayed arguments are concatenated", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "anyTool",
+                arguments: '{"mine":true}{"mine":true}',
+              },
+            },
+          ],
+        },
+      ];
+
+      const first = convertAGUIMessagesToMastra(messages);
+      const second = convertAGUIMessagesToMastra(messages);
+
+      expect(first).toEqual(second);
+      expect(first).toEqual([
+        {
+          id: "1",
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "tc-1",
+              toolName: "anyTool",
+              args: { mine: true },
+            },
+          ],
+        },
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Recovered first JSON value"),
+      );
+      warn.mockRestore();
+    });
+
+    it("does not truncate a recovered object at a brace that is inside a string", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "anyTool",
+                arguments: '{"note":"use } here"}{"note":"dup"}',
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result[0].content).toEqual([
+        {
+          type: "tool-call",
+          toolCallId: "tc-1",
+          toolName: "anyTool",
+          args: { note: "use } here" },
+        },
+      ]);
+      warn.mockRestore();
+    });
+
+    it("skips a malformed tool-call instead of failing the whole conversion", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "still usable",
+          toolCalls: [
+            {
+              id: "tc-bad",
+              type: "function",
+              function: {
+                name: "broken",
+                arguments: "not-json",
+              },
+            },
+            {
+              id: "tc-good",
+              type: "function",
+              function: {
+                name: "search",
+                arguments: JSON.stringify({ q: "ok" }),
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "assistant",
+          content: [
+            { type: "text", text: "still usable" },
+            {
+              type: "tool-call",
+              toolCallId: "tc-good",
+              toolName: "search",
+              args: { q: "ok" },
+            },
+          ],
+        },
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Skipping tool-call broken (tc-bad)"),
+      );
+      warn.mockRestore();
+    });
+
+    it("treats empty tool-call arguments as an empty object", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "noop",
+                arguments: "   ",
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result[0].content).toEqual([
+        {
+          type: "tool-call",
+          toolCallId: "tc-1",
+          toolName: "noop",
+          args: {},
+        },
+      ]);
+    });
+
+    it("omits text part when content is empty", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "search",
+                arguments: JSON.stringify({}),
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      // Should only have tool-call, no text part
+      expect(result[0].content).toEqual([
+        {
+          type: "tool-call",
+          toolCallId: "tc-1",
+          toolName: "search",
+          args: {},
+        },
+      ]);
+    });
+  });
+
+  describe("tool result messages", () => {
+    it("looks up toolName from prior assistant message", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "get_weather",
+                arguments: JSON.stringify({ city: "NYC" }),
+              },
+            },
+          ],
+        },
+        {
+          id: "2",
+          role: "tool",
+          content: "72°F",
+          toolCallId: "tc-1",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result[1]).toEqual({
+        id: "2",
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-1",
+            toolName: "get_weather",
+            result: "72°F",
+            isError: false,
+          },
+        ],
+      });
+    });
+
+    it("defaults toolName to 'unknown' when not found in prior messages", () => {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "tool",
+          content: "some result",
+          toolCallId: "tc-orphan",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result[0]).toEqual({
+        id: "1",
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-orphan",
+            toolName: "unknown",
+            result: "some result",
+            isError: false,
+          },
+        ],
+      });
+    });
+
+    it("carries a tool error onto the AI SDK isError flag", () => {
+      // A client-reported tool failure must reach the model as an error, not a
+      // silent success. AG-UI's ToolMessage.error sets the tool-result isError flag.
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "tool",
+          content: "Tool failed: invalid id",
+          toolCallId: "tc-1",
+          error: "invalid id",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect((result[0] as any).content[0]).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "unknown",
+        result: "Tool failed: invalid id",
+        isError: true,
+      });
+    });
+  });
+
+  describe("developer messages", () => {
+    it("forwards a developer message as a system message", () => {
+      const messages: Message[] = [
+        { id: "d1", role: "developer", content: "Answer in German." },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        { id: "d1", role: "system", content: "Answer in German." },
+      ]);
+    });
+
+    it("keeps a developer message in its position between other messages", () => {
+      const messages: Message[] = [
+        { id: "u1", role: "user", content: "Hi" },
+        { id: "d1", role: "developer", content: "Be brief." },
+        { id: "a1", role: "assistant", content: "Hello" },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result.map((m) => (m as any).id)).toEqual(["u1", "d1", "a1"]);
+      expect(result[1]).toEqual({ id: "d1", role: "system", content: "Be brief." });
+    });
+  });
+
+  describe("mixed conversations", () => {
+    it("converts a full conversation with user, assistant, and tool messages", () => {
+      const messages: Message[] = [
+        { id: "1", role: "user", content: "What's the weather?" },
+        {
+          id: "2",
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: {
+                name: "get_weather",
+                arguments: JSON.stringify({ city: "NYC" }),
+              },
+            },
+          ],
+        },
+        {
+          id: "3",
+          role: "tool",
+          content: "72°F and sunny",
+          toolCallId: "tc-1",
+        },
+        {
+          id: "4",
+          role: "assistant",
+          content: "It's 72°F and sunny in NYC!",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toHaveLength(4);
+      expect(result[0].role).toBe("user");
+      expect(result[1].role).toBe("assistant");
+      expect(result[2].role).toBe("tool");
+      expect(result[3].role).toBe("assistant");
+    });
+
+    it("returns empty array for empty messages", () => {
+      expect(convertAGUIMessagesToMastra([])).toEqual([]);
+    });
+
+    it("preserves message id for all roles (issue #1659)", () => {
+      const messages: Message[] = [
+        { id: "user-id", role: "user", content: "hello" },
+        {
+          id: "assistant-id",
+          role: "assistant",
+          content: "hi",
+          toolCalls: [],
+        },
+        {
+          id: "tool-id",
+          role: "tool",
+          content: "result",
+          toolCallId: "tc-1",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect((result[0] as any).id).toBe("user-id");
+      expect((result[1] as any).id).toBe("assistant-id");
+      expect((result[2] as any).id).toBe("tool-id");
+    });
+
+    it("omits id key entirely when message.id is undefined for all roles (issue #1659)", () => {
+      // Mastra's inputToMastraDBMessage uses `"id" in message` at runtime.
+      // For `{ id: undefined, ... }`, that check returns true, defeating the
+      // intended fix. The id key must be absent, not present-with-undefined.
+      const messages: Message[] = [
+        { id: undefined as any, role: "user", content: "hello" },
+        {
+          id: undefined as any,
+          role: "assistant",
+          content: "hi",
+          toolCalls: [],
+        },
+        {
+          id: undefined as any,
+          role: "tool",
+          content: "result",
+          toolCallId: "tc-1",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect("id" in result[0]).toBe(false);
+      expect("id" in result[1]).toBe(false);
+      expect("id" in result[2]).toBe(false);
+    });
+  });
+
+  describe("message id sanitization (OpenAI Responses API charset)", () => {
+    // AI SDK v5's `openai(model)` defaults to the Responses API, which rejects
+    // any `input[].id` outside `^[A-Za-z0-9_-]+$`. Client-minted ids replayed as
+    // prior-turn history must be coerced or the whole multi-turn request 400s
+    // (AI_APICallError: Invalid 'input[N].id').
+
+    it("leaves an already-valid id unchanged (common case is a no-op)", () => {
+      const messages: Message[] = [
+        { id: "msg-AD-dWkWJNkAbXmQx", role: "user", content: "hi" },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect((result[0] as any).id).toBe("msg-AD-dWkWJNkAbXmQx");
+    });
+
+    it("replaces out-of-charset characters with dashes for all roles", () => {
+      const messages: Message[] = [
+        { id: "msg+AD/dWk=", role: "user", content: "hi" },
+        {
+          id: "msg:with.dots",
+          role: "assistant",
+          content: "hello",
+          toolCalls: [],
+        },
+        {
+          id: "tool id⚡",
+          role: "tool",
+          content: "result",
+          toolCallId: "tc-1",
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect((result[0] as any).id).toBe("msg-AD-dWk-");
+      expect((result[1] as any).id).toBe("msg-with-dots");
+      expect((result[2] as any).id).toBe("tool-id-");
+      // Every sanitized id is now Responses-API-legal.
+      for (const msg of result) {
+        expect((msg as any).id).toMatch(/^[A-Za-z0-9_-]+$/);
+      }
+    });
+
+    it("is deterministic so Mastra's upsert-by-id dedup still matches", () => {
+      const messages: Message[] = [
+        { id: "msg+AD/dWk=", role: "user", content: "hi" },
+      ];
+
+      const first = convertAGUIMessagesToMastra(messages);
+      const second = convertAGUIMessagesToMastra(messages);
+
+      expect((first[0] as any).id).toBe((second[0] as any).id);
+    });
+  });
+});
+
+describe("file-sourced media parts", () => {
+  // A `file` source names bytes that already sit at a model provider, under a
+  // handle only that provider can resolve. This adapter has no way to hand such
+  // a handle to Mastra, and the value is NOT a URL — shipping it as one is the
+  // bug this pins. The spec's rule for a part a producer cannot use is: drop it,
+  // warn, and keep the run alive.
+  it("drops a document part with a file source, keeps the text, and warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "read this" },
+            {
+              type: "document",
+              source: {
+                type: "file",
+                value: "file-abc123",
+                provider: "openai",
+                mimeType: "application/pdf",
+              },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        {
+          id: "1",
+          role: "user",
+          content: [{ type: "text", text: "read this" }],
+        },
+      ]);
+
+      const warned = warn.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(warned).toContain("document");
+      expect(warned).toMatch(/file handle/i);
+      // The handle must never reach the provider request, as a URL or otherwise.
+      expect(JSON.stringify(result)).not.toContain("file-abc123");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("drops an image part with a file source rather than sending it as a URL", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const messages: Message[] = [
+        {
+          id: "1",
+          role: "user",
+          content: [
+            { type: "text", text: "look" },
+            {
+              type: "image",
+              source: { type: "file", value: "file-img", mimeType: "image/png" },
+            },
+          ] as any,
+        },
+      ];
+
+      const result = convertAGUIMessagesToMastra(messages);
+
+      expect(result).toEqual([
+        { id: "1", role: "user", content: [{ type: "text", text: "look" }] },
+      ]);
+      expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+        "image",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("attachment filenames", () => {
+  // AG-UI carries an attachment's original name at `metadata.filename`. Mastra
+  // persists a name only on a file part (it drops `filename` from image parts),
+  // so a named image travels as a file part with its MIME type.
+  function convertUserParts(content: unknown[]): any[] {
+    const [message] = convertAGUIMessagesToMastra([
+      { id: "u1", role: "user", content } as Message,
+    ]);
+    return message.content as any[];
+  }
+
+  const dataSource = (value: string, mimeType: string) => ({
+    type: "data",
+    value,
+    mimeType,
+  });
+
+  it.each([
+    ["image", "image/png", "photo.png"],
+    ["audio", "audio/mpeg", "voice note.mp3"],
+    ["video", "video/mp4", "clip.mp4"],
+    ["document", "application/pdf", "Q3 report.pdf"],
+  ])(
+    "forwards the %s filename with a data source",
+    (type, mimeType, filename) => {
+      const parts = convertUserParts([
+        {
+          type,
+          source: dataSource("Ynl0ZXM=", mimeType),
+          metadata: { filename },
+        },
+      ]);
+
+      expect(parts).toStrictEqual([
+        {
+          type: "file",
+          data: `data:${mimeType};base64,Ynl0ZXM=`,
+          mimeType,
+          filename,
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    ["image", "image/jpeg", "https://example.com/a.jpg", "a.jpg"],
+    ["audio", "audio/wav", "https://example.com/b.wav", "b.wav"],
+    ["video", "video/webm", "https://example.com/c.webm", "c.webm"],
+    ["document", "text/csv", "https://example.com/d.csv", "d.csv"],
+  ])(
+    "forwards the %s filename with a URL source",
+    (type, mimeType, url, filename) => {
+      const parts = convertUserParts([
+        {
+          type,
+          source: { type: "url", value: url, mimeType },
+          metadata: { filename },
+        },
+      ]);
+
+      expect(parts).toStrictEqual([
+        { type: "file", data: url, mimeType, filename },
+      ]);
+    },
+  );
+
+  it("keeps an unnamed image as an image part that carries its MIME type", () => {
+    const parts = convertUserParts([
+      { type: "image", source: dataSource("abc", "image/webp") },
+      {
+        type: "image",
+        source: {
+          type: "url",
+          value: "https://example.com/x.gif",
+          mimeType: "image/gif",
+        },
+      },
+    ]);
+
+    expect(parts).toStrictEqual([
+      {
+        type: "image",
+        image: "data:image/webp;base64,abc",
+        mimeType: "image/webp",
+      },
+      {
+        type: "image",
+        image: "https://example.com/x.gif",
+        mimeType: "image/gif",
+      },
+    ]);
+  });
+
+  it("keeps a named image with no known MIME type as an image part", () => {
+    // A file part needs a MIME type, and this adapter does not guess one.
+    const parts = convertUserParts([
+      {
+        type: "image",
+        source: { type: "url", value: "https://example.com/y" },
+        metadata: { filename: "y.png" },
+      },
+    ]);
+
+    expect(parts).toStrictEqual([
+      { type: "image", image: "https://example.com/y" },
+    ]);
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty", { filename: "" }],
+    ["a number", { filename: 42 }],
+    ["an object", { filename: { name: "x.pdf" } }],
+    ["not an object", "x.pdf"],
+  ])("adds no filename when metadata.filename is %s", (_label, metadata) => {
+    const withMetadata = (part: Record<string, unknown>) =>
+      metadata === undefined ? part : { ...part, metadata };
+
+    const parts = convertUserParts([
+      withMetadata({ type: "image", source: dataSource("i", "image/png") }),
+      withMetadata({ type: "audio", source: dataSource("a", "audio/mpeg") }),
+      withMetadata({ type: "video", source: dataSource("v", "video/mp4") }),
+      withMetadata({
+        type: "document",
+        source: dataSource("d", "application/pdf"),
+      }),
+    ]);
+
+    expect(parts).toStrictEqual([
+      {
+        type: "image",
+        image: "data:image/png;base64,i",
+        mimeType: "image/png",
+      },
+      {
+        type: "file",
+        data: "data:audio/mpeg;base64,a",
+        mimeType: "audio/mpeg",
+      },
+      { type: "file", data: "data:video/mp4;base64,v", mimeType: "video/mp4" },
+      {
+        type: "file",
+        data: "data:application/pdf;base64,d",
+        mimeType: "application/pdf",
+      },
+    ]);
+    for (const part of parts) {
+      expect(part).not.toHaveProperty("filename");
+    }
+  });
+
+  it("forwards the filename of a legacy binary part", () => {
+    const parts = convertUserParts([
+      {
+        type: "binary",
+        mimeType: "application/pdf",
+        data: "cGRm",
+        filename: "contract.pdf",
+      },
+      {
+        type: "binary",
+        mimeType: "image/png",
+        url: "https://example.com/scan.png",
+        filename: "scan.png",
+      },
+    ]);
+
+    expect(parts).toStrictEqual([
+      {
+        type: "file",
+        data: "data:application/pdf;base64,cGRm",
+        mimeType: "application/pdf",
+        filename: "contract.pdf",
+      },
+      {
+        type: "file",
+        data: "https://example.com/scan.png",
+        mimeType: "image/png",
+        filename: "scan.png",
+      },
+    ]);
+  });
+
+  it("keeps an unnamed legacy binary part as an image that carries its MIME type", () => {
+    const parts = convertUserParts([
+      { type: "binary", mimeType: "image/png", data: "aW1n" },
+      {
+        type: "binary",
+        mimeType: "image/jpeg",
+        url: "https://example.com/p.jpg",
+        filename: "",
+      },
+    ]);
+
+    expect(parts).toStrictEqual([
+      {
+        type: "image",
+        image: "data:image/png;base64,aW1n",
+        mimeType: "image/png",
+      },
+      {
+        type: "image",
+        image: "https://example.com/p.jpg",
+        mimeType: "image/jpeg",
+      },
+    ]);
+  });
+});

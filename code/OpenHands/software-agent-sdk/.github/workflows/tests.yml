@@ -1,0 +1,607 @@
+---
+name: Run tests
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: ['**']
+
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    test-directory-guard:
+        name: Test directory allowlist
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+
+            - name: Verify test directories
+              run: |
+                  # Allowed top-level directories under tests/
+                  # Each must have a corresponding CI job or workflow that runs them.
+                  #   tests.yml:             sdk, tools, workspace, agent_server, cross
+                  #   run-examples.yml:      examples
+                  #   integration-runner.yml: integration
+                  #   (data-only):           fixtures
+                  ALLOWED="sdk tools workspace agent_server cross examples integration fixtures"
+
+                  violations=""
+                  for entry in tests/*/; do
+                    dir_name="$(basename "$entry")"
+                    # skip __pycache__ and hidden dirs
+                    [[ "$dir_name" == __* || "$dir_name" == .* ]] && continue
+                    if ! echo "$ALLOWED" | grep -qw "$dir_name"; then
+                      violations="$violations  tests/$dir_name/\n"
+                    fi
+                  done
+
+                  # Also reject top-level test files (they won't be picked up by any job)
+                  for f in tests/test_*.py; do
+                    [ -f "$f" ] && violations="$violations  $f\n"
+                  done
+
+                  # Detect test files hiding inside source packages instead of tests/
+                  # Excludes */testing/* dirs (testing utilities, not runnable tests)
+                  stray=$(find openhands-sdk openhands-tools openhands-workspace openhands-agent-server \
+                    \( -name 'test_*.py' -o -name '*_test.py' \) \
+                    -not -path '*/testing/*' \
+                    2>/dev/null || true)
+                  for f in $stray; do
+                    violations="$violations  $f (stray test outside tests/)\n"
+                  done
+
+                  if [ -n "$violations" ]; then
+                    echo "ERROR: Found test paths outside the allowed directories."
+                    echo "The following will NOT be run by any CI job:"
+                    echo ""
+                    printf "$violations"
+                    echo ""
+                    echo "Allowed directories: $ALLOWED"
+                    echo "Move tests into one of the allowed directories so CI can run them."
+                    exit 1
+                  fi
+                  echo "✓ All test directories are in the allowlist"
+
+    sdk-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect sdk changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-sdk/**
+                      tests/sdk/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Check for openhands.tools imports in sdk tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  echo "Checking for openhands.tools imports in tests/sdk..."
+                  if grep -r "from openhands\.tools" tests/sdk/ || grep -r "import openhands\.tools" tests/sdk/; then
+                    echo "ERROR: Found openhands.tools imports in tests/sdk/"
+                    echo "SDK tests should only import from openhands.sdk"
+                    echo "Please move tests that use openhands.tools to tests/cross/"
+                    exit 1
+                  fi
+                  echo "✓ No openhands.tools imports found in tests/sdk/"
+
+            - name: Run sdk tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  # Use pytest-xdist (-n auto) for parallel execution with proper
+                  # coverage collection. --forked prevents coverage from child processes.
+                  CI=true uv run python -m pytest -vvs \
+                    -n auto \
+                    --cov=openhands-sdk \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/sdk
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-sdk.dat
+                    echo "SDK coverage file prepared for upload"
+                  fi
+
+            - name: Upload sdk coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-sdk
+                  path: coverage-sdk.dat
+                  if-no-files-found: warn
+
+    # Deliberately NOT a required status check: these tests launch real npx
+    # subprocesses and hit the live npm registry (see the `acp_live` marker
+    # and tests/sdk/agent/test_acp_conformance.py's docstring). sdk-tests IS
+    # required, so a registry blip must not be able to block unrelated PRs;
+    # this job carries that live-network risk instead, gated to only run
+    # when ACP registry/catalog files actually change (OpenHands/
+    # software-agent-sdk#4830 P0-1/2/3).
+    acp-live-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect ACP registry/catalog changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-sdk/openhands/sdk/settings/acp_providers.py
+                      openhands-sdk/openhands/sdk/settings/acp_install_catalog.py
+                      tests/sdk/agent/test_acp_conformance.py
+                      tests/sdk/settings/test_acp_install_catalog_pins_live.py
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            # The runner image's default Node is older than some providers'
+            # `engines.node`, and the npx path runs on whatever Node is on
+            # PATH. Must clear the highest `min_node_version` in
+            # ACP_INSTALL_CATALOG, otherwise those providers only skip.
+            - name: Use Node.js 24
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: actions/setup-node@v7
+              with:
+                  node-version: '24'
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run live ACP conformance + pin-installability tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  CI=true uv run python -m pytest -vvs \
+                    -m acp_live \
+                    tests/sdk/agent/test_acp_conformance.py \
+                    tests/sdk/settings/test_acp_install_catalog_pins_live.py
+
+    tools-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect tools changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-tools/**
+                      tests/tools/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run tools tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  # Use --forked for tools tests due to terminal test conflicts
+                  # when running in parallel (shared /tmp paths, subprocess management)
+                  CI=true uv run python -m pytest -vvs \
+                    --forked \
+                    --cov=openhands-tools \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/tools
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-tools.dat
+                    echo "Tools coverage file prepared for upload"
+                  fi
+
+            - name: Upload tools coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-tools
+                  path: coverage-tools.dat
+                  if-no-files-found: warn
+
+    windows-tests:
+        runs-on: windows-latest
+        timeout-minutes: 30
+        env:
+            PYTHONUTF8: '1'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect Windows-relevant changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-tools/**
+                      tests/tools/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Install Chromium
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uvx playwright install chromium
+
+            - name: Run Windows test suite
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  if (Test-Path .coverage) {
+                    Remove-Item .coverage -Force
+                  }
+                  $env:CI = 'true'
+                  # Keep the initial Windows pass non-blocking on coverage while
+                  # OS-specific gaps tracked in #2989 are still open.
+                  # Browser/file-editor e2e and terminal shell assumptions remain
+                  # tracked in #2986 and #2988.
+                  uv run python -m pytest -vvs `
+                    --cov=openhands-tools `
+                    --cov-report=term-missing `
+                    --cov-fail-under=0 `
+                    --cov-config=pyproject.toml `
+                    tests/tools `
+                    --ignore=tests/tools/browser_use/test_browser_executor_e2e.py `
+                    --ignore=tests/tools/file_editor/test_memory_usage.py `
+                    --ignore=tests/tools/terminal/test_conversation_cleanup.py `
+                    --ignore=tests/tools/terminal/test_session_factory.py `
+                    --ignore=tests/tools/terminal/test_shell_path_configuration.py `
+                    --ignore=tests/tools/terminal/test_shutdown_handling.py `
+                    --ignore=tests/tools/terminal/test_terminal_session.py `
+                    --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py
+                  if (Test-Path .coverage) {
+                    Move-Item .coverage coverage-windows.dat
+                    Write-Host 'Windows coverage file prepared for upload'
+                  }
+
+            - name: Upload Windows coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-windows
+                  path: coverage-windows.dat
+                  if-no-files-found: warn
+
+
+    agent-server-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Agent Server tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  # Use pytest-xdist (-n auto) for parallel execution with proper
+                  # coverage collection. --forked prevents coverage from child processes.
+                  CI=true uv run python -m pytest -vvs \
+                    -n auto \
+                    --cov=openhands-agent-server \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/agent_server
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-agent-server.dat
+                    echo "Agent Server coverage file prepared for upload"
+                  fi
+
+            - name: Upload Agent Server coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-agent-server
+                  path: coverage-agent-server.dat
+                  if-no-files-found: warn
+
+    agent-server-stress-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 10
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/stress/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Agent Server stress tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Stress suite is opt-in (excluded by `-m 'not stress'` in
+                  # addopts); pass `-m stress` to select it. No xdist: tests
+                  # assert on resource budgets (RSS, FDs, wall-clock latency)
+                  # and parallel execution would invalidate the probes.
+                  CI=true uv run python -m pytest -vvs \
+                    -m stress \
+                    --durations=10 \
+                    tests/agent_server/stress
+
+    workspace-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect workspace changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-workspace/**
+                      tests/workspace/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run workspace tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    -n auto \
+                    --cov=openhands-workspace \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/workspace
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-workspace.dat
+                    echo "Workspace coverage file prepared for upload"
+                  fi
+
+            - name: Upload workspace coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-workspace
+                  path: coverage-workspace.dat
+                  if-no-files-found: warn
+
+    cross-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect cross changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      tests/**
+                      openhands/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run cross tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    --basetemp="${{ runner.temp }}/pytest" \
+                    -o tmp_path_retention=none \
+                    -o tmp_path_retention_count=0 \
+                    --cov=openhands \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/cross
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-cross.dat
+                    echo "Cross coverage file prepared for upload"
+                  fi
+
+            - name: Upload cross coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-cross
+                  path: coverage-cross.dat
+                  if-no-files-found: warn
+
+    coverage-report:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        needs: [sdk-tests, tools-tests, agent-server-tests, workspace-tests, cross-tests]
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps (for coverage CLI)
+              run: uv sync --frozen --group dev
+
+            - name: Download coverage artifacts
+              uses: actions/download-artifact@v8
+              with:
+                  path: ./cov
+              continue-on-error: true
+
+            - name: Combine coverage data
+              run: |
+                  shopt -s nullglob
+                  # For some reason, the github action won't properly upload the original
+                  # .converage* files
+                  # Convert uploaded .dat files back to .coverage format for coverage tool
+                  for dat_file in cov/**/coverage-*.dat; do
+                    if [[ "$dat_file" == *coverage-sdk.dat ]]; then
+                      cp "$dat_file" .coverage.sdk
+                    elif [[ "$dat_file" == *coverage-tools.dat ]]; then
+                      cp "$dat_file" .coverage.tools  
+                    elif [[ "$dat_file" == *coverage-agent-server.dat ]]; then
+                      cp "$dat_file" .coverage.agent-server
+                    elif [[ "$dat_file" == *coverage-workspace.dat ]]; then
+                      cp "$dat_file" .coverage.workspace
+                    elif [[ "$dat_file" == *coverage-cross.dat ]]; then
+                      cp "$dat_file" .coverage.cross
+                    fi
+                  done
+
+                  # Check if we have any coverage files
+                  coverage_files=(.coverage.*)
+                  if [ ${#coverage_files[@]} -eq 0 ]; then
+                    echo "No coverage files found; skipping combined report."
+                    exit 0
+                  fi
+
+                  echo "Found ${#coverage_files[@]} coverage files"
+                  uv run coverage combine
+                  uv run coverage xml -i -o coverage.xml
+                  uv run coverage report -m
+
+            - name: Pytest coverage PR comment
+              if: always()
+              continue-on-error: true
+              uses: MishaKav/pytest-coverage-comment@432ac90e8d345c93e1d90ee0838b35913abc9c9b # v1
+              with:
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  pytest-xml-coverage-path: coverage.xml
+                  title: Coverage Report
+                  create-new-comment: false
+                  hide-report: false
+                  xml-skip-covered: true
+                  report-only-changed-files: true
+                  remove-links-to-files: true
+                  remove-links-to-lines: true

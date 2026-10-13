@@ -1,0 +1,87 @@
+name: PR Labels
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  pull-requests: write
+
+jobs:
+  labels:
+    if: github.event.action == 'opened' || github.event.action == 'ready_for_review'
+    name: Label PR
+    runs-on: ubuntu-latest
+    steps:
+      # Metadata only: never check out or execute pull-request code here.
+      - name: Add changelog labels
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const existing = new Set(pr.labels.map(label => label.name));
+            const types = {
+              feat: 'enhancement', perf: 'enhancement', fix: 'bug', revert: 'bug',
+              docs: 'documentation', chore: 'chore', refactor: 'chore',
+              test: 'chore', ci: 'chore', build: 'chore', style: 'chore',
+            };
+            const match = /^([a-z]+)(?:\([^\r\n)]+\))?(!)?:\s+\S/.exec(pr.title);
+            const labels = [];
+            if (!['enhancement', 'bug', 'documentation', 'chore'].some(label => existing.has(label))) {
+              const type = match && Object.hasOwn(types, match[1]) ? types[match[1]] : null;
+              if (type) labels.push(type);
+              else core.notice('No type inferred; optionally add enhancement, bug, documentation, or chore.');
+            }
+            const breaking = match?.[2] || /(?:^|\n)BREAKING[ -]CHANGE:/.test(pr.body || '');
+            if (breaking && !existing.has('breaking-change')) labels.push('breaking-change');
+            if (labels.length) {
+              await github.rest.issues.addLabels({
+                ...context.repo, issue_number: pr.number, labels,
+              });
+            }
+
+  compatibility-review:
+    name: Harness compatibility review notice
+    runs-on: ubuntu-latest
+    concurrency:
+      group: harness-compatibility-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      # Metadata only, including on fork PRs: no checkout and no PR-supplied scripts.
+      - name: Flag compatibility baseline changes for human review
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issue_number = context.payload.pull_request.number;
+            const prefix = 'packages/a13n-harness/tests/fixtures/compatibility/';
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo, pull_number: issue_number, per_page: 100,
+            });
+            const changed = files.filter(file =>
+              file.filename.startsWith(prefix) || file.previous_filename?.startsWith(prefix));
+            const marker = '<!-- harness-compatibility-review -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number, per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker));
+            if (!changed.length && !previous) return;
+            const body = changed.length
+              ? `${marker}\n### Harness compatibility baseline: human review requested\n\n` +
+                `${changed.length} changed files affect \`${prefix}\`. Inspect the PR's Files changed tab.\n\n` +
+                'Before modifying, deleting, or replacing an existing baseline, obtain explicit human agreement. ' +
+                'Explain which accepted behavior changes and why the implementation cannot retain it. ' +
+                'Do not regenerate old fixtures just to make CI pass. Review additions for meaningful coverage.\n\n' +
+                'Request human review using the Harness routing in MAINTAINERS.md. ' +
+                'This notice is not approval and does not replace compatibility tests.'
+              : `${marker}\nNo Harness compatibility baseline changes remain in this PR.`;
+            if (previous) {
+              if (previous.body !== body) await github.rest.issues.updateComment({
+                ...context.repo, comment_id: previous.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({...context.repo, issue_number, body});
+            }

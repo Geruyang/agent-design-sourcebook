@@ -1,0 +1,2212 @@
+"""Tests for profiles_router endpoints."""
+
+import tempfile
+import time
+import warnings
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+from openhands.agent_server import profiles_router as profiles_router_module
+from openhands.agent_server.api import create_app
+from openhands.agent_server.config import Config
+from openhands.agent_server.persistence import reset_stores
+from openhands.sdk.llm import LLM, Message
+from openhands.sdk.llm.auth.credentials import OAuthCredentials
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import (
+    ProviderConnection,
+    ProviderConnectionStore,
+)
+from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
+
+
+@pytest.fixture
+def temp_profiles_dir():
+    """Create a temporary directory for profiles."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        profiles_dir = Path(tmpdir) / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        yield profiles_dir
+
+
+@pytest.fixture
+def temp_agent_profiles_dir():
+    """Create a temporary directory for agent profiles (FK store)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent_dir = Path(tmpdir) / "agent-profiles"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        yield agent_dir
+
+
+@pytest.fixture
+def temp_settings_dir():
+    """Create a temporary directory for settings."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        settings_dir = Path(tmpdir) / "settings"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        yield settings_dir
+
+
+@pytest.fixture
+def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
+    """Create test client with isolated profiles/settings directories, no cipher."""
+    # Reset store singletons to ensure clean state
+    reset_stores()
+
+    # Set environment variable for persistence directory
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+
+    # Explicitly disable cipher by setting secret_key to None
+    config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
+    app = create_app(config)
+
+    # Patch stores to use temp directories (AgentProfileStore is hit by the
+    # FK guard on delete/rename). The LLM profile store is wired to a shared
+    # provider-connection store so ``load`` resolves provider references, and
+    # the router's own ``get_provider_connections_store`` returns the same
+    # instance so CRUD and resolution see one file.
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+
+    def make_llm_store():
+        return LLMProfileStore(
+            base_dir=temp_profiles_dir, provider_store=provider_store
+        )
+
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            make_llm_store,
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_provider_connections_store",
+            lambda config=None: provider_store,
+        ),
+        patch(
+            "openhands.agent_server.settings_router.get_llm_profile_store",
+            make_llm_store,
+        ),
+        patch(
+            "openhands.agent_server.provider_connections_router.get_llm_profile_store",
+            make_llm_store,
+        ),
+        patch(
+            "openhands.agent_server.provider_connections_router."
+            "get_provider_connections_store",
+            lambda config=None: provider_store,
+        ),
+    ):
+        yield TestClient(app)
+
+    # Reset stores after test
+    reset_stores()
+
+
+@pytest.fixture
+def store(temp_profiles_dir):
+    """Create a profile store using the temp directory."""
+    return LLMProfileStore(base_dir=temp_profiles_dir)
+
+
+@pytest.fixture
+def agent_store(temp_agent_profiles_dir):
+    """Create the agent-profile store backing the FK guard."""
+    return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+
+# ── FK Guard: deleting/renaming a referenced LLM profile ────────────────────
+
+
+def test_delete_referenced_llm_profile_returns_409(client, store, agent_store):
+    """Deleting an LLM profile cited by an AgentProfile returns 409 w/ referrers."""
+    store.save("base-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="base-llm"))
+
+    response = client.delete("/api/profiles/base-llm")
+
+    assert response.status_code == 409
+    assert "agent-a" in response.json()["detail"]
+    # The LLM profile is left intact.
+    assert store.load("base-llm").model == "gpt-4o"
+
+
+def test_delete_unreferenced_llm_profile_succeeds(client, store, agent_store):
+    """An LLM profile no AgentProfile cites deletes normally."""
+    store.save("lonely", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="other-llm"))
+
+    response = client.delete("/api/profiles/lonely")
+
+    assert response.status_code == 200
+    with pytest.raises(FileNotFoundError):
+        store.load("lonely")
+
+
+def test_rename_llm_profile_cascades_to_agent_refs(client, store, agent_store):
+    """Renaming an LLM profile repoints citing AgentProfile.llm_profile_ref."""
+    store.save("old-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="old-llm"))
+
+    response = client.post("/api/profiles/old-llm/rename", json={"new_name": "new-llm"})
+
+    assert response.status_code == 200
+    # The agent profile's FK was cascaded to the new name.
+    assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
+
+
+# ── List Profiles ──────────────────────────────────────────────────────────
+
+
+def test_list_profiles_empty(client):
+    """GET /api/profiles returns empty list when no profiles exist."""
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+
+
+def test_list_profiles_returns_saved_profiles(client, store):
+    """GET /api/profiles returns all saved profiles with model info."""
+    # Save some profiles directly via store
+    llm1 = LLM(model="gpt-4o")
+    llm2 = LLM(model="claude-3-opus", api_key="sk-test-key")
+    store.save("profile-a", llm1)
+    store.save("profile-b", llm2, include_secrets=True)
+
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    profiles = body["profiles"]
+    assert len(profiles) == 2
+
+    names = {p["name"] for p in profiles}
+    assert names == {"profile-a", "profile-b"}
+
+    # Check profile details
+    profile_a = next(p for p in profiles if p["name"] == "profile-a")
+    assert profile_a["model"] == "gpt-4o"
+    assert profile_a["api_key_set"] is False
+
+    profile_b = next(p for p in profiles if p["name"] == "profile-b")
+    assert profile_b["model"] == "claude-3-opus"
+    assert profile_b["api_key_set"] is True
+
+
+# ── Get Profile ────────────────────────────────────────────────────────────
+
+
+def test_provider_connection_key_shared_by_linked_profiles(client):
+    """Profiles stay runnable, while provider fields are shared by reference."""
+    connection = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+            "base_url": "https://api.anthropic.com",
+        },
+    )
+    assert connection.status_code == 201
+    connection_body = connection.json()
+    connection_id = connection_body["id"]
+    assert connection_body["api_key_set"] is True
+    assert "api_key" not in connection_body
+    assert "secret_name" not in connection_body
+
+    for name, model in {
+        "sonnet-4": "anthropic/claude-sonnet-4",
+        "sonnet-5": "anthropic/claude-sonnet-5",
+    }.items():
+        response = client.post(
+            f"/api/profiles/{name}",
+            json={
+                "llm": {
+                    "model": model,
+                    "provider_connection_id": connection_id,
+                },
+                "include_secrets": False,
+            },
+        )
+        assert response.status_code == 201
+
+    profiles = client.get("/api/profiles").json()["profiles"]
+    linked = {p["name"]: p for p in profiles}
+    assert linked["sonnet-4"]["provider_connection_id"] == connection_id
+    assert linked["sonnet-4"]["api_key_set"] is True
+    assert linked["sonnet-5"]["api_key_set"] is True
+
+    detail = client.get("/api/profiles/sonnet-4").json()
+    assert detail["config"]["api_key"] is None
+    assert detail["config"]["base_url"] is None
+    assert detail["api_key_set"] is True
+
+    runtime = client.get(
+        "/api/profiles/sonnet-4", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["config"]
+    assert runtime["api_key"] == "sk-ant-old"
+    assert runtime["base_url"] == "https://api.anthropic.com"
+
+    activated = client.post("/api/profiles/sonnet-4/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "anthropic/claude-sonnet-4"
+    assert llm["api_key"] == "sk-ant-old"
+    assert llm["base_url"] == "https://api.anthropic.com"
+
+    delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+    assert delete.status_code == 409
+    assert "referenced by LLM profile" in delete.json()["detail"]
+
+    # Rotate the shared key. Read-at-use: active settings keep the previously
+    # resolved key until the profile is activated again (nothing is auto-copied).
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    runtime = client.get(
+        "/api/profiles/sonnet-4", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["config"]
+    assert runtime["api_key"] == "sk-ant-new"
+
+    # Re-activating re-resolves the connection and applies the rotated key.
+    activated = client.post("/api/profiles/sonnet-4/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+
+    activated = client.post("/api/profiles/sonnet-5/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "anthropic/claude-sonnet-5"
+    assert llm["api_key"] == "sk-ant-new"
+
+
+def test_settings_active_profile_resolves_provider_connection(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "OpenAI",
+            "provider": "openai",
+            "api_key": "sk-openai-provider",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/gpt-provider",
+        json={
+            "llm": {
+                "model": "openai/gpt-5.5",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    response = client.patch("/api/settings", json={"active_profile": "gpt-provider"})
+
+    assert response.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "openai/gpt-5.5"
+    assert llm["api_key"] == "sk-openai-provider"
+
+
+def test_provider_connection_delete_rejects_active_settings_reference(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/temporary-provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert (
+        client.post("/api/profiles/temporary-provider-profile/activate").status_code
+        == 200
+    )
+    assert client.delete("/api/profiles/temporary-provider-profile").status_code == 200
+
+    delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+
+    assert delete.status_code == 409
+    assert "referenced by the active agent settings" in delete.json()["detail"]
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+
+def test_provider_connection_delete_ignores_acp_settings(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.patch("/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}})
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="ACPAgentSettings.llm")
+        delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+
+    assert delete.status_code == 200
+
+
+def test_provider_connection_rotation_not_copied_into_active_settings(client):
+    """Read-at-use: rotating a key does not rewrite the resolved active settings.
+
+    The active ``agent_settings.llm`` keeps the key resolved at activation time
+    until the profile is activated again — nothing is auto-copied on rotation.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+
+    # Active settings still hold the key resolved at activation.
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    # Re-activating re-resolves and picks up the rotated key.
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+
+
+def test_provider_connection_base_url_authoritative_on_activation(client):
+    """A connection's ``base_url`` wins on activation, including when cleared."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Proxy",
+            "provider": "custom",
+            "api_key": "sk-provider",
+            "base_url": "https://old.example",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "openai/gpt-5.5",
+                "base_url": "https://profile.example",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    # Connection base_url wins over the profile's own.
+    assert settings["agent_settings"]["llm"]["base_url"] == "https://old.example"
+
+    updated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"base_url": None},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["base_url"] is None
+
+    # base_url is authoritative including None: re-activation clears it.
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["base_url"] is None
+
+
+def test_activate_profile_with_dangling_provider_connection_fails(client):
+    """A profile whose connection no longer exists fails loudly on activation."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    # Drop the profile so the connection is unreferenced and can be deleted,
+    # then re-create the profile to leave a dangling provider reference.
+    assert client.delete("/api/profiles/provider-profile").status_code == 200
+    assert (
+        client.delete(f"/api/llm/provider-connections/{connection_id}").status_code
+        == 200
+    )
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    activated = client.post("/api/profiles/provider-profile/activate")
+
+    assert activated.status_code == 422
+    assert connection_id in activated.json()["detail"]
+
+
+def test_provider_connection_rejects_extra_headers(client):
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Proxy",
+            "provider": "custom",
+            "api_key": "sk-provider",
+            "extra_headers": {"Authorization": "Bearer proxy-secret"},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_get_profile_returns_config(client, store):
+    """GET /api/profiles/{name} returns profile config with api_key nulled."""
+    llm = LLM(model="gpt-4o", api_key="sk-secret-key", temperature=0.7)
+    store.save("my-profile", llm, include_secrets=True)
+
+    response = client.get("/api/profiles/my-profile")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "my-profile"
+    assert body["config"]["model"] == "gpt-4o"
+    assert body["config"]["temperature"] == 0.7
+    assert body["config"]["api_key"] is None  # Never exposed
+    assert body["api_key_set"] is True
+
+
+def test_get_profile_not_found(client):
+    """GET /api/profiles/{name} returns 404 for non-existent profile."""
+    response = client.get("/api/profiles/nonexistent")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_get_profile_invalid_name(client):
+    """GET /api/profiles/{name} rejects invalid profile names."""
+    # Path traversal attempt - may be 404 (decoded and treated as not found)
+    # or 422 (validation error) depending on how the path is parsed
+    response = client.get("/api/profiles/..%2Fetc%2Fpasswd")
+    assert response.status_code in (404, 422)
+
+    # Hidden file attempt
+    response = client.get("/api/profiles/.hidden")
+    assert response.status_code in (400, 404, 422)
+
+
+# ── Save Profile ───────────────────────────────────────────────────────────
+
+
+def test_save_profile_creates_new(client, store):
+    """POST /api/profiles/{name} creates a new profile."""
+    response = client.post(
+        "/api/profiles/new-profile",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-test-key"},
+            "include_secrets": True,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "new-profile"
+    assert "saved" in body["message"].lower()
+
+    # Verify profile was saved
+    loaded = store.load("new-profile")
+    assert loaded.model == "gpt-4o"
+
+
+def test_save_profile_overwrites_existing(client, store):
+    """POST /api/profiles/{name} overwrites existing profile."""
+    # Save initial profile
+    llm1 = LLM(model="gpt-4o")
+    store.save("existing", llm1)
+
+    # Overwrite with new config
+    response = client.post(
+        "/api/profiles/existing",
+        json={"llm": {"model": "claude-3-opus"}},
+    )
+
+    assert response.status_code == 201
+
+    # Verify overwritten
+    loaded = store.load("existing")
+    assert loaded.model == "claude-3-opus"
+
+
+def test_save_profile_without_secrets(client, store):
+    """POST /api/profiles/{name} with include_secrets=False omits api_key."""
+    response = client.post(
+        "/api/profiles/no-secrets",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-should-not-save"},
+            "include_secrets": False,
+        },
+    )
+
+    assert response.status_code == 201
+
+    # Verify api_key was not saved
+    loaded = store.load("no-secrets")
+    assert loaded.api_key is None or loaded.api_key.get_secret_value() == ""
+
+
+def test_save_profile_invalid_name(client):
+    """POST /api/profiles/{name} returns 422 for invalid names."""
+    response = client.post(
+        "/api/profiles/invalid/name",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    # Should fail at path validation or be treated as different route
+    assert response.status_code in (404, 422)
+
+
+# ── Delete Profile ─────────────────────────────────────────────────────────
+
+
+def test_delete_profile_removes_existing(client, store):
+    """DELETE /api/profiles/{name} removes the profile."""
+    llm = LLM(model="gpt-4o")
+    store.save("to-delete", llm)
+
+    response = client.delete("/api/profiles/to-delete")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "to-delete"
+    assert "deleted" in body["message"].lower()
+
+    # Verify deleted
+    with pytest.raises(FileNotFoundError):
+        store.load("to-delete")
+
+
+def test_delete_profile_idempotent(client):
+    """DELETE /api/profiles/{name} succeeds even for non-existent profile."""
+    response = client.delete("/api/profiles/nonexistent")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "nonexistent"
+
+
+def test_delete_active_profile_clears_active_profile(client, store):
+    """Deleting the active profile clears active_profile in settings."""
+    llm = LLM(model="gpt-4o")
+    store.save("active-profile", llm)
+    store.save("other-profile", llm)
+    activate_response = client.post("/api/profiles/active-profile/activate")
+    assert activate_response.status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] == "active-profile"
+
+    response = client.delete("/api/profiles/active-profile")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["active_profile"] is None
+
+    profiles_response = client.get("/api/profiles")
+    assert profiles_response.status_code == 200
+    body = profiles_response.json()
+    assert body["active_profile"] is None
+    assert {profile["name"] for profile in body["profiles"]} == {"other-profile"}
+
+
+# ── Rename Profile ─────────────────────────────────────────────────────────
+
+
+def test_rename_profile_success(client, store):
+    """POST /api/profiles/{name}/rename renames the profile."""
+    llm = LLM(model="gpt-4o", api_key="sk-secret")
+    store.save("old-name", llm, include_secrets=True)
+
+    response = client.post(
+        "/api/profiles/old-name/rename",
+        json={"new_name": "new-name"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "new-name"
+    assert "renamed" in body["message"].lower()
+
+    # Verify old gone, new exists with same config
+    with pytest.raises(FileNotFoundError):
+        store.load("old-name")
+
+    loaded = store.load("new-name")
+    assert loaded.model == "gpt-4o"
+
+
+def test_rename_profile_preserves_secrets(client, store):
+    """POST /api/profiles/{name}/rename preserves api_key."""
+    llm = LLM(model="gpt-4o", api_key="sk-secret-preserve")
+    store.save("with-secret", llm, include_secrets=True)
+
+    response = client.post(
+        "/api/profiles/with-secret/rename",
+        json={"new_name": "renamed-secret"},
+    )
+
+    assert response.status_code == 200
+
+    # Verify secret preserved
+    loaded = store.load("renamed-secret")
+    assert loaded.api_key is not None
+    assert loaded.api_key.get_secret_value() == "sk-secret-preserve"
+
+
+def test_rename_profile_not_found(client):
+    """POST /api/profiles/{name}/rename returns 404 for non-existent profile."""
+    response = client.post(
+        "/api/profiles/nonexistent/rename",
+        json={"new_name": "new-name"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_rename_profile_conflict(client, store):
+    """POST /api/profiles/{name}/rename returns 409 if new_name exists."""
+    llm1 = LLM(model="gpt-4o")
+    llm2 = LLM(model="claude-3-opus")
+    store.save("source", llm1)
+    store.save("target", llm2)
+
+    response = client.post(
+        "/api/profiles/source/rename",
+        json={"new_name": "target"},
+    )
+
+    assert response.status_code == 409
+    assert "already exists" in response.json()["detail"].lower()
+
+
+def test_rename_profile_same_name(client, store):
+    """POST /api/profiles/{name}/rename with same name is a no-op."""
+    llm = LLM(model="gpt-4o")
+    store.save("same-name", llm)
+
+    response = client.post(
+        "/api/profiles/same-name/rename",
+        json={"new_name": "same-name"},
+    )
+
+    assert response.status_code == 200
+    assert "unchanged" in response.json()["message"].lower()
+
+
+def test_rename_profile_same_name_missing_returns_404(client):
+    """Same-name rename of a missing profile must return 404, not 200."""
+    response = client.post(
+        "/api/profiles/ghost/rename",
+        json={"new_name": "ghost"},
+    )
+    assert response.status_code == 404
+
+
+def test_rename_profile_invalid_new_name(client, store):
+    """POST /api/profiles/{name}/rename returns 422 for invalid new_name."""
+    llm = LLM(model="gpt-4o")
+    store.save("valid-name", llm)
+
+    response = client.post(
+        "/api/profiles/valid-name/rename",
+        json={"new_name": "../etc/passwd"},
+    )
+
+    assert response.status_code == 422
+
+
+# ── Profile Name Validation ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "simple",
+        "with-dash",
+        "with_underscore",
+        "with.dot",
+        "MixedCase123",
+        "a" * 64,  # Max length
+    ],
+)
+def test_valid_profile_names(client, name):
+    """Valid profile names are accepted."""
+    response = client.post(
+        f"/api/profiles/{name}",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 201
+
+
+def test_invalid_profile_name_too_long(client):
+    """Profile name that is too long is rejected."""
+    name = "a" * 65  # Exceeds 64 char limit
+    response = client.post(
+        f"/api/profiles/{name}",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("name", [".leading-dot", "-leading-dash", "_leading_under"])
+def test_invalid_profile_name_leading_non_alnum(client, name):
+    """Profile names must start with an alphanumeric character."""
+    response = client.post(
+        f"/api/profiles/{name}",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("name", ["name@symbol", "name$dollar", "name space"])
+def test_invalid_profile_name_special_chars(client, name):
+    """Profile names with disallowed characters are rejected."""
+    response = client.post(
+        f"/api/profiles/{name}",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 422
+
+
+# ── Profile Limit ──────────────────────────────────────────────────────────
+
+
+def test_save_profile_at_limit_returns_409(client, store, monkeypatch):
+    """POST /api/profiles/{name} returns 409 when MAX_PROFILES is reached."""
+    monkeypatch.setattr(profiles_router_module, "MAX_PROFILES", 2)
+
+    store.save("first", LLM(model="gpt-4o"))
+    store.save("second", LLM(model="gpt-4o"))
+
+    response = client.post(
+        "/api/profiles/third",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 409
+    assert "limit" in response.json()["detail"].lower()
+
+
+def test_save_profile_at_limit_overwrite_allowed(client, store, monkeypatch):
+    """Overwriting an existing profile is allowed even at the limit."""
+    monkeypatch.setattr(profiles_router_module, "MAX_PROFILES", 2)
+
+    store.save("first", LLM(model="gpt-4o"))
+    store.save("second", LLM(model="gpt-4o"))
+
+    response = client.post(
+        "/api/profiles/first",
+        json={"llm": {"model": "claude-3-opus"}},
+    )
+    assert response.status_code == 201
+    assert store.load("first").model == "claude-3-opus"
+
+
+# ── Store Errors → HTTP ────────────────────────────────────────────────────
+
+
+def test_list_profiles_timeout_returns_503(client, monkeypatch):
+    """List endpoint surfaces TimeoutError as 503."""
+
+    def boom(self):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(LLMProfileStore, "list_summaries", boom)
+
+    response = client.get("/api/profiles")
+    assert response.status_code == 503
+
+
+def test_get_profile_timeout_returns_503(client, store, monkeypatch):
+    """Get endpoint surfaces TimeoutError as 503."""
+    store.save("present", LLM(model="gpt-4o"))
+
+    def boom(self, name, *, cipher=None, resolve_provider=True):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(LLMProfileStore, "load", boom)
+
+    response = client.get("/api/profiles/present")
+    assert response.status_code == 503
+
+
+def test_delete_profile_invalid_internal_name_returns_400(client, store, monkeypatch):
+    """If the store raises ValueError, delete responds 400 instead of 500."""
+
+    def boom(self, name):
+        raise ValueError("Invalid profile name: 'x'.")
+
+    monkeypatch.setattr(LLMProfileStore, "delete", boom)
+
+    response = client.delete("/api/profiles/some-name")
+    assert response.status_code == 400
+
+
+def test_list_profiles_skips_corrupted(client, temp_profiles_dir):
+    """Corrupted profile files are skipped, not returned."""
+    (temp_profiles_dir / "good.json").write_text('{"model": "gpt-4o"}')
+    (temp_profiles_dir / "bad.json").write_text("{ not valid json")
+
+    response = client.get("/api/profiles")
+    assert response.status_code == 200
+
+    names = {p["name"] for p in response.json()["profiles"]}
+    assert names == {"good"}
+
+
+def test_list_profiles_api_key_set_for_redacted(client, store):
+    """A profile saved without secrets reports api_key_set=False."""
+    llm = LLM(model="gpt-4o", api_key="sk-secret-not-saved")
+    store.save("redacted", llm, include_secrets=False)
+
+    response = client.get("/api/profiles")
+    assert response.status_code == 200
+
+    profile = next(p for p in response.json()["profiles"] if p["name"] == "redacted")
+    assert profile["api_key_set"] is False
+
+
+# ── Malformed Bodies ───────────────────────────────────────────────────────
+
+
+def test_save_profile_missing_llm_field(client):
+    """Save without the required 'llm' field returns 422."""
+    response = client.post("/api/profiles/missing", json={})
+    assert response.status_code == 422
+
+
+def test_save_profile_wrong_type_for_llm(client):
+    """Save with 'llm' as a non-dict returns 422."""
+    response = client.post(
+        "/api/profiles/bad-llm",
+        json={"llm": "not-an-object"},
+    )
+    assert response.status_code == 422
+
+
+def test_rename_profile_missing_new_name(client, store):
+    """Rename without the required 'new_name' field returns 422."""
+    store.save("source", LLM(model="gpt-4o"))
+    response = client.post("/api/profiles/source/rename", json={})
+    assert response.status_code == 422
+
+
+def test_rename_profile_empty_new_name(client, store):
+    """Rename with empty 'new_name' returns 422."""
+    store.save("source", LLM(model="gpt-4o"))
+    response = client.post("/api/profiles/source/rename", json={"new_name": ""})
+    assert response.status_code == 422
+
+
+def test_get_profile_corrupted_returns_400(client, temp_profiles_dir):
+    """A corrupted profile JSON returns 400 from the load endpoint."""
+    (temp_profiles_dir / "broken.json").write_text("{ not valid json")
+    response = client.get("/api/profiles/broken")
+    assert response.status_code == 400
+    assert "broken" in response.json()["detail"].lower()
+
+
+def test_save_profile_timeout_returns_503(client, monkeypatch):
+    """Save endpoint surfaces TimeoutError as 503."""
+
+    def boom(self, name, llm, include_secrets=False, *, cipher=None, max_profiles=None):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(LLMProfileStore, "save", boom)
+
+    response = client.post(
+        "/api/profiles/anything",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 503
+
+
+def test_rename_profile_timeout_returns_503(client, store, monkeypatch):
+    """Rename endpoint surfaces TimeoutError as 503."""
+    store.save("src", LLM(model="gpt-4o"))
+
+    def boom(self, old, new):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(LLMProfileStore, "rename", boom)
+
+    response = client.post("/api/profiles/src/rename", json={"new_name": "dst"})
+    assert response.status_code == 503
+
+
+def test_delete_profile_timeout_returns_503(client, store, monkeypatch):
+    """Delete endpoint surfaces TimeoutError as 503."""
+    store.save("present", LLM(model="gpt-4o"))
+
+    def boom(self, name):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(LLMProfileStore, "delete", boom)
+
+    response = client.delete("/api/profiles/present")
+    assert response.status_code == 503
+
+
+def test_whitespace_api_key_reports_not_set(client, store):
+    """A profile with a whitespace-only api_key reports api_key_set=False."""
+    # Save with a real key, then poke whitespace into the on-disk file.
+    store.save("ws", LLM(model="gpt-4o", api_key="placeholder"), include_secrets=True)
+    profile_path = store.base_dir / "ws.json"
+    profile_path.write_text('{"model": "gpt-4o", "api_key": "   "}')
+
+    response = client.get("/api/profiles")
+    profile = next(p for p in response.json()["profiles"] if p["name"] == "ws")
+    assert profile["api_key_set"] is False
+
+    detail = client.get("/api/profiles/ws").json()
+    assert detail["api_key_set"] is False
+
+
+def test_save_at_limit_does_not_write_partial_state(client, store, monkeypatch):
+    """When the limit is hit, no profile file (or .tmp leftover) should appear."""
+    monkeypatch.setattr(profiles_router_module, "MAX_PROFILES", 1)
+
+    store.save("first", LLM(model="gpt-4o"))
+    files_before = sorted(p.name for p in store.base_dir.iterdir())
+
+    response = client.post(
+        "/api/profiles/second",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 409
+
+    files_after = sorted(p.name for p in store.base_dir.iterdir())
+    assert files_after == files_before  # no new file, no .tmp leftover
+
+
+def test_get_profile_does_not_expose_api_key(client, store):
+    """Even when api_key is saved, GET response nulls it out."""
+    llm = LLM(model="gpt-4o", api_key="sk-very-secret")
+    store.save("secret-profile", llm, include_secrets=True)
+
+    response = client.get("/api/profiles/secret-profile")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["config"]["api_key"] is None
+    assert body["api_key_set"] is True
+    # And the secret string itself never appears in the response
+    assert "sk-very-secret" not in response.text
+
+
+# ── Cipher Encryption Tests ────────────────────────────────────────────────
+
+
+@pytest.fixture
+def secret_key():
+    """Generate a secret key for cipher encryption."""
+    from base64 import urlsafe_b64encode
+
+    return urlsafe_b64encode(b"a" * 32).decode("ascii")
+
+
+@pytest.fixture
+def client_with_cipher(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    secret_key,
+    monkeypatch,
+):
+    """Create test client with cipher configured."""
+    from pydantic import SecretStr
+
+    # Reset store singletons to ensure clean state
+    reset_stores()
+
+    # Set environment variable for persistence directory
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=SecretStr(secret_key),
+    )
+    app = create_app(config)
+
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
+    ):
+        yield TestClient(app)
+
+    # Reset stores after test
+    reset_stores()
+
+
+@pytest.fixture
+def cipher(secret_key):
+    """Create a cipher instance for testing."""
+    from openhands.sdk.utils.cipher import Cipher
+
+    return Cipher(secret_key)
+
+
+def test_get_profile_invalid_expose_secrets_header_returns_400(client_with_cipher):
+    """GET with invalid X-Expose-Secrets header returns 400."""
+    response = client_with_cipher.get(
+        "/api/profiles/any", headers={"X-Expose-Secrets": "invalid-value"}
+    )
+    assert response.status_code == 400
+    assert "Invalid X-Expose-Secrets" in response.json()["detail"]
+
+
+def test_get_profile_with_plaintext_header_exposes_secrets(
+    client_with_cipher, store, cipher
+):
+    """GET with X-Expose-Secrets: plaintext returns raw secrets."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-secret-key")
+    store.save("with-secret", llm, include_secrets=True, cipher=cipher)
+
+    response = client_with_cipher.get(
+        "/api/profiles/with-secret", headers={"X-Expose-Secrets": "plaintext"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # Secret should be exposed
+    assert body["config"]["api_key"] == "sk-test-secret-key"
+
+
+@pytest.mark.parametrize("expose_mode", [None, "encrypted", "plaintext"])
+def test_linked_profile_with_encrypted_provider_credentials(
+    client_with_cipher, store, temp_profiles_dir, cipher, expose_mode
+):
+    """Only runtime reads resolve a provider's encrypted-at-rest credentials."""
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+    provider_store.create(
+        ProviderConnection(
+            id="automation-provider",
+            display_name="Automation provider",
+            api_key=SecretStr("sk-linked-secret"),
+            base_url="https://provider.example/v1",
+            created_at=1,
+            updated_at=1,
+        ),
+        cipher=cipher,
+    )
+    store.save(
+        "linked-profile",
+        LLM(model="gpt-4o", provider_connection_id="automation-provider"),
+        cipher=cipher,
+    )
+
+    response = client_with_cipher.get(
+        "/api/profiles/linked-profile",
+        headers={"X-Expose-Secrets": expose_mode} if expose_mode else {},
+    )
+
+    assert response.status_code == 200
+    config = response.json()["config"]
+    assert config["provider_connection_id"] == "automation-provider"
+    if expose_mode == "plaintext":
+        assert config["api_key"] == "sk-linked-secret"
+        assert config["base_url"] == "https://provider.example/v1"
+    else:
+        assert config["api_key"] is None
+        assert config["base_url"] is None
+    # Reading runtime credentials must not copy them into the stored profile.
+    stored = store.load("linked-profile", cipher=cipher, resolve_provider=False)
+    assert stored.api_key is None
+    assert stored.base_url is None
+
+
+def test_get_profile_with_encrypted_header_encrypts_secrets(
+    client_with_cipher, store, cipher
+):
+    """GET with X-Expose-Secrets: encrypted returns cipher-encrypted secrets."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-secret-key")
+    store.save("with-secret", llm, include_secrets=True, cipher=cipher)
+
+    response = client_with_cipher.get(
+        "/api/profiles/with-secret", headers={"X-Expose-Secrets": "encrypted"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    api_key = body["config"]["api_key"]
+    # Should be encrypted (not plaintext, not None)
+    assert api_key != "sk-test-secret-key"
+    assert api_key is not None
+    # Should be decryptable
+    decrypted = cipher.decrypt(api_key)
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "sk-test-secret-key"
+
+
+def test_get_profile_with_true_header_treats_as_encrypted(
+    client_with_cipher, store, cipher
+):
+    """GET with X-Expose-Secrets: true treats as encrypted (safety)."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-secret-key")
+    store.save("with-secret", llm, include_secrets=True, cipher=cipher)
+
+    response = client_with_cipher.get(
+        "/api/profiles/with-secret", headers={"X-Expose-Secrets": "true"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    api_key = body["config"]["api_key"]
+    # Should be encrypted (not plaintext)
+    assert api_key != "sk-test-secret-key"
+    # Should be decryptable
+    decrypted = cipher.decrypt(api_key)
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "sk-test-secret-key"
+
+
+def test_save_profile_with_cipher_encrypts_at_rest(
+    client_with_cipher, temp_profiles_dir, cipher
+):
+    """POST with cipher configured encrypts secrets at rest."""
+    import json
+
+    response = client_with_cipher.post(
+        "/api/profiles/encrypted-profile",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-test-secret"},
+            "include_secrets": True,
+        },
+    )
+
+    assert response.status_code == 201
+
+    # Read raw file to verify encryption
+    profile_path = temp_profiles_dir / "encrypted-profile.json"
+    data = json.loads(profile_path.read_text())
+    # api_key should be encrypted, not plaintext
+    assert data["api_key"] != "sk-test-secret"
+    # Should be decryptable
+    decrypted = cipher.decrypt(data["api_key"])
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "sk-test-secret"
+
+
+def test_encrypted_roundtrip_workflow(client_with_cipher, store, cipher):
+    """Client can GET encrypted, modify, and re-submit encrypted secrets."""
+    llm = LLM(model="gpt-4o", api_key="sk-original-secret")
+    store.save("roundtrip", llm, include_secrets=True, cipher=cipher)
+
+    get_response = client_with_cipher.get(
+        "/api/profiles/roundtrip", headers={"X-Expose-Secrets": "encrypted"}
+    )
+    assert get_response.status_code == 200
+    encrypted_api_key = get_response.json()["config"]["api_key"]
+
+    update_response = client_with_cipher.post(
+        "/api/profiles/roundtrip",
+        json={
+            "llm": {"model": "gpt-4o-mini", "api_key": encrypted_api_key},
+            "include_secrets": True,
+        },
+    )
+    assert update_response.status_code == 201
+
+    get_final = client_with_cipher.get(
+        "/api/profiles/roundtrip", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert get_final.status_code == 200
+    body = get_final.json()
+    assert body["config"]["api_key"] == "sk-original-secret"
+    assert body["config"]["model"] == "gpt-4o-mini"
+
+
+def test_save_plaintext_secret_with_cipher_encrypts_at_rest(
+    client_with_cipher, temp_profiles_dir, cipher
+):
+    """First-save path: plaintext input + cipher configured → encrypted on disk."""
+    import json
+
+    response = client_with_cipher.post(
+        "/api/profiles/first-save",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-plaintext-input"},
+            "include_secrets": True,
+        },
+    )
+    assert response.status_code == 201
+
+    profile_path = temp_profiles_dir / "first-save.json"
+    data = json.loads(profile_path.read_text())
+    assert data["api_key"] != "sk-plaintext-input"
+    decrypted = cipher.decrypt(data["api_key"])
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "sk-plaintext-input"
+
+
+def test_get_profile_encrypted_without_cipher_returns_503(client, store):
+    """GET with X-Expose-Secrets: encrypted without cipher configured returns 503."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-secret")
+    store.save("no-cipher", llm, include_secrets=True)
+
+    response = client.get(
+        "/api/profiles/no-cipher", headers={"X-Expose-Secrets": "encrypted"}
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    # 503 errors use "exception" field to avoid leaking internal details
+    error_text = body.get("detail", "") + body.get("exception", "")
+    assert "OH_SECRET_KEY" in error_text
+
+
+def test_save_without_cipher_stores_plaintext_for_backward_compat(client, store):
+    """POST without cipher configured stores plaintext (backward compatible)."""
+    import json
+
+    response = client.post(
+        "/api/profiles/plaintext-profile",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-plain-secret"},
+            "include_secrets": True,
+        },
+    )
+
+    assert response.status_code == 201
+
+    # Read raw file - should be plaintext
+    profile_path = store.base_dir / "plaintext-profile.json"
+    data = json.loads(profile_path.read_text())
+    assert data["api_key"] == "sk-plain-secret"
+
+
+# ── Active Profile Tests ───────────────────────────────────────────────────
+
+
+def test_list_profiles_includes_active_profile_null_by_default(client):
+    """GET /api/profiles returns active_profile as null when none is active."""
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "active_profile" in body
+    assert body["active_profile"] is None
+
+
+def test_activate_profile_success(client, store):
+    """POST /api/profiles/{name}/activate activates a profile."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-key")
+    store.save("my-profile", llm, include_secrets=True)
+
+    response = client.post("/api/profiles/my-profile/activate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "my-profile"
+    assert "activated" in body["message"].lower()
+    assert body["llm_applied"] is True
+
+
+def test_activate_profile_updates_active_profile(client, store):
+    """POST /api/profiles/{name}/activate updates the active_profile field."""
+    llm = LLM(model="gpt-4o")
+    store.save("first-profile", llm)
+    store.save("second-profile", llm)
+
+    # Activate first profile
+    client.post("/api/profiles/first-profile/activate")
+    list_response = client.get("/api/profiles")
+    assert list_response.json()["active_profile"] == "first-profile"
+
+    # Activate second profile
+    client.post("/api/profiles/second-profile/activate")
+    list_response = client.get("/api/profiles")
+    assert list_response.json()["active_profile"] == "second-profile"
+
+
+def test_activate_profile_applies_llm_config(client, store):
+    """POST /api/profiles/{name}/activate applies the profile's LLM config."""
+    llm = LLM(model="claude-3-opus", temperature=0.8)
+    store.save("claude-profile", llm)
+
+    client.post("/api/profiles/claude-profile/activate")
+
+    # Verify the settings were updated
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    agent_settings = settings_response.json()["agent_settings"]
+    assert agent_settings["llm"]["model"] == "claude-3-opus"
+    assert agent_settings["llm"]["temperature"] == 0.8
+
+
+def test_activate_profile_replaces_stale_llm_extra_body(client, store):
+    """Activating a profile should not retain extra_body from the old LLM."""
+    response = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {
+                    "model": "openai/qwen3",
+                    "litellm_extra_body": {"enable_thinking": True, "store": False},
+                }
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    llm = LLM(
+        model="openai/target-model",
+        base_url="https://api.example.test/v1",
+        litellm_extra_body={},
+    )
+    store.save("target-profile", llm)
+
+    response = client.post("/api/profiles/target-profile/activate")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    llm_settings = settings_response.json()["agent_settings"]["llm"]
+    assert llm_settings["model"] == "openai/target-model"
+    assert llm_settings["litellm_extra_body"] == {}
+
+
+def test_activate_profile_not_found(client):
+    """POST /api/profiles/{name}/activate returns 404 for non-existent profile."""
+    response = client.post("/api/profiles/nonexistent/activate")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_activate_profile_with_api_key(client, store):
+    """POST /api/profiles/{name}/activate applies profile with api_key."""
+    llm = LLM(model="gpt-4o", api_key="sk-profile-secret")
+    store.save("with-key", llm, include_secrets=True)
+
+    client.post("/api/profiles/with-key/activate")
+
+    # Verify the API key was applied (check llm_api_key_is_set)
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["llm_api_key_is_set"] is True
+
+
+def test_activate_profile_leaves_acp_settings_without_llm(client, store):
+    store.save(
+        "with-key",
+        LLM(model="gpt-4o", api_key="sk-profile-secret"),
+        include_secrets=True,
+    )
+    client.patch("/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}})
+
+    response = client.post("/api/profiles/with-key/activate")
+
+    assert response.status_code == 200
+    assert response.json()["llm_applied"] is False
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["active_profile"] == "with-key"
+    assert "llm" not in settings["agent_settings"]
+    assert settings["llm_api_key_is_set"] is False
+
+
+def test_list_profiles_shows_active_after_activation(client, store):
+    """GET /api/profiles shows the correct active_profile after activation."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+    store.save("profile-b", llm)
+
+    # Initially no active profile
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] is None
+
+    # Activate profile-a
+    client.post("/api/profiles/profile-a/activate")
+    response = client.get("/api/profiles")
+    body = response.json()
+    assert body["active_profile"] == "profile-a"
+
+    # Verify profile-a is in the list
+    names = {p["name"] for p in body["profiles"]}
+    assert "profile-a" in names
+    assert "profile-b" in names
+
+
+def test_activate_profile_invalid_name(client):
+    """POST /api/profiles/{name}/activate rejects invalid profile names."""
+    # Path traversal attempt
+    response = client.post("/api/profiles/..%2Fetc%2Fpasswd/activate")
+    assert response.status_code in (404, 422)
+
+    # Hidden file attempt
+    response = client.post("/api/profiles/.hidden/activate")
+    assert response.status_code in (400, 404, 422)
+
+
+# ── Rename Active Profile Tests ───────────────────────────────────────────
+
+
+def test_rename_active_profile_updates_active_profile(client, store):
+    """Renaming the active profile should update active_profile in settings."""
+    # Create and activate a profile
+    llm = LLM(model="gpt-4o", api_key=SecretStr("sk-test"))
+    store.save("my-profile", llm)
+    client.post("/api/profiles/my-profile/activate")
+
+    # Verify it's active
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] == "my-profile"
+
+    # Rename the active profile
+    response = client.post(
+        "/api/profiles/my-profile/rename",
+        json={"new_name": "renamed-profile"},
+    )
+    assert response.status_code == 200
+
+    # Verify active_profile was updated to the new name
+    response = client.get("/api/profiles")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_profile"] == "renamed-profile"
+    assert len(body["profiles"]) == 1
+    assert body["profiles"][0]["name"] == "renamed-profile"
+
+
+def test_rename_inactive_profile_preserves_active_profile(client, store):
+    """Renaming a non-active profile should not change active_profile."""
+    # Create two profiles
+    llm1 = LLM(model="gpt-4o", api_key=SecretStr("sk-test1"))
+    llm2 = LLM(model="claude-3-opus", api_key=SecretStr("sk-test2"))
+    store.save("profile-a", llm1)
+    store.save("profile-b", llm2)
+
+    # Activate profile-a
+    client.post("/api/profiles/profile-a/activate")
+
+    # Rename profile-b (not the active one)
+    response = client.post(
+        "/api/profiles/profile-b/rename",
+        json={"new_name": "profile-b-renamed"},
+    )
+    assert response.status_code == 200
+
+    # Verify active_profile is still profile-a
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] == "profile-a"
+
+
+# ── Auto-Create Profile Tests ─────────────────────────────────────────────
+
+
+def test_list_profiles_does_not_auto_create_from_settings(client):
+    """A configured LLM + API key with no profiles must NOT create a profile.
+
+    The legacy one-time settings->profile migration was removed: profiles are
+    created explicitly, so an LLM key lingering in agent_settings never
+    materializes a profile on its own.
+    """
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {"llm": {"model": "gpt-4o", "api_key": "sk-no-auto"}}
+        },
+    )
+
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
+
+
+def test_list_profiles_no_auto_create_without_api_key(client):
+    """No auto-creation when agent_settings.llm has no API key."""
+    # Configure model but no API key
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+    )
+
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
+
+
+def test_list_profiles_no_auto_create_when_no_config(client):
+    """No auto-creation when using default settings (no explicit configuration)."""
+    # Don't configure anything - leave settings empty
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
+
+
+def test_list_profiles_no_auto_create_when_profiles_exist(client, store):
+    """No auto-creation when profiles already exist."""
+    # Create a profile first
+    llm = LLM(model="claude-3-opus")
+    store.save("existing-profile", llm)
+
+    # Configure different LLM in settings with API key
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {"model": "gpt-4o", "api_key": "sk-should-not-auto"}
+            }
+        },
+    )
+
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    # Only the existing profile, no auto-created one
+    assert len(body["profiles"]) == 1
+    assert body["profiles"][0]["name"] == "existing-profile"
+
+
+def test_list_profiles_no_auto_create_after_deleting_active_profile(client, store):
+    """Deleting all profiles leaves the list empty (regression).
+
+    Activating a profile copies its API key into agent_settings; with no
+    auto-create from settings, that lingering key must not resurrect a
+    profile on the next list call.
+    """
+    llm = LLM(model="gpt-4o", api_key="sk-test")
+    store.save("my-profile", llm, include_secrets=True)
+    client.post("/api/profiles/my-profile/activate")
+
+    client.delete("/api/profiles/my-profile")
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
+
+
+def test_patch_provider_connection_rejects_clearing_api_key(client):
+    """PATCH api_key: null is a 422, not a silently-ignored no-op."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+
+    cleared = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": None},
+    )
+    assert cleared.status_code == 422
+    assert "api_key cannot be cleared" in cleared.json()["detail"]
+
+    # The stored key is untouched: a linked profile still resolves it.
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.get("/api/profiles/linked").json()["api_key_set"] is True
+
+
+def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
+    """A corrupted provider file yields a mapped 4xx, not an unhandled 500.
+
+    ``_profile_api_key_set`` reads the provider store while rendering a linked
+    profile; that read must go through ``store_errors()`` so a corrupt file
+    does not escape as a 500 on GET /profiles/{name}.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.get("/api/profiles/linked")
+
+    assert response.status_code == 400
+    assert response.status_code != 500
+
+
+def test_patch_provider_connection_rejects_null_display_name(client):
+    """Fix: PATCH display_name=null must return 422, not persist null."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"display_name": None},
+    )
+    assert response.status_code == 422
+
+    # The connection must be intact after the rejected PATCH.
+    conn = client.get("/api/llm/provider-connections").json()[0]
+    assert conn["display_name"] == "Anthropic"
+
+
+def test_patch_provider_connection_rejects_null_provider(client):
+    """Fix: PATCH provider=null must return 422."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"provider": None},
+    )
+    assert response.status_code == 422
+
+
+def test_list_provider_connections_maps_corrupted_file(client, temp_profiles_dir):
+    """GET provider-connections maps a corrupted file to 400, not 500."""
+    client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    )
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.get("/api/llm/provider-connections")
+
+    assert response.status_code == 400
+    assert response.status_code != 500
+
+
+def test_patch_provider_connection_maps_corrupted_file(client, temp_profiles_dir):
+    """PATCH provider-connections maps a corrupted file to 400, not 500."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"display_name": "Renamed"},
+    )
+
+    assert response.status_code == 400
+    assert response.status_code != 500
+
+
+# ── Pre-flight validation: POST /api/profiles/{name}/validate ────────────────
+
+
+def test_validate_profile_success(client):
+    """POST /api/profiles/{name}/validate returns valid=True when the LLM works."""
+    from unittest.mock import MagicMock
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            return_value=MagicMock(),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/test-profile/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+
+
+def test_validate_profile_sends_system_first(client):
+    """The pre-flight ping must open with a system message (repo invariant #5146)."""
+    from unittest.mock import MagicMock
+
+    captured: dict[str, list[Message]] = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["messages"] = list(messages)
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            new=fake_acompletion,
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/test-profile/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    msgs = captured["messages"]
+    assert [m.role for m in msgs] == ["system", "user"]
+
+
+def test_validate_profile_responses_api(client):
+    """Pre-flight uses the Responses API when the profile model requires it.
+
+    Regression: the endpoint must route through ``aresponses`` for profiles
+    where ``uses_responses_api()`` is true, matching the runtime dispatch used
+    by real conversations (`LLM.agenerate`) — otherwise preflight would
+    validate a different path than the server actually calls.
+    """
+    from unittest.mock import MagicMock
+
+    traced: dict[str, bool] = {}
+
+    def fake_append(messages, **kwargs):
+        traced["called"] = True
+        return MagicMock()
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.LLM.uses_responses_api",
+            return_value=True,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.aresponses", side_effect=fake_append),
+    ):
+        response = client.post(
+            "/api/profiles/responses-profile/validate",
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_mode": "responses",
+                    "api_key": "sk-test",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert traced["called"], "expected aresponses to be used for responses-api profiles"
+
+
+def test_validate_profile_invalid_model_returns_error(client):
+    """POST /api/profiles/{name}/validate returns valid=False on bad model."""
+    from openhands.sdk.llm.exceptions import LLMBadRequestError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMBadRequestError(
+                "The supported API model names are deepseek-v4-pro or "
+                "deepseek-v4-flash, but you passed deepseek-chat"
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/bad-model/validate",
+            json={"llm": {"model": "deepseek-chat", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMBadRequestError"
+    assert "deepseek" in body["error"]["message"]
+
+
+def test_validate_profile_auth_error_returns_error(client):
+    """POST /api/profiles/{name}/validate returns valid=False on bad API key."""
+    from openhands.sdk.llm.exceptions import LLMAuthenticationError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMAuthenticationError("Invalid or missing API credentials"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/bad-key/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-invalid"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMAuthenticationError"
+
+
+def test_validate_profile_rate_limit_does_not_block(client):
+    """POST /api/profiles/{name}/validate returns valid=True on rate limit."""
+    from openhands.sdk.llm.exceptions import LLMRateLimitError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMRateLimitError("Rate limit exceeded"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/rate-limited/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+
+
+def test_validate_profile_service_unavailable_blocks(client):
+    """POST /api/profiles/{name}/validate returns valid=False on provider 503."""
+    from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMServiceUnavailableError("Service unavailable"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/unavailable/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMServiceUnavailableError"
+
+
+def test_validate_profile_unknown_error_returns_error(client):
+    """POST /api/profiles/{name}/validate catches unexpected exceptions."""
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=RuntimeError("Connection refused"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/unknown-err/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "RuntimeError"
+    assert "Connection refused" in body["error"]["message"]
+
+
+def test_validate_profile_invalid_name(client):
+    """POST /api/profiles/{name}/validate returns 422 for invalid profile names."""
+    response = client.post(
+        "/api/profiles/invalid name/validate",
+        json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+    )
+
+    assert response.status_code == 422
+
+
+def test_validate_profile_redacts_api_key_in_error(client):
+    """Pre-flight error messages must not leak the API key.
+
+    Regression: when the LLM provider returns an error whose message contains
+    the submitted API key (e.g. OpenAI's ``Incorrect API key provided:
+    sk-proj-…``), the validate endpoint must redact the key before returning it
+    in the HTTP response or logging it.
+    """
+    from openhands.sdk.llm.exceptions import LLMAuthenticationError
+
+    leaked_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMAuthenticationError(
+                f"Incorrect API key provided: {leaked_key}"
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/leaky/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": leaked_key}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert leaked_key not in body["error"]["message"], (
+        "API key must not appear in the validate error response"
+    )
+
+
+def test_validate_profile_redacts_api_key_in_unknown_error(client):
+    """Unknown exceptions must also have API keys redacted from the response."""
+    leaked_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=RuntimeError(f"Request failed with key {leaked_key}"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/leaky-unknown/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": leaked_key}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert leaked_key not in body["error"]["message"], (
+        "API key must not appear in the validate error response"
+    )
+
+
+def test_validate_profile_subscription_restores_credentials(client):
+    """Pre-flight resolves OAuth credentials for subscription profiles.
+
+    Regression: ``validate_profile`` deserialized the LLM via plain Pydantic
+    but never called ``create_subscription_llm_from_config``.  The frontend
+    sends ``auth_type=subscription`` without the OAuth access token (it lives
+    in the credential store, not the serialized config), so the pre-flight sent
+    ``api_key=None`` and failed with "Incorrect API key provided: None".
+
+    The fix mirrors ``LLM.from_persisted`` by calling
+    ``create_subscription_llm_from_config`` when ``auth_type == subscription``.
+    """
+    from unittest.mock import MagicMock
+
+    # Patch the credential store so OpenAISubscriptionAuth finds fake (valid)
+    # credentials without hitting the filesystem or OpenAI.  The rest of
+    # ``create_subscription_llm_from_config`` runs with real code, producing
+    # a real LLM whose ``is_subscription`` flag and credentials are set.
+    fake_creds = OAuthCredentials(
+        vendor="openai",
+        access_token="fake-access-token",
+        refresh_token="fake-refresh-token",
+        expires_at=int(time.time() * 1000) + 3_600_000,  # not expired
+    )
+
+    captured: dict = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        # The API key must be resolved from the credential store, not None.
+        api_key = self._get_litellm_api_key_value()
+        captured["api_key"] = api_key
+        captured["is_subscription"] = self.is_subscription
+        return MagicMock()
+
+    with (
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=fake_creds,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", fake_acompletion),
+    ):
+        response = client.post(
+            "/api/profiles/sub-profile/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-6-astra",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                    "stream": True,
+                    "native_tool_calling": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert captured["is_subscription"] is True
+    assert captured["api_key"] == "fake-access-token"
+
+
+def test_validate_profile_subscription_missing_credentials(client):
+    """Pre-flight returns ``valid=False`` when subscription credentials are absent.
+
+    ``create_subscription_llm_from_config`` raises ``ValueError`` when no stored
+    OAuth credentials exist.  The endpoint must catch this and return a
+    structured error instead of a 500.
+    """
+    # CredentialStore.get returns None → refresh_if_needed_sync returns None
+    # → create_subscription_llm_from_config raises ValueError.
+    with (
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=None,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+    ):
+        response = client.post(
+            "/api/profiles/sub-profile/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-6-astra",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                    "stream": True,
+                    "native_tool_calling": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert "subscription login" in body["error"]["message"].lower()

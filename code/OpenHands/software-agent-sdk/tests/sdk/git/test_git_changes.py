@@ -1,0 +1,772 @@
+"""Tests for git_changes.py functionality using temporary directories and bash commands."""  # noqa: E501
+
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
+from openhands.sdk.git.models import GitChange, GitChangeStatus
+
+
+def run_bash_command(command: str, cwd: str) -> subprocess.CompletedProcess:
+    """Run a bash command in the specified directory."""
+    return subprocess.run(
+        command,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def setup_git_repo(repo_dir: str) -> None:
+    """Initialize a git repository with basic configuration."""
+    run_bash_command("git init", repo_dir)
+    run_bash_command("git config user.name 'Test User'", repo_dir)
+    run_bash_command("git config user.email 'test@example.com'", repo_dir)
+
+
+def test_get_changes_in_repo_empty_repository():
+    """Test get_changes_in_repo with an empty repository."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        changes = get_changes_in_repo(temp_dir)
+        assert changes == []
+
+
+def test_get_changes_in_repo_new_files():
+    """Test get_changes_in_repo with new files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create new files
+        (Path(temp_dir) / "file1.txt").write_text("Hello World")
+        (Path(temp_dir) / "file2.py").write_text("print('Hello')")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        assert len(changes) == 2
+
+        # Sort by path for consistent testing
+        changes.sort(key=lambda x: str(x.path))
+
+        assert changes[0].path == Path("file1.txt")
+        assert changes[0].status == GitChangeStatus.ADDED
+
+        assert changes[1].path == Path("file2.py")
+        assert changes[1].status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_modified_files():
+    """Test get_changes_in_repo with modified files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create and commit initial files
+        (Path(temp_dir) / "file1.txt").write_text("Initial content")
+        (Path(temp_dir) / "file2.py").write_text("print('Initial')")
+
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        # Modify files
+        (Path(temp_dir) / "file1.txt").write_text("Modified content")
+        (Path(temp_dir) / "file2.py").write_text("print('Modified')")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        # Repos without a remote (sitting on their default branch) compare
+        # against HEAD, so modified files appear as UPDATED — not as a
+        # whole-repo ADDED list against the empty tree.
+        assert len(changes) == 2
+
+        # Sort by path for consistent testing
+        changes.sort(key=lambda x: str(x.path))
+
+        assert changes[0].path == Path("file1.txt")
+        assert changes[0].status == GitChangeStatus.UPDATED
+
+        assert changes[1].path == Path("file2.py")
+        assert changes[1].status == GitChangeStatus.UPDATED
+
+
+def test_get_changes_in_repo_deleted_files():
+    """Test get_changes_in_repo with deleted files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create and commit initial files
+        (Path(temp_dir) / "file1.txt").write_text("Content to delete")
+        (Path(temp_dir) / "file2.py").write_text("print('To delete')")
+
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        # Delete files
+        os.remove(Path(temp_dir) / "file1.txt")
+        os.remove(Path(temp_dir) / "file2.py")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        # Repos without a remote compare against HEAD, so deletions of
+        # committed files are visible.
+        assert len(changes) == 2
+
+        changes.sort(key=lambda x: str(x.path))
+
+        assert changes[0].path == Path("file1.txt")
+        assert changes[0].status == GitChangeStatus.DELETED
+
+        assert changes[1].path == Path("file2.py")
+        assert changes[1].status == GitChangeStatus.DELETED
+
+
+def test_get_changes_in_repo_mixed_changes():
+    """Test get_changes_in_repo with mixed file changes."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create and commit initial files
+        (Path(temp_dir) / "existing.txt").write_text("Existing content")
+        (Path(temp_dir) / "to_modify.py").write_text("print('Original')")
+        (Path(temp_dir) / "to_delete.md").write_text("# To Delete")
+
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        # Make mixed changes
+        (Path(temp_dir) / "new_file.txt").write_text("New file content")  # Added
+        (Path(temp_dir) / "to_modify.py").write_text("print('Modified')")  # Modified
+        os.remove(Path(temp_dir) / "to_delete.md")  # Deleted
+
+        changes = get_changes_in_repo(temp_dir)
+
+        # Repos without a remote compare against HEAD: untouched committed
+        # files (existing.txt) are not listed, and each kind of change gets
+        # its real status.
+        assert len(changes) == 3
+
+        # Convert to dict for easier testing
+        changes_dict = {str(change.path): change.status for change in changes}
+
+        assert changes_dict["new_file.txt"] == GitChangeStatus.ADDED
+        assert changes_dict["to_modify.py"] == GitChangeStatus.UPDATED
+        assert changes_dict["to_delete.md"] == GitChangeStatus.DELETED
+
+
+def test_get_changes_in_repo_nested_directories():
+    """Test get_changes_in_repo with files in nested directories."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create nested directory structure
+        nested_dir = Path(temp_dir) / "src" / "utils"
+        nested_dir.mkdir(parents=True)
+
+        (nested_dir / "helper.py").write_text("def helper(): pass")
+        (Path(temp_dir) / "src" / "main.py").write_text("import utils.helper")
+        (Path(temp_dir) / "README.md").write_text("# Project")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        assert len(changes) == 3
+
+        # Convert to set of paths for easier testing
+        paths = {change.path.as_posix() for change in changes}
+
+        assert "src/utils/helper.py" in paths
+        assert "src/main.py" in paths
+        assert "README.md" in paths
+
+        # All should be added files
+        for change in changes:
+            assert change.status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_staged_and_unstaged():
+    """Test get_changes_in_repo with both staged and unstaged changes."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create and commit initial file
+        (Path(temp_dir) / "file.txt").write_text("Initial")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        # Make changes and stage some
+        (Path(temp_dir) / "file.txt").write_text("Modified")
+        (Path(temp_dir) / "staged.txt").write_text("Staged content")
+        (Path(temp_dir) / "unstaged.txt").write_text("Unstaged content")
+
+        # Stage some changes
+        run_bash_command("git add staged.txt", temp_dir)
+
+        changes = get_changes_in_repo(temp_dir)
+
+        assert len(changes) == 3
+
+        # Convert to dict for easier testing
+        changes_dict = {str(change.path): change.status for change in changes}
+
+        # Comparing against HEAD: the committed-then-modified file is
+        # UPDATED; the staged and untracked new files are ADDED.
+        assert changes_dict["file.txt"] == GitChangeStatus.UPDATED
+        assert changes_dict["staged.txt"] == GitChangeStatus.ADDED
+        assert changes_dict["unstaged.txt"] == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_non_git_directory():
+    """Test get_changes_in_repo with a non-git directory."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Don't initialize git repo
+        (Path(temp_dir) / "file.txt").write_text("Content")
+
+        with pytest.raises(GitRepositoryError):
+            get_changes_in_repo(temp_dir)
+
+
+def test_get_changes_in_repo_nonexistent_directory():
+    """Test get_changes_in_repo with a nonexistent directory."""
+    # The function will raise an exception for nonexistent directories
+    with pytest.raises(GitRepositoryError):
+        get_changes_in_repo("/nonexistent/directory")
+
+
+def test_get_git_changes_function():
+    """Test the get_git_changes function (main entry point)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create test files
+        (Path(temp_dir) / "test1.txt").write_text("Test content 1")
+        (Path(temp_dir) / "test2.py").write_text("print('Test 2')")
+
+        # Call get_git_changes with explicit path
+        changes = get_git_changes(temp_dir)
+
+        assert len(changes) == 2
+
+        # Sort by path for consistent testing
+        changes.sort(key=lambda x: str(x.path))
+
+        assert changes[0].path == Path("test1.txt")
+        assert changes[0].status == GitChangeStatus.ADDED
+
+        assert changes[1].path == Path("test2.py")
+        assert changes[1].status == GitChangeStatus.ADDED
+
+
+def test_get_git_changes_with_path_argument():
+    """Test get_git_changes with explicit path argument."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create test files
+        (Path(temp_dir) / "explicit_path.txt").write_text("Explicit path test")
+
+        changes = get_git_changes(temp_dir)
+
+        assert len(changes) == 1
+        assert changes[0].path == Path("explicit_path.txt")
+        assert changes[0].status == GitChangeStatus.ADDED
+
+
+def test_git_change_model_properties():
+    """Test GitChange model properties and serialization."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create a test file
+        test_file = Path(temp_dir) / "model_test.py"
+        test_file.write_text("# Model test file")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        assert len(changes) == 1
+        change = changes[0]
+
+        # Test model properties
+        assert isinstance(change, GitChange)
+        assert isinstance(change.path, Path)
+        assert isinstance(change.status, GitChangeStatus)
+        assert change.path == Path("model_test.py")
+        assert change.status == GitChangeStatus.ADDED
+
+        # Test serialization
+        change_dict = change.model_dump()
+        assert "path" in change_dict
+        assert "status" in change_dict
+        assert change_dict["status"] == GitChangeStatus.ADDED
+
+
+def test_git_change_path_serializes_to_posix_and_deserializes():
+    change = GitChange(
+        status=GitChangeStatus.ADDED,
+        path=Path("nested") / "file.py",
+    )
+
+    serialized = change.model_dump(mode="json")
+    assert serialized["path"] == "nested/file.py"
+
+    deserialized = GitChange.model_validate(serialized)
+    assert deserialized.path == Path("nested/file.py")
+    assert deserialized.status == GitChangeStatus.ADDED
+
+
+def test_git_changes_with_gitignore():
+    """Test that gitignore files are respected."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create .gitignore
+        (Path(temp_dir) / ".gitignore").write_text("*.log\n__pycache__/\n")
+
+        # Create files that should be ignored
+        (Path(temp_dir) / "debug.log").write_text("Log content")
+        pycache_dir = Path(temp_dir) / "__pycache__"
+        pycache_dir.mkdir()
+        (pycache_dir / "module.pyc").write_text("Compiled python")
+
+        # Create files that should not be ignored
+        (Path(temp_dir) / "main.py").write_text("print('Main')")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        # Should only see .gitignore and main.py, not the ignored files
+        paths = {str(change.path) for change in changes}
+
+        assert ".gitignore" in paths
+        assert "main.py" in paths
+        assert "debug.log" not in paths
+        assert "__pycache__/module.pyc" not in paths
+
+
+def test_get_git_changes_skips_vanished_nested_repo():
+    """Test that get_git_changes skips nested repos that vanish (TOCTOU).
+
+    Simulates a directory disappearing between glob scan and
+    validate_git_repository by patching get_changes_in_repo to raise
+    GitRepositoryError for one nested directory.
+    """
+    from unittest.mock import patch
+
+    from openhands.sdk.git.exceptions import GitRepositoryError
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create a file in the main repo
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        # Create a valid nested repo
+        nested = Path(temp_dir) / "goodrepo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested file")
+
+        # Create a second nested repo that will "vanish"
+        vanished = Path(temp_dir) / "vanished"
+        vanished.mkdir()
+        (vanished / ".git").mkdir()  # just enough for glob to find it
+
+        # Patch get_changes_in_repo to raise for the vanished directory
+        original_fn = get_changes_in_repo
+
+        def patched_get_changes(repo_dir, ref=None):
+            if str(Path(repo_dir).resolve()) == str(vanished.resolve()):
+                raise GitRepositoryError(f"Directory does not exist: {repo_dir}")
+            return original_fn(repo_dir, ref=ref)
+
+        with patch(
+            "openhands.sdk.git.git_changes.get_changes_in_repo",
+            side_effect=patched_get_changes,
+        ):
+            changes = get_git_changes(temp_dir)
+
+        paths = {c.path.as_posix() for c in changes}
+        assert "main.txt" in paths
+        assert "goodrepo/nested.txt" in paths
+        # vanished repo should be skipped, not crash
+        assert all("vanished/" not in p for p in paths)
+
+
+def test_get_changes_in_repo_rejects_broken_gitfile():
+    """A .git file is not enough if git cannot resolve it."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+
+        with pytest.raises(GitRepositoryError):
+            get_changes_in_repo(temp_dir)
+
+
+def test_get_git_changes_skips_broken_nested_gitfile():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        nested = Path(temp_dir) / "broken"
+        nested.mkdir()
+        (nested / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+        (nested / "nested.txt").write_text("nested file")
+
+        changes = get_git_changes(temp_dir)
+
+        paths = {c.path.as_posix() for c in changes}
+        assert "main.txt" in paths
+        assert all("broken/" not in p for p in paths)
+
+
+def test_git_changes_with_binary_files():
+    """Test git changes detection with binary files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create a binary file (simulate with bytes)
+        binary_file = Path(temp_dir) / "image.png"
+        binary_file.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00")
+
+        # Create a text file
+        (Path(temp_dir) / "text.txt").write_text("Text content")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        assert len(changes) == 2
+
+        # Both files should be detected as added
+        paths = {str(change.path) for change in changes}
+        assert "image.png" in paths
+        assert "text.txt" in paths
+
+        for change in changes:
+            assert change.status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_ref_head_shows_only_uncommitted():
+    """``ref='HEAD'`` should yield git status semantics: working tree vs HEAD."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Commit a baseline file so HEAD exists.
+        (Path(temp_dir) / "committed.txt").write_text("baseline")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'initial'", temp_dir)
+
+        # Add an extra commit. Without ref='HEAD' this would still appear in
+        # the changeset (origin auto-detection + empty-tree fallback compares
+        # against the empty tree). With ref='HEAD' it must NOT appear.
+        (Path(temp_dir) / "second.txt").write_text("second commit")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'second'", temp_dir)
+
+        # Now create one untracked + one modified file vs HEAD.
+        (Path(temp_dir) / "committed.txt").write_text("baseline modified")
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        paths = {str(c.path) for c in changes}
+        # Files committed at HEAD must not appear; only working-tree changes.
+        assert "second.txt" not in paths
+        assert "committed.txt" in paths
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_ref_raises():
+    """An explicit ref that does not resolve should raise ``GitCommandError``."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="definitely-not-a-real-ref")
+
+
+def test_get_changes_in_repo_ref_head_on_empty_repo_returns_untracked_as_added():
+    """``ref='HEAD'`` on a freshly init'd repo (no commits) must not raise.
+
+    Reproduces the Changes-tab bug for new conversation workspaces: the
+    runtime ``git init``s the workspace, the GUI requests ``ref=HEAD`` to get
+    git-status semantics, but ``HEAD`` does not resolve. Untracked files
+    should surface as ADDED instead of bubbling up a ``GitCommandError``.
+    """
+    # Arrange
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        # Act
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.ADDED, path=Path("untracked.txt"))
+        ]
+
+
+def test_get_changes_in_repo_ref_head_on_orphan_branch_returns_untracked_as_added():
+    """``ref='HEAD'`` on an orphan branch (HEAD unborn but other branches
+    have commits) must not raise.
+
+    The original empty-repo fix used ``_repo_has_commits`` to detect "no
+    commits anywhere" and skip the ``rev-parse --verify HEAD^{commit}``
+    step. That check returns ``True`` here (commits exist on ``main``),
+    so without an additional safety net the user sees the same
+    ``Git command failed: git --no-pager rev-parse --verify 'HEAD^{commit}'``
+    400 in the Changes tab.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Land a commit on the default branch so the repo "has commits".
+        (Path(temp_dir) / "committed.txt").write_text("on main")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'on main'", temp_dir)
+
+        # Switch to an orphan branch: HEAD now points to refs/heads/orphan,
+        # which doesn't exist as a commit yet.
+        run_bash_command("git checkout --orphan orphan", temp_dir)
+        run_bash_command("git rm -rf --cached .", temp_dir)
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        # Act / Assert: must not raise GitCommandError; untracked file shows
+        # up as added (mirrors the empty-repo behavior).
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_non_head_ref_still_raises_after_fix():
+    """The ``HEAD`` fallback must not swallow typos in other refs.
+
+    Regression guard for the new ``except GitCommandError`` in
+    ``get_valid_ref``: it only short-circuits when the *override* is
+    exactly ``"HEAD"``. Any other unresolved ref must still raise so a
+    typo (e.g. ``ref=mian``) doesn't silently render as "no changes".
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="not-a-real-branch-name")
+
+
+def test_get_git_changes_propagates_ref():
+    """``get_git_changes`` should pass the ref through to inner-repo lookups."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "a.txt").write_text("a")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        # Working-tree-only addition.
+        (Path(temp_dir) / "b.txt").write_text("b")
+
+        changes = get_git_changes(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert paths == {"b.txt"}
+
+
+def setup_cloned_repo(root: str) -> Path:
+    """Bare origin (default branch ``main``) with one committed README, plus
+    a configured clone of it — mirroring a real conversation workspace where
+    tracking refs and ``origin/HEAD`` exist."""
+    origin = Path(root) / "origin.git"
+    run_bash_command(f"git init --bare -b main {origin}", root)
+
+    seed = Path(root) / "seed"
+    seed.mkdir()
+    run_bash_command("git init -b main", str(seed))
+    run_bash_command("git config user.name 'Test User'", str(seed))
+    run_bash_command("git config user.email 'test@example.com'", str(seed))
+    (seed / "README.md").write_text("base")
+    run_bash_command("git add .", str(seed))
+    run_bash_command("git commit -m 'base'", str(seed))
+    run_bash_command(f"git remote add origin {origin}", str(seed))
+    run_bash_command("git push -u origin main", str(seed))
+
+    clone = Path(root) / "clone"
+    run_bash_command(f"git clone {origin} {clone}", root)
+    run_bash_command("git config user.name 'Test User'", str(clone))
+    run_bash_command("git config user.email 'test@example.com'", str(clone))
+    return clone
+
+
+def push_agent_branch(repo: Path) -> None:
+    """Create ``openhands/pr-branch`` with one committed file and push it,
+    leaving the branch in sync with its upstream (the post-PR state)."""
+    run_bash_command("git checkout -b openhands/pr-branch", str(repo))
+    (repo / "new.txt").write_text("pr change")
+    run_bash_command("git add .", str(repo))
+    run_bash_command("git commit -m 'agent pr work'", str(repo))
+    run_bash_command("git push -u origin openhands/pr-branch", str(repo))
+
+
+def test_get_changes_in_repo_committed_changes_stay_visible():
+    """Committed-but-unpushed work must stay visible — the Diff view used to
+    go blank the moment the agent ran ``git commit`` (APP-2205)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        (repo / "README.md").write_text("changed by agent")
+        run_bash_command("git commit -am 'agent work'", str(repo))
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("README.md"))
+        ]
+
+
+def test_get_changes_in_repo_pushed_branch_shows_pr_diff():
+    """A branch fully pushed to its upstream (the PR flow) must diff against
+    the fork point — comparing it against its own upstream would render the
+    whole PR as "no changes"."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.ADDED, path=Path("new.txt"))
+        ]
+
+
+def test_get_changes_in_repo_pushed_branch_with_tracked_edit_shows_only_edit():
+    """A tracked working-tree edit keeps the branch comparing against its own
+    upstream, so a pre-existing attached branch shows only the new edit
+    rather than its whole history."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+        (repo / "README.md").write_text("post-push edit")
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert — new.txt is already in the upstream, so only the edit shows.
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("README.md"))
+        ]
+
+
+def test_get_changes_in_repo_untracked_file_does_not_hide_pushed_branch_diff():
+    """Untracked files never appear in ``git diff <ref>``, so they must not
+    count as "dirty" for base selection — a stray scratch file must not
+    re-hide a fully-pushed branch's work."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+        (repo / "scratch.log").write_text("junk")
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert — the branch's committed work is still diffed against the
+        # fork point; the untracked file itself surfaces as an addition.
+        changes_dict = {str(change.path): change.status for change in changes}
+        assert changes_dict == {
+            "new.txt": GitChangeStatus.ADDED,
+            "scratch.log": GitChangeStatus.ADDED,
+        }
+
+
+def test_get_changes_in_repo_no_remote_worktree_shows_committed_changes():
+    """The GUI's default local flow: a worktree branch forked off local
+    ``main`` in a repo without a remote. Committed work must stay visible
+    instead of degrading to a whole-repo empty-tree comparison."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = Path(temp_dir) / "repo"
+        repo.mkdir()
+        run_bash_command("git init -b main", str(repo))
+        run_bash_command("git config user.name 'Test User'", str(repo))
+        run_bash_command("git config user.email 'test@example.com'", str(repo))
+        (repo / "app.txt").write_text("base")
+        run_bash_command("git add .", str(repo))
+        run_bash_command("git commit -m 'base'", str(repo))
+
+        worktree = Path(temp_dir) / "worktree"
+        run_bash_command(
+            f"git worktree add -b openhands/conv1 {worktree} main", str(repo)
+        )
+        (worktree / "app.txt").write_text("changed by agent")
+        run_bash_command("git commit -am 'agent work'", str(worktree))
+
+        # Act
+        changes = get_changes_in_repo(worktree)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("app.txt"))
+        ]
+
+
+def test_get_git_changes_keeps_paths_that_merely_share_a_nested_repo_prefix():
+    """A nested repository named "foo" must not swallow "foobar/" or "foo-config".
+
+    The nested-repository filter compares path ancestry; matching on the string
+    prefix instead drops root-repository changes whose names start with the
+    nested repository's name, and they disappear from the result silently.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+
+        # Root-repository changes that share "foo" as a prefix but are not in it
+        (Path(temp_dir) / "foobar").mkdir()
+        (Path(temp_dir) / "foobar" / "file.py").write_text("changed\n")
+        (Path(temp_dir) / "foo-config.yaml").write_text("changed\n")
+        (Path(temp_dir) / "README.md").write_text("changed\n")
+
+        paths = {str(change.path) for change in get_git_changes(temp_dir)}
+
+        assert "foobar/file.py" in paths
+        assert "foo-config.yaml" in paths
+        assert "README.md" in paths
+
+
+def test_get_git_changes_still_excludes_paths_inside_a_nested_repo():
+    """The filter must keep doing its job: real nested changes stay out."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+        (nested / "nested.txt").write_text("changed in nested\n")
+
+        changes = get_git_changes(temp_dir)
+        nested_entries = [c for c in changes if str(c.path) == "foo/nested.txt"]
+
+        # Reported once, by the nested repository, not by the parent.
+        assert len(nested_entries) == 1

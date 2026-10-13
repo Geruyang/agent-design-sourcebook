@@ -1,0 +1,125 @@
+export {
+  assertHostPathGrantsRebound,
+  deserializeMountCredentialRedactionMetadata,
+  deserializeHostPathGrantRedactionMetadata,
+  deserializeManifest,
+  mergeManifestEntryDelta,
+  mergeManifestDelta,
+  rebindPersistedMountCredentials,
+  sanitizeEnvironmentForPersistence,
+  serializeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
+  serializeMountCredentialRedactionMetadata,
+  serializeManifest,
+  serializeManifestRecord,
+} from './sandboxes/shared/manifestPersistence';
+export {
+  assertExistingMountTopologyPreserved,
+  assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  assertMountCredentialsRebound,
+  assertSandboxSessionStateUsable,
+  assertSandboxStateGenerationUnchanged,
+  captureSandboxStateGeneration,
+  captureLiveMountCredentialAuthority,
+  captureLiveMountCredentialAuthorityIfAbsent,
+  captureLiveMountEnvironmentAuthority,
+  captureLiveMountRuntimeAuthority,
+  copyValidatedMountEffectivePaths,
+  copyTrustedMountCredentialRebindProvenance,
+  configuredMountCredentialFields,
+  liveMountCredentialAuthorityMatches,
+  liveMountEnvironmentAuthorityMatches,
+  liveMountRuntimeAuthorityMatches,
+  manifestHasNonResumableMountAuthority,
+  isSandboxSessionStateUnsafe,
+  isMountCredentialFileEnvironmentName,
+  manifestHasInContainerMounts,
+  mountCredentialEnvironmentForEntry,
+  mountCredentialFileReferences,
+  NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
+  markSandboxSessionStateUnsafe,
+  recordLiveMountCredentialAuthority,
+  resolveAndValidateMountEnvironment,
+  sanitizeMountCredentialEnvironmentForPersistence,
+  validateMountCredentialBoundariesAtEffectivePath,
+  validateMountCredentialBoundaries,
+  validateMountCredentialFileEffectivePaths,
+  validateMountEnvironmentCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
+} from './mountSecurity';
+export type {
+  EffectiveManifestEntryPath,
+  MountCredentialExposureDecision,
+  MountCredentialFileReference,
+} from './mountSecurity';
+export { stableJsonStringify } from './shared/stableJson';
+export {
+  copyManifestMountCredentialExposurePolicy,
+  replaceManifestMountCredentialExposurePolicy,
+} from './manifest';
+export {
+  elapsedSeconds,
+  formatExecResponse,
+  truncateOutput,
+} from './shared/output';
+export {
+  isHostPathStrictlyWithinRoot,
+  isHostPathWithinRoot,
+  relativeHostPathEscapesRoot,
+  relativeHostPathEscapesRootOrSelf,
+  sandboxPathGrantHostPath,
+} from './shared/hostPath';
+export {
+  hasBackslashPathSeparator,
+  hasEscapingParentPathSegment,
+  hasParentPathSegment,
+  isUnderPosixPath,
+  normalizePosixPath,
+  posixDirname,
+  relativePosixPathWithinRoot,
+} from './shared/posixPath';
+export {
+  assertShellEnvironmentName,
+  deserializePersistedEnvironmentForRuntime,
+  materializeEnvironment,
+  materializeStaticEnvironment,
+  mergeMaterializedEnvironment,
+  mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
+  resolveEnvironmentReferences,
+  serializeManifestEnvironment,
+  serializeRuntimeEnvironmentForPersistence,
+} from './shared/environment';
+export { shellQuote } from './shared/shell';
+export {
+  isSandboxPathNotFoundError,
+  probeSandboxDirectoryExists,
+  probeSandboxPathExists,
+  type SandboxPathProbeResult,
+} from './shared/pathProbe';
+export {
+  isRecord,
+  isStringRecord,
+  readOptionalBoolean,
+  readOptionalNumber,
+  readOptionalNumberArray,
+  readOptionalRecord,
+  readOptionalRecordArray,
+  readOptionalString,
+  readOptionalStringRecord,
+  readString,
+  readStringArray,
+} from './shared/typeGuards';
+export {
+  validateCredentialPair,
+  type CredentialPairValidation,
+} from './shared/credentials';
+export {
+  assertViewImageByteLength,
+  imageOutputFromBytes,
+  MAX_VIEW_IMAGE_BYTES,
+  sniffImageMediaType,
+  toUint8Array,
+} from './shared/media';

@@ -1,0 +1,86 @@
+{
+  "name": "@ag-ui/langgraph",
+  "version": "0.0.45",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ag-ui-protocol/ag-ui.git"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/**",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "clean": "git clean -fdX --exclude=\"!.env\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:exports": "publint --strict && attw --pack",
+    "link:global": "pnpm link --global",
+    "unlink:global": "pnpm unlink --global"
+  },
+  "dependencies": {
+    "@ag-ui/a2ui-toolkit": "workspace:*",
+    "@langchain/core": "^1.1.40",
+    "@langchain/langgraph-sdk": "^1.8.8",
+    "langchain": ">=1.2.0",
+    "partial-json": "^0.1.7",
+    "rxjs": "7.8.1"
+  },
+  "peerDependencies": {
+    "@ag-ui/client": ">=1.0.0",
+    "@ag-ui/core": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@ag-ui/client": "workspace:*",
+    "@ag-ui/core": "workspace:*",
+    "@arethetypeswrong/cli": "^0.17.4",
+    "@langchain/google-genai": "2.1.27",
+    "@langchain/openai": "1.2.0",
+    "@types/node": "^20.11.19",
+    "@vitest/coverage-istanbul": "^4.0.18",
+    "publint": "^0.3.12",
+    "tsdown": "^0.20.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./middlewares": {
+      "require": "./dist/middlewares/index.js",
+      "import": "./dist/middlewares/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "middlewares": [
+        "dist/middlewares/index.d.ts"
+      ]
+    }
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "cache": false
+      },
+      "test:coverage": {
+        "cache": false
+      }
+    }
+  }
+}

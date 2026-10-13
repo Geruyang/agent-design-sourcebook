@@ -1,0 +1,156 @@
+<script lang="ts">
+	import { getContext } from 'svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import Image from '$lib/components/common/Image.svelte';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
+	import EditPencil from '$lib/components/icons/EditPencil.svelte';
+	import ArrowForward from '$lib/components/icons/ArrowForward.svelte';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import { isRasterImageContentType } from '$lib/utils';
+
+	const i18n = getContext<any>('i18n');
+
+	export let id: string;
+	export let content: string;
+	export let files: any[] = [];
+	export let onSendNow: (id: string) => void;
+	export let onEdit: ((id: string) => void) | undefined;
+	export let onDelete: (id: string) => void;
+	export let sending = false;
+	export let error = '';
+	$: uploadFailed = files.some((file) => file.status === 'error');
+	$: sendDisabled = sending || files.some((file) => ['uploading', 'error'].includes(file.status));
+	$: sendLabel = sending
+		? $i18n.t('Sending...')
+		: uploadFailed
+			? $i18n.t('Upload failed')
+			: sendDisabled
+				? $i18n.t('Waiting for upload')
+				: $i18n.t('Send now');
+</script>
+
+<div class="flex items-center gap-2 px-2 py-1.5">
+	<!-- Arrow forward icon -->
+	<div class="shrink-0 text-gray-500">
+		<ArrowForward className="size-3.5" />
+	</div>
+
+	<!-- Message content -->
+	<div class="flex-1 min-w-0 flex items-center gap-2">
+		{#if files.length > 0}
+			<div class="flex items-center gap-1 shrink-0">
+				{#each files as file}
+					{#if file.type === 'image' || isRasterImageContentType(file?.content_type)}
+						{@const fileUrl =
+							file.url?.startsWith('data') || file.url?.startsWith('http')
+								? file.url
+								: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
+						<div
+							class="relative size-6 shrink-0 overflow-hidden rounded-lg border border-gray-100/60 bg-white/60 dark:border-white/[0.06] dark:bg-white/[0.025]"
+						>
+							<Image src={fileUrl} alt="" imageClassName="size-full object-cover" />
+							{#if file.status === 'uploading'}
+								<div
+									class="absolute inset-0 flex items-center justify-center bg-white/75 text-gray-500 backdrop-blur-[1px] dark:bg-gray-950/70 dark:text-gray-300"
+								>
+									<Spinner className="size-3" />
+								</div>
+							{/if}
+						</div>
+					{:else}
+						<div
+							class="flex h-6 max-w-[9rem] items-center gap-1 rounded-lg border border-gray-100/60 bg-white/60 px-1.5 text-[0.6875rem] leading-none text-gray-500 dark:border-white/[0.06] dark:bg-white/[0.025] dark:text-gray-400"
+						>
+							{#if file.status === 'uploading'}
+								<span class="shrink-0 text-gray-400 dark:text-gray-500">
+									<Spinner className="size-3" />
+								</span>
+							{/if}
+							<span class="max-w-[5rem] truncate">{file.name ?? 'file'}</span>
+						</div>
+					{/if}
+				{/each}
+			</div>
+		{/if}
+
+		{#if content}
+			<p class="text-sm text-gray-600 dark:text-gray-300 truncate">{content}</p>
+		{:else if files.length === 0}
+			<p class="text-sm text-gray-400 dark:text-gray-500 truncate italic">
+				{$i18n.t('Empty message')}
+			</p>
+		{/if}
+
+		{#if uploadFailed}
+			<span class="shrink-0 text-xs text-gray-400 dark:text-gray-500">
+				{$i18n.t('Upload failed')}
+			</span>
+		{:else if error}
+			<span class="shrink-0 text-xs text-red-500" title={error}
+				>{$i18n.t('Failed to send message')}</span
+			>
+		{:else if sending}
+			<Spinner className="size-3 shrink-0" />
+		{/if}
+	</div>
+
+	<!-- Actions -->
+	<div class="flex items-center gap-1 shrink-0">
+		<!-- Send immediately -->
+		<Tooltip content={sendLabel}>
+			<button
+				type="button"
+				class="p-1 text-gray-400 transition-colors {sendDisabled
+					? 'opacity-40 cursor-not-allowed'
+					: 'hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300'}"
+				disabled={sendDisabled}
+				on:click={() => {
+					if (!sendDisabled) onSendNow(id);
+				}}
+				aria-label={sendLabel}
+			>
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					fill="none"
+					viewBox="0 0 24 24"
+					stroke-width="1.5"
+					stroke="currentColor"
+					class="size-3.5"
+				>
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"
+					/>
+				</svg>
+			</button>
+		</Tooltip>
+
+		<!-- Edit -->
+		<Tooltip content={$i18n.t('Edit')}>
+			<button
+				type="button"
+				class="p-1 text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+				disabled={sending || !onEdit}
+				on:click={() => onEdit?.(id)}
+				aria-label={$i18n.t('Edit')}
+			>
+				<EditPencil className="size-3.5" />
+			</button>
+		</Tooltip>
+
+		<!-- Delete -->
+		<Tooltip content={$i18n.t('Delete')}>
+			<button
+				type="button"
+				class="p-1 text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+				disabled={sending}
+				on:click={() => onDelete(id)}
+				aria-label={$i18n.t('Delete')}
+			>
+				<GarbageBin className="size-3.5" />
+			</button>
+		</Tooltip>
+	</div>
+</div>

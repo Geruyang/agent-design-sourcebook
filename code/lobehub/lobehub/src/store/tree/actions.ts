@@ -1,0 +1,599 @@
+import { CUSTOM_FOLDER_FILE_TYPE } from '@lobechat/const';
+
+import { hierarchySearchResource } from '@/features/ResourceManager/store/projection';
+import { revalidateReplica } from '@/libs/replica';
+import { fileService } from '@/services/file';
+import { resourceService } from '@/services/resource';
+import type { StoreSetter } from '@/store/types';
+import { OptimisticEngine } from '@/store/utils/optimisticEngine';
+
+import type { TreeDataState, TreeItem, TreeState, TreeStoreHandle } from './types';
+
+/**
+ * The library sidebar swaps the tree for a flat search list while a query is
+ * typed; its rows reuse the tree's rename/move/delete actions. Those actions
+ * only know the affected folder, so every tree revalidation also refreshes the
+ * hierarchy search replica or a renamed/deleted hit would linger there.
+ *
+ * A revalidation only re-runs the *head* request, and the replica deliberately
+ * keeps the rows the user already scrolled to. So dropping the loaded depth is
+ * part of the refresh: without it a rename / move / deletion of a row past the
+ * first page would leave the stale hit in the loaded tail. The same call drops
+ * the searches only a previous session had persisted (never loaded here), which
+ * no revalidation could otherwise reach.
+ */
+export const revalidateHierarchySearch = async (): Promise<void> => {
+  const { useResourceManagerStore } = await import('@/features/ResourceManager/store');
+  await useResourceManagerStore.getState().collapseHierarchySearch();
+  await revalidateReplica(hierarchySearchResource);
+};
+
+const createdTime = (value?: Date | string): number => {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+};
+
+/**
+ * Folders first, then newest first inside each group.
+ *
+ * Every write path (`loadChildren`, `revalidate`, `reconcile`, the optimistic
+ * move inserts) runs rows through this, so it — not the server — decides what
+ * the sidebar shows. Ordering by name dropped a just-created row into the
+ * middle of an A-Z list, which is neither where the user was looking nor what
+ * the explorer shows: the resource query returns `created_at desc` and the
+ * explorer's default sorter is `createdAt` / `Desc`. Name only breaks ties, and
+ * rows with no timestamp (optimistic stubs, older cached payloads) sort as 0 so
+ * they keep a stable A-Z tail instead of drifting.
+ */
+export const sortTreeItems = <T extends TreeItem>(items: T[]): T[] => {
+  return [...items].sort((a, b) => {
+    if (a.isFolder && !b.isFolder) return -1;
+    if (!a.isFolder && b.isFolder) return 1;
+
+    const aTime = createdTime(a.createdAt);
+    const bTime = createdTime(b.createdAt);
+    if (aTime !== bTime) return bTime - aTime;
+
+    return a.name.localeCompare(b.name);
+  });
+};
+
+export const toTreeItem = (item: {
+  createdAt?: Date | string | null;
+  fileId?: string | null;
+  fileType: string;
+  id: string;
+  metadata?: Record<string, any> | null;
+  name: string;
+  parentId?: string | null;
+  size?: number | null;
+  slug?: string | null;
+  sourceType?: string;
+  url?: string;
+  userId?: string | null;
+  visibility?: 'private' | 'public' | null;
+}): TreeItem => ({
+  createdAt: item.createdAt ?? undefined,
+  fileId: item.fileId,
+  fileType: item.fileType,
+  id: item.id,
+  isFolder: item.fileType === CUSTOM_FOLDER_FILE_TYPE,
+  metadata: item.metadata ?? undefined,
+  name: item.name,
+  parentId: item.parentId,
+  size: item.size ?? undefined,
+  slug: item.slug,
+  sourceType: item.sourceType,
+  url: item.url ?? '',
+  userId: item.userId,
+  visibility: item.visibility,
+});
+
+/**
+ * Explorer row → tree row.
+ *
+ * Kept next to {@link toTreeItem} and named, rather than inlined at the
+ * subscription that reconciles the explorer list into the sidebar, because it
+ * is the one place tree rows are rebuilt from a *different* source: anything it
+ * forgets to carry is silently dropped from every row the next time the list
+ * refreshes. `visibility` and `userId` were lost that way — the sidebar stopped
+ * marking private rows and the row menu mis-gated publish / make-private.
+ */
+export const toTreeItemFromResource = (item: {
+  createdAt?: Date | string | null;
+  fileId?: string | null;
+  fileType: string;
+  id: string;
+  metadata?: Record<string, any> | null;
+  name: string;
+  parentId?: string | null;
+  size?: number | null;
+  slug?: string | null;
+  sourceType?: string;
+  url?: string;
+  userId?: string | null;
+  visibility?: 'private' | 'public' | null;
+}): TreeItem => toTreeItem(item);
+
+type Setter = StoreSetter<TreeState>;
+
+export class TreeActionImpl {
+  readonly #get: () => TreeState;
+  readonly #set: Setter;
+  #engine?: OptimisticEngine<TreeDataState>;
+  #storeHandle: TreeStoreHandle;
+
+  constructor(set: Setter, get: () => TreeState) {
+    this.#set = set;
+    this.#get = get;
+    this.#storeHandle = {
+      getState: () => ({
+        children: get().children,
+        status: get().status,
+      }),
+      setState: (next) => set(next as Partial<TreeState>, false, 'tree/engineSetState'),
+    };
+  }
+
+  #getEngine = () => {
+    if (this.#engine) return this.#engine;
+    this.#engine = new OptimisticEngine(this.#storeHandle, { maxRetries: 1 });
+    return this.#engine;
+  };
+
+  /**
+   * Folders whose refresh was requested while a fetch for them was already in
+   * flight. That fetch captured its snapshot before the change the caller is
+   * revealing (a create from the sidebar "+" during the initial root load, a
+   * move landing while the destination is still loading), so dropping the
+   * request would leave the new row out of the tree until something else
+   * refreshed it. One follow-up runs once the in-flight fetch settles; repeated
+   * requests collapse into that one.
+   */
+  #queuedRevalidate = new Set<string>();
+
+  #runQueuedRevalidate = (folderId: string) => {
+    if (!this.#queuedRevalidate.delete(folderId)) return;
+    void this.revalidate(folderId);
+  };
+
+  /**
+   * `children` is keyed by folder id, but the explorer addresses the current
+   * folder by whatever the URL carries — usually the folder slug (see
+   * `useFileStore.queryParams.parentId`). Writing under the slug leaves the
+   * sidebar (which walks by id) blind to the update, so map a slug back to the
+   * id of the already-loaded folder node. Unknown keys pass through unchanged.
+   *
+   * The loaded node wins over an existing `children[key]` entry: the explorer's
+   * first list for a deep-linked folder arrives before its ancestors are
+   * loaded and lands under the slug, and that stale entry must not keep every
+   * later update pinned to the slug once the folder node is known.
+   */
+  #resolveFolderKey = (key: string): string => {
+    if (!key) return '';
+    const { children } = this.#get();
+    for (const items of Object.values(children)) {
+      const match = items.find((item) => item.isFolder && (item.id === key || item.slug === key));
+      if (match) return match.id;
+    }
+    return key;
+  };
+
+  init = (knowledgeBaseId: string) => {
+    this.#queuedRevalidate.clear();
+    this.#set(
+      {
+        children: {},
+        epoch: this.#get().epoch + 1,
+        errors: {},
+        expanded: {},
+        knowledgeBaseId,
+        status: {},
+      },
+      false,
+      'tree/init',
+    );
+    void this.loadChildren('');
+  };
+
+  reset = () => {
+    this.#queuedRevalidate.clear();
+    this.#set(
+      {
+        children: {},
+        epoch: this.#get().epoch + 1,
+        errors: {},
+        expanded: {},
+        knowledgeBaseId: null,
+        status: {},
+      },
+      false,
+      'tree/reset',
+    );
+  };
+
+  toggle = (folderId: string) => {
+    const { expanded } = this.#get();
+    const isExpanded = expanded[folderId];
+    this.#set({ expanded: { ...expanded, [folderId]: !isExpanded } }, false, 'tree/toggle');
+
+    if (!isExpanded && !this.#get().children[folderId]) {
+      void this.loadChildren(folderId);
+    }
+  };
+
+  loadChildren = async (folderId: string) => {
+    const { epoch, knowledgeBaseId, status } = this.#get();
+    if (status[folderId] === 'loading') return;
+
+    // Clear any prior error for this folder so a retry doesn't keep the failure marker.
+    const nextErrors = { ...this.#get().errors };
+    delete nextErrors[folderId];
+    this.#set(
+      { errors: nextErrors, status: { ...this.#get().status, [folderId]: 'loading' } },
+      false,
+      'tree/loadChildren/start',
+    );
+
+    try {
+      const response = await fileService.getKnowledgeItems({
+        includeContentPreview: false,
+        knowledgeBaseId: knowledgeBaseId ?? undefined,
+        parentId: folderId || null,
+        showFilesInKnowledgeBase: false,
+      });
+
+      if (this.#get().epoch !== epoch) return;
+
+      this.#set(
+        {
+          children: {
+            ...this.#get().children,
+            [folderId]: sortTreeItems(response.items.map(toTreeItem)),
+          },
+          status: { ...this.#get().status, [folderId]: 'idle' },
+        },
+        false,
+        'tree/loadChildren/success',
+      );
+      this.#runQueuedRevalidate(folderId);
+    } catch (error) {
+      if (this.#get().epoch !== epoch) return;
+      console.error(`Failed to load children for ${folderId}:`, error);
+      // Mark the folder as errored (was swallowed to 'idle', which read as a false
+      // "empty folder" — Read §1.1 failure-as-empty). Keep the error so the view can
+      // render a failure state with Retry instead of the "add folder" empty.
+      this.#set(
+        {
+          errors: { ...this.#get().errors, [folderId]: error },
+          status: { ...this.#get().status, [folderId]: 'error' },
+        },
+        false,
+        'tree/loadChildren/error',
+      );
+      this.#runQueuedRevalidate(folderId);
+    }
+  };
+
+  revalidate = async (folderKey: string) => {
+    void revalidateHierarchySearch();
+
+    const folderId = this.#resolveFolderKey(folderKey);
+    const { epoch, knowledgeBaseId, status } = this.#get();
+    if (status[folderId] === 'loading' || status[folderId] === 'revalidating') {
+      this.#queuedRevalidate.add(folderId);
+      return;
+    }
+
+    this.#set(
+      { status: { ...this.#get().status, [folderId]: 'revalidating' } },
+      false,
+      'tree/revalidate/start',
+    );
+
+    try {
+      const response = await fileService.getKnowledgeItems({
+        includeContentPreview: false,
+        knowledgeBaseId: knowledgeBaseId ?? undefined,
+        parentId: folderId || null,
+        showFilesInKnowledgeBase: false,
+      });
+
+      if (this.#get().epoch !== epoch) return;
+
+      this.#set(
+        {
+          children: {
+            ...this.#get().children,
+            [folderId]: sortTreeItems(response.items.map(toTreeItem)),
+          },
+          status: { ...this.#get().status, [folderId]: 'idle' },
+        },
+        false,
+        'tree/revalidate/success',
+      );
+      this.#runQueuedRevalidate(folderId);
+    } catch {
+      if (this.#get().epoch !== epoch) return;
+      this.#set(
+        { status: { ...this.#get().status, [folderId]: 'idle' } },
+        false,
+        'tree/revalidate/error',
+      );
+      this.#runQueuedRevalidate(folderId);
+    }
+  };
+
+  reconcile = (folderKey: string, items: TreeItem[]) => {
+    const folderId = this.#resolveFolderKey(folderKey);
+    // The explorer list can hold a row just created for ANOTHER folder (a folder
+    // row's "+" while a different folder is open): it cannot tell without the
+    // open folder's id, but the row's own parentId can. Rows with no parentId
+    // are the server's and are kept as they are.
+    const scoped = items.filter(
+      (item) => item.parentId == null || item.parentId === (folderId || null),
+    );
+    this.#set(
+      {
+        children: { ...this.#get().children, [folderId]: sortTreeItems(scoped) },
+        status: { ...this.#get().status, [folderId]: 'idle' },
+      },
+      false,
+      'tree/reconcile',
+    );
+  };
+
+  expandAncestors = async (folderIds: string[]) => {
+    if (!folderIds.length) return;
+    const epoch = this.#get().epoch;
+
+    const expanded = { ...this.#get().expanded };
+    for (const id of folderIds) expanded[id] = true;
+    this.#set({ expanded }, false, 'tree/expandAncestors');
+
+    await Promise.all(
+      folderIds.filter((id) => !this.#get().children[id]).map((id) => this.loadChildren(id)),
+    );
+
+    if (this.#get().epoch !== epoch) return;
+  };
+
+  /**
+   * Refresh the touched folders from the server once every queued mutation has
+   * settled, so a revalidation never overwrites another move's optimistic rows.
+   *
+   * Must run AFTER `tx.commit()` resolves, never inside `tx.onSuccess`: the
+   * engine only marks a mutation done after its onSuccess returns, so a
+   * `flush()` awaited there waits for itself. The transaction then never
+   * settled, the sidebar never revalidated, and every later mutation touching
+   * the same folders queued behind the stuck one without reaching the server.
+   */
+  #revalidateSettled = async (folderKeys: string[]) => {
+    await this.#getEngine().flush();
+    void Promise.all(folderKeys.map((key) => this.revalidate(key)));
+  };
+
+  /**
+   * Forget rows another store has already deleted, then refresh what changed.
+   *
+   * The deleting caller (the explorer's optimistic `deleteResource`, the
+   * multi-select bulk delete) owns the network call; the tree only has to catch
+   * up. It cannot be told which folder to refresh by the explorer's current
+   * query: the shared row menu also runs on sidebar rows, and clicking a folder
+   * there navigates into it, so "delete the folder I just opened" would refresh
+   * the deleted folder instead of the parent list the sidebar renders. So find
+   * the rows where they actually live and refresh those parents; the fallback
+   * only covers rows the sidebar never loaded.
+   *
+   * The local removal is synchronous so the sidebar drops the row in the same
+   * tick as the explorer, instead of after a refetch round-trip.
+   */
+  dropNodes = async (itemIds: string[], fallbackParentKey = ''): Promise<void> => {
+    const ids = new Set(itemIds);
+    if (ids.size === 0) return;
+
+    const children = { ...this.#get().children };
+    const expanded = { ...this.#get().expanded };
+    const status = { ...this.#get().status };
+    const errors = { ...this.#get().errors };
+    const affectedParents: string[] = [];
+
+    for (const [parentKey, items] of Object.entries(children)) {
+      if (!items.some((item) => ids.has(item.id))) continue;
+      affectedParents.push(parentKey);
+      children[parentKey] = items.filter((item) => !ids.has(item.id));
+    }
+
+    // Drop the removed folders' own caches too, descendants included: a stale
+    // `children[id]` would otherwise survive as an orphan and be served as the
+    // folder's contents if that key ever came back.
+    const pending = [...ids];
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      const descendants = children[id];
+      if (descendants) pending.push(...descendants.filter((i) => i.isFolder).map((i) => i.id));
+      delete children[id];
+      delete expanded[id];
+      delete status[id];
+      delete errors[id];
+    }
+
+    this.#set({ children, errors, expanded, status }, false, 'tree/dropNodes');
+
+    // A parent that is itself being removed has no list left to refresh, and
+    // fetching it would recreate the orphan entry the purge just dropped.
+    const targets = affectedParents.filter((key) => !ids.has(key));
+    await this.#revalidateSettled(targets.length > 0 ? targets : [fallbackParentKey]);
+  };
+
+  moveItem = async (itemId: string, fromParent: string, toParent: string): Promise<void> => {
+    const { children } = this.#get();
+    const item = children[fromParent]?.find((i) => i.id === itemId);
+
+    if (!item) {
+      const { useFileStore } = await import('@/store/file');
+      const { resourceMap } = useFileStore.getState();
+
+      if (resourceMap.has(itemId)) {
+        await useFileStore.getState().moveResource(itemId, toParent || null);
+      } else {
+        const cachePatch = await useFileStore
+          .getState()
+          .prepareResourceMoveCachePatch(fromParent || null, toParent || null);
+        const moved = await resourceService.moveResource(itemId, toParent || null);
+        await useFileStore.getState().applyMovedResourceToCaches(moved, cachePatch);
+        await useFileStore.getState().refreshFileList();
+      }
+
+      void Promise.all([this.revalidate(fromParent), this.revalidate(toParent)]);
+      return;
+    }
+
+    const engine = this.#getEngine();
+    const tx = engine.createTransaction(`moveItem(${itemId})`);
+
+    tx.set((draft) => {
+      draft.children[fromParent] = (draft.children[fromParent] ?? []).filter(
+        (i) => i.id !== itemId,
+      );
+      // Only a loaded destination gets the row. Seeding an unloaded folder with
+      // just the moved item would make its first expand skip the fetch and show
+      // that lone row as the whole folder; the post-commit revalidate fills it.
+      const target = draft.children[toParent];
+      if (target) {
+        draft.children[toParent] = sortTreeItems([...target.filter((i) => i.id !== itemId), item]);
+      }
+    });
+
+    tx.mutation = async () => {
+      const { useFileStore } = await import('@/store/file');
+      const { resourceMap } = useFileStore.getState();
+
+      if (resourceMap.has(itemId)) {
+        // Item visible in Explorer → delegate (handles optimistic Explorer update + API)
+        await useFileStore.getState().moveResource(itemId, toParent || null);
+      } else {
+        // Item not in Explorer → API only, then patch the folder-list caches
+        // (the explorer's SWR entries for both folders) and refresh Explorer
+        const cachePatch = await useFileStore
+          .getState()
+          .prepareResourceMoveCachePatch(fromParent || null, toParent || null);
+        const moved = await resourceService.moveResource(itemId, toParent || null);
+        await useFileStore.getState().applyMovedResourceToCaches(moved, cachePatch);
+        await useFileStore.getState().refreshFileList();
+      }
+    };
+
+    await tx.commit();
+    await this.#revalidateSettled([fromParent, toParent]);
+  };
+
+  moveItems = async (itemIds: string[], fromParent: string, toParent: string): Promise<void> => {
+    const { children } = this.#get();
+    const idsSet = new Set(itemIds);
+    const items = (children[fromParent] ?? []).filter((i) => idsSet.has(i.id));
+    if (items.length === 0) return;
+
+    const engine = this.#getEngine();
+    const tx = engine.createTransaction(`moveItems(${itemIds.join(',')})`);
+
+    tx.set((draft) => {
+      draft.children[fromParent] = (draft.children[fromParent] ?? []).filter(
+        (i) => !idsSet.has(i.id),
+      );
+      const target = draft.children[toParent];
+      if (target) {
+        draft.children[toParent] = sortTreeItems([
+          ...target.filter((i) => !idsSet.has(i.id)),
+          ...items,
+        ]);
+      }
+    });
+
+    tx.mutation = async () => {
+      const { useFileStore } = await import('@/store/file');
+      const { resourceMap } = useFileStore.getState();
+
+      // Split items into those visible in Explorer vs not
+      const inExplorer = itemIds.filter((id) => resourceMap.has(id));
+      const notInExplorer = itemIds.filter((id) => !resourceMap.has(id));
+
+      const promises: Promise<unknown>[] = [];
+
+      // Items in Explorer → delegate to file store (optimistic update + API)
+      for (const id of inExplorer) {
+        promises.push(useFileStore.getState().moveResource(id, toParent || null));
+      }
+
+      // Items not in Explorer → API only, then patch the folder-list caches
+      const cachePatch =
+        notInExplorer.length > 0
+          ? await useFileStore
+              .getState()
+              .prepareResourceMoveCachePatch(fromParent || null, toParent || null)
+          : undefined;
+      for (const id of notInExplorer) {
+        promises.push(
+          resourceService
+            .moveResource(id, toParent || null)
+            .then((moved) =>
+              useFileStore.getState().applyMovedResourceToCaches(moved, cachePatch!),
+            ),
+        );
+      }
+
+      await Promise.all(promises);
+
+      if (notInExplorer.length > 0) {
+        await useFileStore.getState().refreshFileList();
+      }
+    };
+
+    await tx.commit();
+    await this.#revalidateSettled([fromParent, toParent]);
+  };
+
+  renameItem = async (itemId: string, parentId: string, newName: string): Promise<void> => {
+    const engine = this.#getEngine();
+    const tx = engine.createTransaction(`renameItem(${itemId})`);
+
+    tx.set((draft) => {
+      const list = draft.children[parentId];
+      if (!list) return;
+      const idx = list.findIndex((i) => i.id === itemId);
+      if (idx !== -1) list[idx] = { ...list[idx], name: newName };
+    });
+
+    tx.mutation = async () => {
+      await resourceService.updateResource(itemId, { name: newName });
+      // The search surfaces keep their own persisted copies of the hit.
+      const { useResourceManagerStore } = await import('@/features/ResourceManager/store');
+      useResourceManagerStore.getState().patchSearchHit(itemId, { name: newName });
+      const { useFileStore } = await import('@/store/file');
+      await useFileStore.getState().refreshFileList();
+    };
+
+    await tx.commit();
+    await this.#revalidateSettled([parentId]);
+  };
+
+  removeItems = async (itemIds: string[], parentId: string): Promise<void> => {
+    const idsSet = new Set(itemIds);
+    const engine = this.#getEngine();
+    const tx = engine.createTransaction(`removeItems(${itemIds.join(',')})`);
+
+    tx.set((draft) => {
+      draft.children[parentId] = (draft.children[parentId] ?? []).filter((i) => !idsSet.has(i.id));
+    });
+
+    tx.mutation = async () => {
+      await resourceService.deleteResources(itemIds);
+      const { useFileStore } = await import('@/store/file');
+      await useFileStore.getState().refreshFileList();
+    };
+
+    await tx.commit();
+    await this.dropNodes(itemIds, parentId);
+  };
+}

@@ -1,0 +1,627 @@
+"""
+Unit tests for agent status transitions.
+
+Tests that the agent correctly transitions between execution states,
+particularly focusing on transitions to RUNNING status when run() is called.
+
+This addresses the fix for issue #865 where the agent status was not transitioning
+to RUNNING when run() was called from IDLE state.
+
+State transition matrix tested:
+- IDLE -> RUNNING (when run() is called)
+- PAUSED -> RUNNING (when run() is called after pause)
+- WAITING_FOR_CONFIRMATION -> RUNNING (when run() is called to confirm)
+- FINISHED -> IDLE -> RUNNING (when new message sent after completion)
+- STUCK -> IDLE (when new message sent) -> RUNNING (when run() is called)
+- STUCK -> RUNNING (when run() is called directly)
+- FINISHED -> remain unchanged (run() exits immediately without new message)
+"""
+
+import threading
+from collections.abc import Sequence
+from typing import ClassVar
+
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    Tool,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
+
+
+class StatusTransitionMockAction(Action):
+    """Mock action schema for testing."""
+
+    command: str
+
+
+class StatusTransitionMockObservation(Observation):
+    """Mock observation schema for testing."""
+
+    result: str
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=self.result)]
+
+
+class StatusCheckingExecutor(
+    ToolExecutor[StatusTransitionMockAction, StatusTransitionMockObservation]
+):
+    """Executor that captures the agent status when executed."""
+
+    def __init__(self, status_during_execution: list[ConversationExecutionStatus]):
+        self.status_during_execution: list[ConversationExecutionStatus] = (
+            status_during_execution
+        )
+
+    def __call__(
+        self, action: StatusTransitionMockAction, conversation=None
+    ) -> StatusTransitionMockObservation:
+        # Capture the agent status during execution
+        if conversation:
+            self.status_during_execution.append(conversation.state.execution_status)
+        return StatusTransitionMockObservation(result=f"Executed: {action.command}")
+
+
+class StatusTransitionTestTool(
+    ToolDefinition[StatusTransitionMockAction, StatusTransitionMockObservation]
+):
+    """Concrete tool for status transition testing."""
+
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(
+        cls, conv_state=None, *, executor: ToolExecutor, **params
+    ) -> Sequence["StatusTransitionTestTool"]:
+        return [
+            cls(
+                description="A test tool",
+                action_type=StatusTransitionMockAction,
+                observation_type=StatusTransitionMockObservation,
+                executor=executor,
+            )
+        ]
+
+
+def test_execution_status_transitions_to_running_from_idle():
+    """Test that agent status transitions to RUNNING when run() is called from IDLE."""
+    status_during_execution: list[ConversationExecutionStatus] = []
+
+    test_tool = StatusTransitionTestTool.create(
+        executor=StatusCheckingExecutor(status_during_execution)
+    )[0]
+    register_tool("test_tool", test_tool)
+
+    # Use TestLLM with a scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Verify initial state is IDLE
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Send message and run
+    conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
+    conversation.run()
+
+    # After run completes, status should be FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    # Verify we have agent response
+    agent_messages = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent) and event.source == "agent"
+    ]
+    assert len(agent_messages) == 1
+
+
+def test_execution_status_is_running_during_execution_from_idle():
+    """Test that agent status is RUNNING during execution when started from IDLE."""
+    status_during_execution: list[ConversationExecutionStatus] = []
+    execution_started = threading.Event()
+    # Barrier lets the main thread observe RUNNING before the executor returns,
+    # preventing the race where the run-loop moves on before we can check.
+    main_thread_observed = threading.Event()
+
+    class SignalingExecutor(
+        ToolExecutor[StatusTransitionMockAction, StatusTransitionMockObservation]
+    ):
+        """Executor that signals when execution starts and captures status."""
+
+        def __call__(
+            self, action: StatusTransitionMockAction, conversation=None
+        ) -> StatusTransitionMockObservation:
+            # Signal that execution has started, then wait for the main thread to
+            # observe the status before returning so there is no race.
+            execution_started.set()
+            main_thread_observed.wait(timeout=2.0)
+            # Capture the agent status during execution (before returning)
+            if conversation:
+                status_during_execution.append(conversation.state.execution_status)
+            return StatusTransitionMockObservation(result=f"Executed: {action.command}")
+
+    test_tool = StatusTransitionTestTool.create(executor=SignalingExecutor())[0]
+    register_tool("test_tool", test_tool)
+
+    # Use TestLLM with scripted responses: first a tool call, then completion
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="test_tool",
+                        arguments='{"command": "test_command"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[Tool(name="test_tool")],
+    )
+    conversation = Conversation(agent=agent)
+
+    # Verify initial state is IDLE
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Send message
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+
+    # Run in a separate thread so we can check status during execution
+    run_complete = threading.Event()
+    status_during_run: list[ConversationExecutionStatus | None] = [None]
+
+    def run_agent():
+        conversation.run()
+        run_complete.set()
+
+    t = threading.Thread(target=run_agent, daemon=True)
+    t.start()
+
+    # Wait for execution to start
+    assert execution_started.wait(timeout=2.0), "Execution never started"
+
+    # Check status while the executor is still holding (no race)
+    status_during_run[0] = conversation.state.execution_status
+
+    # Release the executor
+    main_thread_observed.set()
+
+    # Wait for run to complete
+    assert run_complete.wait(timeout=2.0), "Run did not complete"
+    t.join(timeout=0.1)
+
+    # Verify status was RUNNING during execution
+    assert status_during_run[0] == ConversationExecutionStatus.RUNNING, (
+        f"Expected RUNNING status during execution, got {status_during_run[0]}"
+    )
+
+    # After run completes, status should be FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_execution_status_transitions_to_running_from_paused():
+    """Test that agent status transitions to RUNNING when run() is called from
+    PAUSED."""
+    # Use TestLLM with a scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Pause the conversation
+    conversation.pause()
+    assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
+
+    # Send message and run
+    conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
+    conversation.run()
+
+    # After run completes, status should be FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    # Verify we have agent response
+    agent_messages = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent) and event.source == "agent"
+    ]
+    assert len(agent_messages) == 1
+
+
+def test_execution_status_transitions_from_waiting_for_confirmation():
+    """Test WAITING_FOR_CONFIRMATION -> RUNNING transition when run() is called."""
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    # Use TestLLM with scripted responses: first a tool call, then completion
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="test_tool",
+                        arguments='{"command": "test_command"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(agent=agent)
+    conversation.set_confirmation_policy(AlwaysConfirm())
+
+    # Send message and run - should stop at WAITING_FOR_CONFIRMATION
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Should be waiting for confirmation
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    # Call run again - this confirms and should transition to RUNNING, then FINISHED
+    conversation.run()
+
+    # After confirmation and execution, should be FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_execution_status_finished_to_idle_to_running():
+    """Test FINISHED -> IDLE -> RUNNING transition when new message is sent."""
+    # Use TestLLM with two scripted responses (one for each run)
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # First conversation - should end in FINISHED
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="First task")])
+    )
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    # Send new message - should transition to IDLE
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second task")])
+    )
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Run again - should transition to RUNNING then FINISHED
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_run_exits_immediately_when_already_finished():
+    """Test that run() exits immediately when status is already FINISHED."""
+    # Use TestLLM with a single scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Complete a task
+    conversation.send_message(Message(role="user", content=[TextContent(text="Task")]))
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    # Call run again without sending a new message
+    # Should exit immediately without calling LLM again
+    initial_call_count = llm.call_count
+    conversation.run()
+
+    # Status should still be FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # LLM should not be called again
+    assert llm.call_count == initial_call_count
+
+
+def test_run_recovers_from_stuck():
+    """Test that run() resets STUCK status and lets the agent continue.
+
+    When a conversation is STUCK (e.g. stuck detector triggered or
+    persisted STUCK state from a previous session), calling run() should
+    reset the status to RUNNING so the agent can retry.  Without this
+    reset, a persisted STUCK state would permanently kill the session.
+    """
+    # Provide a finish response so the agent can complete after unsticking.
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Recovered")])]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Seed a user message so the agent has context to work with
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Please continue")])
+    )
+
+    # Simulate stuck detection persisted from previous session
+    conversation._state.execution_status = ConversationExecutionStatus.STUCK
+
+    conversation.run()
+
+    # Agent should have recovered and finished normally
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert llm.call_count == 1
+
+
+def test_send_message_resets_stuck_to_idle():
+    """Test STUCK → IDLE transition when a new user message arrives.
+
+    A new user message is an implicit signal to unstick the conversation,
+    analogous to how FINISHED → IDLE works.
+    """
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Done")])]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Simulate stuck state
+    conversation._state.execution_status = ConversationExecutionStatus.STUCK
+
+    # Sending a new message should reset STUCK → IDLE
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Try again")])
+    )
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Running should proceed normally: IDLE → RUNNING → FINISHED
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_execution_status_error_on_max_iterations():
+    """Test that status is set to ERROR with clear message when max iterations hit."""
+
+    status_during_execution: list[ConversationExecutionStatus] = []
+    events_received: list = []
+
+    test_tool = StatusTransitionTestTool.create(
+        executor=StatusCheckingExecutor(status_during_execution)
+    )[0]
+    register_tool("test_tool", test_tool)
+
+    # Create a tool call message that will be returned repeatedly
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+
+    # Use TestLLM with enough responses to hit max iterations
+    # max_iteration_per_run=2 means we need at least 2 tool call responses
+    llm = TestLLM.from_messages(
+        [
+            tool_call_message,
+            tool_call_message,
+            tool_call_message,  # Extra in case needed
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    # Set max_iteration_per_run to 2 to quickly hit the limit
+    conversation = Conversation(
+        agent=agent,
+        max_iteration_per_run=2,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+
+    # Send message and run
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Status should be ERROR
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    # Should have emitted a ConversationErrorEvent with clear message
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert len(error_events) == 1
+    assert error_events[0].code == "MaxIterationsReached"
+    assert "maximum iterations limit" in error_events[0].detail
+    assert "(2)" in error_events[0].detail  # max_iteration_per_run value
+
+
+def test_execution_status_finished_on_final_iteration():
+    """FINISHED is preserved when agent completes on its final iteration.
+
+    Regression test for: agent's FINISHED status being overwritten with
+    ERROR when the task completes exactly on the max_iteration_per_run
+    boundary.
+    """
+
+    events_received: list = []
+
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    # Two tool-call iterations followed by a text response on the 3rd (final) iteration.
+    # A text-only assistant message causes the agent to set status to FINISHED.
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+    finish_message = Message(
+        role="assistant", content=[TextContent(text="Task completed successfully")]
+    )
+
+    llm = TestLLM.from_messages(
+        [
+            tool_call_message,  # iteration 1
+            tool_call_message,  # iteration 2
+            finish_message,  # iteration 3 (final) — agent finishes here
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(
+        agent=agent,
+        max_iteration_per_run=3,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Status must be FINISHED, not ERROR
+    assert (
+        conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    ), (
+        f"Expected FINISHED but got {conversation.state.execution_status}. "
+        "Agent completing on the final iteration should not be treated as an error."
+    )
+
+    # No MaxIterationsReached error event should have been emitted
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    max_iter_errors = [e for e in error_events if e.code == "MaxIterationsReached"]
+    assert len(max_iter_errors) == 0, (
+        "Expected no MaxIterationsReached error when agent finishes on final iteration"
+    )
+
+
+def test_execution_status_error_on_max_budget(tmp_path):
+    """Run halts with ERROR + MaxBudgetReached when the cost budget is exceeded,
+    even before the iteration cap is reached."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+    llm = TestLLM.from_messages([tool_call_message] * 5)
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    # High iteration cap so the BUDGET is what stops the run.
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+        max_iteration_per_run=10,
+        max_budget_per_run=1.0,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    # Pre-seed spend over the budget (TestLLM accrues no real cost).
+    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
+        accumulated_cost=5.0
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    budget_errors = [e for e in error_events if e.code == "MaxBudgetReached"]
+    assert len(budget_errors) == 1
+    assert "maximum budget limit" in budget_errors[0].detail
+    # Budget stopped it, not the iteration cap.
+    assert not any(e.code == "MaxIterationsReached" for e in error_events)
+
+
+def test_finished_preserved_even_when_over_budget(tmp_path):
+    """A run that finishes is kept FINISHED even if it is over budget."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    # Text-only response -> agent finishes on the first iteration.
+    finish_message = Message(
+        role="assistant", content=[TextContent(text="Task completed")]
+    )
+    llm = TestLLM.from_messages([finish_message])
+    agent = Agent(llm=llm, tools=[])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+        max_iteration_per_run=10,
+        max_budget_per_run=1.0,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+    conversation.send_message(Message(role="user", content=[TextContent(text="Do it")]))
+    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
+        accumulated_cost=5.0
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert not any(e.code == "MaxBudgetReached" for e in error_events)

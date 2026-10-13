@@ -1,0 +1,489 @@
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  DockerSandboxClient,
+  InMemoryRemoteSnapshotStore,
+  inContainerMountStrategy,
+  Manifest,
+  NoopSnapshotSpec,
+} from '../../src/sandbox/local';
+
+const ONE_BY_ONE_PNG = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE/wH+gZ6kWQAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
+
+// Match the client's default image, including its GNU filesystem utilities.
+const DOCKER_TEST_IMAGE = 'python:3.14-slim';
+const DOCKER_CLI_TIMEOUT_MS = 30_000;
+const DOCKER_TEST_TIMEOUT_MS = 180_000;
+const ACTIVE_PROCESS_POLL_MS = 50;
+const ACTIVE_PROCESS_MAX_POLLS = 80;
+const dockerAvailable = isDockerAvailable();
+const itIfDocker = dockerAvailable ? it : it.skip;
+
+describe('DockerSandboxClient', () => {
+  let rootDir: string;
+  const cleanupContainerIds = new Set<string>();
+
+  afterEach(async () => {
+    for (const containerId of cleanupContainerIds) {
+      removeDockerContainer(containerId);
+    }
+    cleanupContainerIds.clear();
+
+    if (rootDir) {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it(
+    'rejects custom command mount credential exposure before Docker side effects',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+      });
+      await expect(
+        client.create(
+          new Manifest({
+            entries: {
+              mounted: {
+                type: 'mount',
+                source: 'memory://initial',
+                mountStrategy: inContainerMountStrategy({
+                  pattern: {
+                    type: 'fuse',
+                    command: 'custom-mount',
+                  },
+                }),
+              },
+            },
+          }).withInContainerMountCredentialExposureAcknowledged('mounted'),
+        ),
+      ).rejects.toThrow(/SDK-supported strategy/u);
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'runs workspace commands, apply_patch, view_image, interactive stdin, and restore via snapshot',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+      });
+      const session = await client.create(
+        new Manifest({
+          entries: {
+            'notes.txt': {
+              type: 'file',
+              content: 'hello docker\n',
+            },
+            'pixel.png': {
+              type: 'file',
+              content: ONE_BY_ONE_PNG,
+            },
+          },
+        }),
+        {
+          snapshot: {
+            type: 'local',
+            baseDir: rootDir,
+          },
+        },
+      );
+      cleanupContainerIds.add(session.state.containerId);
+
+      const output = await session.execCommand({
+        cmd: 'cat notes.txt',
+      });
+
+      expect(output).toContain('Process exited with code 0');
+      expect(output).toContain('hello docker');
+
+      await session.applyManifest(
+        new Manifest({
+          environment: {
+            TOKEN: 'updated',
+            EXTRA: 'present',
+          },
+        }),
+      );
+      const envOutput = await session.execCommand({
+        cmd: 'printf "%s:%s\\n" "$TOKEN" "$EXTRA"',
+      });
+      expect(envOutput).toContain('updated:present');
+
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'notes.txt',
+        diff: '@@\n-hello docker\n+after\n',
+      });
+
+      const patchedOutput = await session.execCommand({
+        cmd: 'cat notes.txt',
+      });
+      const image = await session.viewImage({
+        path: 'pixel.png',
+      });
+
+      expect(patchedOutput).toContain('after');
+      expect(image).toMatchObject({
+        type: 'image',
+        image: {
+          data: expect.any(Uint8Array),
+          mediaType: 'image/png',
+        },
+      });
+
+      const started = await session.execCommand({
+        cmd: 'printf "ready\\n"; read value; printf "%s\\n" "$value"',
+        tty: true,
+        yieldTimeMs: 0,
+      });
+      const sessionId = Number(
+        started.match(/Process running with session ID (\d+)/)?.[1],
+      );
+      await waitForOutputContaining(
+        {
+          writeStdin: (args) => session.writeStdin(args),
+        },
+        sessionId,
+        'ready',
+      );
+      const finished = await writeUntilExit(
+        {
+          writeStdin: (args) => session.writeStdin(args),
+        },
+        sessionId,
+        'hello stdin\n',
+      );
+
+      expect(started).toContain('Process running with session ID');
+      expect(finished).toContain('Process exited with code 0');
+      expect(finished).toContain('hello stdin');
+
+      const serialized = await client.serializeSessionState(session.state);
+
+      removeDockerContainer(session.state.containerId);
+      cleanupContainerIds.delete(session.state.containerId);
+
+      const reattached = await client.resume(
+        await client.deserializeSessionState(serialized),
+      );
+      cleanupContainerIds.add(reattached.state.containerId);
+      const resumedOutput = await reattached.execCommand({
+        cmd: 'cat notes.txt',
+      });
+
+      expect(resumedOutput).toContain('after');
+
+      const priorWorkspaceRoot = reattached.state.workspaceRootPath;
+      removeDockerContainer(reattached.state.containerId);
+      cleanupContainerIds.delete(reattached.state.containerId);
+      await rm(priorWorkspaceRoot, { recursive: true, force: true });
+
+      const restored = await client.resume(
+        await client.deserializeSessionState(serialized),
+      );
+      cleanupContainerIds.add(restored.state.containerId);
+      const restoredOutput = await restored.execCommand({
+        cmd: 'cat notes.txt',
+      });
+
+      expect(restored.state.workspaceRootPath).not.toBe(priorWorkspaceRoot);
+      expect(restored.state.snapshotSpec).toEqual({
+        type: 'local',
+        baseDir: rootDir,
+      });
+      expect(restoredOutput).toContain('after');
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker.each(['local', 'remote'] as const)(
+    'reapplies manifest sticky intent during %s snapshot recovery',
+    async (type) => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sticky-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        snapshot:
+          type === 'local'
+            ? { type, baseDir: rootDir }
+            : { type, store: new InMemoryRemoteSnapshotStore() },
+      });
+      const session = await client.create(
+        new Manifest({
+          users: [{ name: 'sticky-user' }],
+          entries: {
+            '.': { type: 'dir', permissions: 'drwxrwxrwt' },
+            shared: {
+              type: 'dir',
+              permissions: 'drwxrwxrwt',
+              children: {
+                'value.txt': { type: 'file', content: 'original' },
+              },
+            },
+            deleted: { type: 'dir', permissions: 'drwxrwxrwt' },
+            replaced: {
+              type: 'dir',
+              children: {
+                nested: { type: 'dir', permissions: 'drwxrwxrwt' },
+              },
+            },
+            ordinary: { type: 'dir', permissions: 0o777 },
+          },
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      const workspace = session.state.workspaceRootPath;
+      await chmod(join(workspace, 'shared'), 0o777);
+      await writeFile(join(workspace, 'shared/value.txt'), 'snapshot contents');
+      await rm(join(workspace, 'deleted'), { recursive: true });
+      await rm(join(workspace, 'replaced'), { recursive: true });
+      await writeFile(join(workspace, 'replaced'), 'now a file');
+      const serialized = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      removeDockerContainer(session.state.containerId);
+      cleanupContainerIds.delete(session.state.containerId);
+      // Exercise both existing-workspace extraction and new-workspace extraction.
+      for (const recovery of ['drifted', 'missing']) {
+        if (recovery === 'drifted') {
+          await writeFile(join(workspace, 'shared/value.txt'), 'drift');
+        } else {
+          await rm(workspace, { recursive: true, force: true });
+        }
+        const restored = await client.resume(
+          await client.deserializeSessionState(serialized),
+        );
+        cleanupContainerIds.add(restored.state.containerId);
+        const restoredRoot = restored.state.workspaceRootPath;
+        expect((await stat(restoredRoot)).mode & 0o7777).toBe(0o1755);
+        expect((await stat(join(restoredRoot, 'shared'))).mode & 0o7777).toBe(
+          (0o777 & ~process.umask()) | 0o1000,
+        );
+        expect((await stat(join(restoredRoot, 'ordinary'))).mode & 0o7777).toBe(
+          0o777 & ~process.umask(),
+        );
+        expect(
+          await readFile(join(restoredRoot, 'shared/value.txt'), 'utf8'),
+        ).toBe('snapshot contents');
+        await expect(stat(join(restoredRoot, 'deleted'))).rejects.toMatchObject(
+          { code: 'ENOENT' },
+        );
+        expect(await readFile(join(restoredRoot, 'replaced'), 'utf8')).toBe(
+          'now a file',
+        );
+        expect(
+          await restored.execCommand({ cmd: 'stat -c %a shared' }),
+        ).toContain(((0o777 & ~process.umask()) | 0o1000).toString(8));
+        removeDockerContainer(restored.state.containerId);
+        cleanupContainerIds.delete(restored.state.containerId);
+      }
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'keeps application environment separate from file helpers',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-environment-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            PATH: '/application-only/bin',
+            APP_MODE: 'application',
+          },
+          entries: { 'note.txt': { type: 'file', content: 'before\n' } },
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      try {
+        expect(
+          await session.execCommand({
+            cmd: 'printf "%s:%s\\n" "$PATH" "$APP_MODE"',
+            login: false,
+          }),
+        ).toContain('/application-only/bin:application');
+        expect(
+          Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+        ).toBe('before\n');
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'note.txt',
+          moveTo: 'moved.txt',
+          diff: '@@\n-before\n+after\n',
+        });
+        expect(await session.pathExists('note.txt')).toBe(false);
+        expect(
+          Buffer.from(await session.readFile({ path: 'moved.txt' })).toString(),
+        ).toBe('after\n');
+        await session.applyManifest(
+          new Manifest({ environment: { APP_MODE: 'updated' } }),
+        );
+        expect(
+          await session.runDockerMountCommand(
+            '/usr/bin/printenv APP_MODE',
+            'inspect mount environment',
+          ),
+        ).toBe('updated\n');
+        await session
+          .createEditor()
+          .deleteFile({ type: 'delete_file', path: 'moved.txt' });
+        expect(await session.listDir({ path: '.' })).toEqual([]);
+      } finally {
+        await session.close();
+        cleanupContainerIds.delete(session.state.containerId);
+      }
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'reuses a running container when bind mount authority is unchanged',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      const sharedPath = join(rootDir, 'shared');
+      await mkdir(sharedPath);
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        snapshot: new NoopSnapshotSpec(),
+      });
+      const session = await client.create(
+        new Manifest({
+          extraPathGrants: [{ path: sharedPath, readOnly: true }],
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      await session.execCommand({
+        cmd: 'printf retained > /tmp/container-only-state',
+      });
+      const serialized = await client.serializeSessionState(session.state);
+
+      const resumed = await client.resume(
+        await client.deserializeSessionState(
+          JSON.parse(JSON.stringify(serialized)) as Record<string, unknown>,
+        ),
+      );
+
+      expect(resumed.state.containerId).toBe(session.state.containerId);
+      expect(
+        await resumed.execCommand({
+          cmd: 'cat /tmp/container-only-state',
+        }),
+      ).toContain('retained');
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+});
+
+function isDockerAvailable(): boolean {
+  const result = spawnSync('docker', ['version'], {
+    stdio: 'ignore',
+    timeout: DOCKER_CLI_TIMEOUT_MS,
+  });
+
+  return result.status === 0;
+}
+
+function removeDockerContainer(containerId: string): void {
+  spawnSync('docker', ['rm', '-f', containerId], {
+    stdio: 'ignore',
+    timeout: DOCKER_CLI_TIMEOUT_MS,
+  });
+}
+
+async function writeUntilExit(
+  session: {
+    writeStdin(args: {
+      sessionId: number;
+      chars?: string;
+      yieldTimeMs?: number;
+    }): Promise<string>;
+  },
+  sessionId: number,
+  chars: string,
+): Promise<string> {
+  let output = await session.writeStdin({
+    sessionId,
+    chars,
+    yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
+  });
+  let combinedOutput = output;
+
+  for (
+    let attempt = 0;
+    attempt < ACTIVE_PROCESS_MAX_POLLS &&
+    !output.includes('Process exited with code');
+    attempt += 1
+  ) {
+    output = await session.writeStdin({
+      sessionId,
+      chars: '',
+      yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
+    });
+    combinedOutput += output;
+  }
+
+  return combinedOutput;
+}
+
+async function waitForOutputContaining(
+  session: {
+    writeStdin(args: {
+      sessionId: number;
+      chars?: string;
+      yieldTimeMs?: number;
+    }): Promise<string>;
+  },
+  sessionId: number,
+  expected: string,
+): Promise<string> {
+  let output = '';
+  for (
+    let attempt = 0;
+    attempt < ACTIVE_PROCESS_MAX_POLLS && !output.includes(expected);
+    attempt += 1
+  ) {
+    output += await session.writeStdin({
+      sessionId,
+      chars: '',
+      yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
+    });
+  }
+  expect(output).toContain(expected);
+  return output;
+}

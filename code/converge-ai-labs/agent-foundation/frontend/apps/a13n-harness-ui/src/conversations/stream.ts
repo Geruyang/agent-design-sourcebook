@@ -1,0 +1,1228 @@
+import type { ContentPart } from "@ag-ui/core";
+import { EventSchema } from "@ag-ui/core/schemas";
+import { readContentParts } from "a13n-ui";
+import {
+  DisplayNormalizer,
+  isDisplayItem,
+  type DisplayContinuation,
+  type DisplayItem,
+} from "a13n-ui/display";
+import type { Schema, Transport } from "../transport/client";
+import type { ThreadRefresh } from "./refresh";
+import { ProcessObservations } from "./process-observations";
+import {
+  sourceText,
+  type AppliedEdit,
+  type ToolView,
+} from "./tool-presentation";
+
+export type DisplayBlock = {
+  id: string;
+  toolCallId?: string;
+  kind:
+    "assistant" | "user" | "thinking" | "tool" | "activity" | "media" | "task";
+  text: string;
+  name?: string;
+  result?: string;
+  resultParts?: ContentPart[];
+  subagentRunId?: string;
+  done?: boolean;
+  outcome?: ToolView["outcome"];
+  failure?: string;
+  retry?: boolean;
+  stopped?: boolean;
+  edit?: AppliedEdit;
+  images?: Schema<"ToolImageView">[];
+  apps?: Schema<"AppReference">[];
+  imageUnavailable?: boolean;
+  provider?: string;
+  metadata?: Record<string, unknown>;
+  value?: unknown;
+  diagnostic?: boolean;
+  context?: "handoff" | "compaction";
+};
+type Payload = Record<string, unknown>;
+function object(value: unknown): value is Payload {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function string(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+export type FocusFrame =
+  | (Schema<"FocusSnapshotFrame"> & { kind: "snapshot" })
+  | (Schema<"FocusReplayFrame"> & { kind: "root_stream" })
+  | (Schema<"FocusReadyFrame"> & { kind: "ready" })
+  | (Schema<"FocusEventFrame"> & { kind: "event" })
+  | (Schema<"ResetFrame"> & { kind: "reset" });
+export function focusFrame(value: unknown): FocusFrame {
+  if (!object(value)) throw new Error("Invalid conversation stream frame.");
+  if (
+    value.kind === "snapshot" &&
+    object(value.snapshot) &&
+    object(value.snapshot.thread) &&
+    typeof value.snapshot.epoch === "string" &&
+    typeof value.snapshot.cutover_sequence === "number" &&
+    (value.resume_cursor === null || typeof value.resume_cursor === "string")
+  )
+    return value as FocusFrame;
+  if (
+    value.kind === "root_stream" &&
+    typeof value.run_id === "string" &&
+    Array.isArray(value.events)
+  )
+    return value as FocusFrame;
+  if (
+    value.kind === "event" &&
+    typeof value.resume_cursor === "string" &&
+    object(value.event) &&
+    typeof value.event.sequence === "number" &&
+    typeof value.event.event_type === "string"
+  )
+    return value as FocusFrame;
+  if (value.kind === "ready" && typeof value.resume_cursor === "string")
+    return value as FocusFrame;
+  if (value.kind === "reset" && typeof value.reason === "string")
+    return value as FocusFrame;
+  throw new Error("Invalid conversation stream frame.");
+}
+
+class RootRunChanged extends Error {}
+
+// Rendering only: history/receipt queries remain the continuation/control owners.
+export class FocusDisplay {
+  constructor(
+    private readonly fragmentLimit = 64 * 1024 * 1024,
+    readonly processes = new ProcessObservations(),
+  ) {}
+  // Previous visible suffix only; never consulted for cursors, controls or activity.
+  retainedPresentation?: FocusDisplay;
+  presentationFor(continuation: string | null | undefined) {
+    const selected = continuation?.startsWith("initial:") ? null : continuation;
+    if (
+      selected === this.baseContinuation ||
+      (selected != null && this.checkpoints.has(selected))
+    ) {
+      this.retainedPresentation = undefined;
+      return this;
+    }
+    if (
+      this.retainedPresentation &&
+      showFocusedOutput(this.retainedPresentation, continuation)
+    )
+      return this.retainedPresentation;
+    return this;
+  }
+  snapshot?: Schema<"ThreadFocusSnapshot">;
+  cursor?: string;
+  runId?: string;
+  baseContinuation?: string | null;
+  blocks = new Map<string, DisplayBlock>();
+  private items = new Map<string, DisplayItem>();
+  private normalizer = new DisplayNormalizer({ full_content: true });
+  private displayPosition?: { attempt: number; sequence: number };
+  ready = false;
+  replayCount = 0;
+  sequence = 0;
+  gap = false;
+  recovery?: {
+    id: string;
+    state: "retrying" | "resumed" | "ended";
+    retries: number;
+  };
+  terminalFailure?: string;
+  contextUsage?: { tokens: number; ordinal: number };
+  readonly checkpoints = new Map<string, number>();
+  private readonly savedBlocks = new Map<string, number>();
+  blocksAfter(continuation: string | null | undefined) {
+    const checkpoint = continuation
+      ? this.checkpoints.get(continuation)
+      : undefined;
+    return [...this.blocks.values()].filter(
+      (block) =>
+        checkpoint === undefined ||
+        (this.savedBlocks.get(block.id) ?? Infinity) > checkpoint,
+    );
+  }
+  readonly children = new Map<
+    string,
+    {
+      parentId: string;
+      threadId: string;
+      display: FocusDisplay;
+    }
+  >();
+  childOutput(child: Schema<"ChildExecutionView">) {
+    const observed = this.children.get(child.execution_id);
+    return observed?.parentId === child.parent_thread_id &&
+      observed.threadId === child.child_thread_id
+      ? observed.display
+      : undefined;
+  }
+  private fragments = new Map<
+    string,
+    { count: number; parts: string[]; size: number }
+  >();
+  private fragmentBytes = 0;
+  reset() {
+    this.snapshot = undefined;
+    this.retainedPresentation = undefined;
+    this.cursor = undefined;
+    this.runId = undefined;
+    this.baseContinuation = undefined;
+    this.blocks.clear();
+    this.items.clear();
+    this.normalizer = new DisplayNormalizer({ full_content: true });
+    this.displayPosition = undefined;
+    this.children.clear();
+    this.processes.clear();
+    this.fragments.clear();
+    this.fragmentBytes = 0;
+    this.ready = false;
+    this.replayCount = 0;
+    this.sequence = 0;
+    this.gap = false;
+    this.contextUsage = undefined;
+    this.recovery = undefined;
+    this.terminalFailure = undefined;
+    this.checkpoints.clear();
+    this.savedBlocks.clear();
+  }
+  accept(frame: FocusFrame) {
+    if (frame.kind === "reset") {
+      this.reset();
+      return;
+    }
+    if (frame.kind === "snapshot") {
+      this.reset();
+      this.snapshot = frame.snapshot;
+      this.sequence = frame.snapshot.cutover_sequence;
+      this.runId = frame.snapshot.root_stream?.run_id;
+      this.baseContinuation = frame.snapshot.root_stream
+        ? frame.snapshot.root_stream.base_continuation_id
+        : frame.snapshot.thread.continuation_id;
+      this.cursor = frame.resume_cursor ?? undefined;
+      this.ready = !!frame.resume_cursor;
+    } else if (frame.kind === "root_stream") {
+      if (
+        !this.snapshot?.root_stream ||
+        this.ready ||
+        frame.run_id !== this.runId
+      )
+        throw new Error("Unexpected root replay.");
+      for (const event of frame.events) {
+        if (event.index !== this.replayCount++)
+          throw new Error("Incomplete root replay.");
+        this.fold(event.event_type, event.payload, event.payload_omitted);
+      }
+    } else if (frame.kind === "ready") {
+      if (
+        !this.snapshot?.root_stream ||
+        this.replayCount !== this.snapshot.root_stream.event_count
+      )
+        throw new Error("Incomplete root replay.");
+      this.cursor = frame.resume_cursor;
+      this.ready = true;
+    } else {
+      if (!this.ready)
+        throw new Error("Live output arrived before replay was ready.");
+      if (frame.event.epoch !== this.snapshot?.epoch)
+        throw new Error("Conversation stream epoch changed.");
+      if (frame.event.sequence <= this.sequence) return;
+      if (
+        frame.event.run_kind === "root" &&
+        this.runId !== frame.event.run_id
+      ) {
+        // A live event has no base continuation. Re-bootstrap from the existing
+        // observer's finite prefix instead of assigning the previous Run's base.
+        this.cursor = undefined;
+        throw new RootRunChanged(
+          "Root Run changed; reload its focused snapshot.",
+        );
+      }
+      this.sequence = frame.event.sequence; // Global sequences are sparse within one Thread.
+      this.cursor = frame.resume_cursor;
+      if (frame.event.root_thread_id !== this.snapshot?.thread.thread.thread_id)
+        return;
+      if (frame.event.run_kind === "child") {
+        this.foldChild(frame.event);
+        return;
+      }
+      this.foldRoot(frame.event);
+    }
+  }
+  private foldRoot(event: Schema<"LiveEvent">) {
+    const position = event.display_position;
+    if (!position) {
+      this.fold(event.event_type, event.payload, event.payload_omitted);
+      return;
+    }
+    if (event.payload_omitted || !event.payload)
+      throw new Error("Incomplete root display event; reload its snapshot.");
+    if (this.displayPosition) {
+      if (
+        position.attempt === this.displayPosition.attempt &&
+        position.sequence <= this.displayPosition.sequence
+      )
+        return;
+      if (
+        position.attempt !== this.displayPosition.attempt ||
+        position.sequence !== this.displayPosition.sequence + 1
+      )
+        throw new Error("Missing root display suffix; reload its snapshot.");
+    }
+    this.normalizer.apply(this.items, {
+      run_id: event.run_id,
+      ...position,
+      event: event.payload,
+      item: event.item ?? null,
+    });
+    this.displayPosition = position;
+    if (event.item) {
+      const item = this.items.get(event.item.id);
+      if (item) this.displayItem(item);
+    }
+    this.gap ||= this.normalizer.incomplete;
+  }
+  private foldChild(event: Schema<"LiveEvent">) {
+    if (
+      !event.execution_id ||
+      !event.parent_thread_id ||
+      event.thread_id === event.root_thread_id
+    )
+      return;
+    let child = this.children.get(event.execution_id);
+    if (
+      child &&
+      (child.parentId !== event.parent_thread_id ||
+        child.threadId !== event.thread_id)
+    )
+      return;
+    if (child && child.display.runId !== event.run_id) {
+      // One execution can start another Run after a deferred checkpoint. The
+      // root-lineage stream is ordered; never concatenate two Run suffixes.
+      this.processes.end(child.display.runId);
+      child.display = new FocusDisplay(128 * 1024, this.processes);
+      child.display.runId = event.run_id;
+      child.display.gap = true;
+    }
+    if (!child) {
+      // This is an observed suffix, not a replay of the child's full Run.
+      // Keep a finite set even when a root starts many sequential executions.
+      if (this.children.size >= 64)
+        this.children.delete(this.children.keys().next().value!);
+      child = {
+        parentId: event.parent_thread_id,
+        threadId: event.thread_id,
+        display: new FocusDisplay(128 * 1024, this.processes),
+      };
+      child.display.runId = event.run_id;
+      this.children.set(event.execution_id, child);
+    }
+    child.display.fold(event.event_type, event.payload, event.payload_omitted);
+    child.display.trimChildOutput();
+  }
+  private trimChildOutput() {
+    // Bound both long deltas and event cardinality; saved output is fetched
+    // independently and never synthesized from this lossy display window.
+    while (this.blocks.size > 128) {
+      this.blocks.delete(this.blocks.keys().next().value!);
+      this.gap = true;
+    }
+    let remaining = 128 * 1024;
+    for (const [key, block] of [...this.blocks].reverse()) {
+      const size = JSON.stringify(block).length;
+      if (remaining <= 0) {
+        this.blocks.delete(key);
+        this.gap = true;
+      } else if (
+        size > remaining &&
+        (block.kind === "assistant" || block.kind === "thinking")
+      ) {
+        this.blocks.set(key, {
+          id: block.id,
+          kind: block.kind,
+          name: block.name,
+          subagentRunId: block.subagentRunId,
+          text: (block.result ?? block.text).slice(-remaining),
+          done: block.done,
+        });
+        remaining = 0;
+        this.gap = true;
+      } else if (size > remaining) {
+        this.blocks.delete(key);
+        this.gap = true;
+      } else remaining -= size;
+    }
+  }
+  private custom(payload: Payload): Payload | undefined {
+    if (payload.name !== "a13n.stream.fragment") return payload;
+    const value = payload.value;
+    if (
+      !object(value) ||
+      typeof value.id !== "string" ||
+      !Number.isInteger(value.index) ||
+      !Number.isInteger(value.count) ||
+      typeof value.data !== "string"
+    ) {
+      this.gap = true;
+      return;
+    }
+    const index = Number(value.index),
+      count = Number(value.count);
+    if (index === 0) {
+      const old = this.fragments.get(value.id);
+      if (old) this.fragmentBytes -= old.size;
+      if (this.fragments.size >= 8) {
+        this.gap = true;
+        return;
+      }
+      this.fragments.set(value.id, { count, parts: [], size: 0 });
+    }
+    const assembly = this.fragments.get(value.id);
+    const size = new TextEncoder().encode(value.data).length;
+    if (
+      !assembly ||
+      index !== assembly.parts.length ||
+      count !== assembly.count ||
+      count < 1 ||
+      index >= count ||
+      this.fragmentBytes + size > this.fragmentLimit
+    ) {
+      if (assembly) this.fragmentBytes -= assembly.size;
+      this.fragments.delete(value.id);
+      this.gap = true;
+      return;
+    }
+    assembly.parts.push(value.data);
+    assembly.size += size;
+    this.fragmentBytes += size;
+    if (assembly.parts.length !== count) return;
+    this.fragments.delete(value.id);
+    this.fragmentBytes -= assembly.size;
+    try {
+      const result: unknown = JSON.parse(assembly.parts.join(""));
+      if (
+        object(result) &&
+        result.type === "CUSTOM" &&
+        result.name !== "a13n.stream.fragment" &&
+        EventSchema.safeParse(result).success
+      )
+        return result;
+    } catch {
+      /* Display a gap rather than partial domain data. */
+    }
+    this.gap = true;
+  }
+  private fold(type: string, payload: Payload | null, omitted: boolean) {
+    if (omitted)
+      throw new Error(
+        "Display delivery omitted content; reload its compact baseline.",
+      );
+    if (!payload) return;
+    if (payload.type !== type || !EventSchema.safeParse(payload).success) {
+      this.gap = true;
+      return;
+    }
+    if (object(payload.metadata) && payload.metadata.display === false) return;
+    const subagentRunId = string(payload.subagentRunId) || undefined;
+    if (
+      !subagentRunId &&
+      this.recovery &&
+      (type === "RUN_FINISHED" || type === "RUN_ERROR")
+    )
+      this.recovery = {
+        ...this.recovery,
+        state:
+          this.recovery.state === "resumed" || type === "RUN_FINISHED"
+            ? "resumed"
+            : "ended",
+      };
+    else if (
+      !subagentRunId &&
+      this.recovery?.state === "retrying" &&
+      (((type === "TEXT_MESSAGE_CONTENT" ||
+        type === "REASONING_MESSAGE_CONTENT") &&
+        string(payload.delta)) ||
+        type === "TOOL_CALL_START")
+    )
+      this.recovery = { ...this.recovery, state: "resumed" };
+    const id = string(
+      type.startsWith("TOOL_CALL_") ? payload.toolCallId : payload.messageId,
+    );
+    const scope = subagentRunId ? `${this.runId}:${subagentRunId}` : this.runId;
+    const key = `${scope}:${id}`;
+    if (type === "TEXT_MESSAGE_START" || type === "REASONING_MESSAGE_START") {
+      this.blocks.set(key, {
+        id: key,
+        kind: type.startsWith("REASONING")
+          ? "thinking"
+          : payload.role === "user"
+            ? "user"
+            : "assistant",
+        text: "",
+        ...(object(payload.metadata) ? { metadata: payload.metadata } : {}),
+      });
+    } else if (
+      type === "TEXT_MESSAGE_CONTENT" ||
+      type === "REASONING_MESSAGE_CONTENT"
+    ) {
+      const block = this.blocks.get(key) ?? {
+        id: key,
+        kind: "assistant" as const,
+        text: "",
+      };
+      this.blocks.set(key, {
+        ...block,
+        text: block.text + string(payload.delta),
+        ...(object(payload.metadata) ? { metadata: payload.metadata } : {}),
+      });
+    } else if (
+      type === "TEXT_MESSAGE_END" ||
+      type === "REASONING_MESSAGE_END" ||
+      type === "TOOL_CALL_END"
+    ) {
+      const block = this.blocks.get(key);
+      if (block) this.blocks.set(key, { ...block, done: true });
+    } else if (type === "TOOL_CALL_START") {
+      this.blocks.set(key, {
+        id: key,
+        toolCallId: id,
+        kind: "tool",
+        name: string(payload.toolCallName),
+        text: "",
+      });
+    } else if (type === "TOOL_CALL_ARGS") {
+      const block = this.blocks.get(key) ?? {
+        id: key,
+        kind: "tool" as const,
+        toolCallId: id,
+        text: "",
+      };
+      this.blocks.set(key, {
+        ...block,
+        text: block.text + string(payload.delta),
+      });
+    } else if (type === "TOOL_CALL_RESULT") {
+      const block = this.blocks.get(key) ?? {
+        id: key,
+        kind: "tool" as const,
+        toolCallId: id,
+        text: "",
+      };
+      this.blocks.set(key, {
+        ...block,
+        result:
+          typeof payload.content === "string" ? payload.content : undefined,
+        resultParts: readContentParts(payload.content),
+        done: true,
+      });
+      if (this.runId)
+        this.processes.result(scope!, block.name, block.text, payload.content);
+    } else if (type === "RUN_FINISHED" || type === "RUN_ERROR") {
+      this.stopTools();
+      const failed = type === "RUN_ERROR";
+      const outcome = object(payload.outcome)
+        ? payload.outcome.type
+        : "success";
+      this.terminalFailure = failed
+        ? string(payload.message) || "The operation could not finish."
+        : undefined;
+      const status = `${this.runId}:execution`;
+      if (type === "RUN_FINISHED" && outcome === "success") {
+        // Ordinary completion belongs to controls, not a temporary transcript row.
+        this.blocks.delete(status);
+        return;
+      }
+      this.blocks.set(status, {
+        id: status,
+        kind: "activity",
+        diagnostic: failed,
+        name:
+          outcome === "cancelled"
+            ? "Execution cancelled"
+            : outcome === "interrupt"
+              ? "Execution suspended"
+              : "Execution failed",
+        text:
+          string(payload.message) ||
+          (outcome === "interrupt"
+            ? "A response is needed before execution can continue."
+            : "Execution finished. Inspect the operation receipt for continuation and Environment outcomes."),
+      });
+    } else if (
+      type === "SUBAGENT_STARTED" ||
+      type === "SUBAGENT_FINISHED" ||
+      type === "SUBAGENT_ERROR"
+    ) {
+      if (type !== "SUBAGENT_STARTED") this.stopTools(subagentRunId);
+      const childKey = `${this.runId}:inline:${subagentRunId}`;
+      const previous = this.blocks.get(childKey);
+      this.blocks.set(childKey, {
+        id: childKey,
+        kind: "activity",
+        name:
+          previous?.name ||
+          `Subagent · ${string(payload.name) || subagentRunId}`,
+        text:
+          type === "SUBAGENT_STARTED"
+            ? "Running"
+            : type === "SUBAGENT_ERROR"
+              ? string(payload.message)
+              : object(payload.outcome) && payload.outcome.type === "suspended"
+                ? "Suspended"
+                : "Completed",
+        done: type !== "SUBAGENT_STARTED",
+      });
+    } else if (type === "CUSTOM") {
+      const event = this.custom(payload);
+      if (
+        !event ||
+        (object(event.metadata) && event.metadata.display === false)
+      )
+        return;
+      this.foldCustom(event);
+    }
+    if (subagentRunId) {
+      const block = this.blocks.get(key);
+      if (block) this.blocks.set(key, { ...block, subagentRunId });
+    }
+  }
+  private stopTools(subagentRunId?: string) {
+    this.processes.end(
+      subagentRunId ? `${this.runId}:${subagentRunId}` : this.runId,
+    );
+    for (const [key, block] of this.blocks) {
+      if (subagentRunId && block.subagentRunId !== subagentRunId) continue;
+      if (block.subagentRunId)
+        this.processes.end(`${this.runId}:${block.subagentRunId}`);
+      if (block.kind === "tool")
+        this.blocks.set(key, { ...block, stopped: true });
+    }
+  }
+  private displayItem(item: DisplayItem) {
+    const content = item.content;
+    const metadata = object(content.metadata) ? content.metadata : undefined;
+    if (metadata?.display === false) return;
+    const sequence = Number(item.last_stream_id.split("-")[1]);
+    if (item.kind === "observation") {
+      const previous = new Map(this.blocks);
+      if (content.name === "a13n.harness_ui.checkpoint") {
+        const value = object(content.value) ? content.value : {};
+        const source = object(value.event) ? value.event : {};
+        if (
+          typeof source.continuation_id === "string" &&
+          typeof source.display_position === "string"
+        )
+          this.checkpoints.set(
+            source.continuation_id,
+            Number(source.display_position.split("-")[1]),
+          );
+      } else if (typeof content.type === "string") {
+        this.fold(content.type, content, false);
+      } else {
+        this.foldCustom({ type: "CUSTOM", ...content });
+      }
+      for (const [id, block] of this.blocks) {
+        if (previous.get(id) !== block) this.savedBlocks.set(id, sequence);
+      }
+      return;
+    }
+    if (
+      !content.subagentRunId &&
+      content.role !== "user" &&
+      this.recovery?.state === "retrying"
+    )
+      this.recovery = { ...this.recovery, state: "resumed" };
+    const block: DisplayBlock = {
+      id: item.id,
+      kind:
+        item.kind === "tool_call"
+          ? "tool"
+          : item.kind === "reasoning_message"
+            ? "thinking"
+            : content.input_media
+              ? "media"
+              : content.role === "user"
+                ? "user"
+                : "assistant",
+      text: string(
+        item.kind === "tool_call" ? content.arguments : content.text,
+      ),
+      metadata,
+      subagentRunId: string(content.subagentRunId) || undefined,
+      done: item.state !== "in_progress",
+    };
+    if (item.kind === "tool_call") {
+      block.name = string(content.toolCallName);
+      block.toolCallId = string(content.toolCallId);
+      block.result =
+        string(content.result) ||
+        (content.value !== undefined
+          ? JSON.stringify(content.value)
+          : undefined);
+      block.resultParts = readContentParts(content.result_parts);
+      block.outcome = content.outcome as ToolView["outcome"];
+      block.failure = object(content.failure)
+        ? string(content.failure.message)
+        : undefined;
+      block.retry = content.retry === true;
+      block.images = content.tool_images as
+        Schema<"ToolImageView">[] | undefined;
+      block.apps = content.mcp_apps as Schema<"AppReference">[] | undefined;
+      block.edit = content.applied_edit as AppliedEdit | undefined;
+      block.imageUnavailable = content.tool_image_unavailable === true;
+      block.provider = string(content.provider) || undefined;
+      if (this.runId && item.state !== "in_progress")
+        this.processes.result(
+          block.subagentRunId
+            ? `${this.runId}:${block.subagentRunId}`
+            : this.runId,
+          block.name,
+          block.text,
+          content.value ?? content.result,
+        );
+    } else if (content.input_media) {
+      block.value = content.input_media;
+    }
+    this.blocks.set(item.id, block);
+    this.savedBlocks.set(item.id, sequence);
+  }
+  private foldCustom(event: Payload) {
+    const name = string(event.name);
+    if (name === "a13n.display.reset")
+      throw new Error(
+        "Root display suffix was discarded; reload its snapshot.",
+      );
+    if (name === "a13n.display.snapshot") {
+      const value = object(event.value) ? event.value : {};
+      if (!Array.isArray(value.items) || !value.items.every(isDisplayItem))
+        throw new Error("Invalid compact display snapshot.");
+      for (const item of value.items) this.items.set(item.id, item);
+      if (value.continuation == null) return;
+      if (!object(value.continuation))
+        throw new Error("Invalid compact display continuation.");
+      this.normalizer = new DisplayNormalizer(
+        value.continuation as DisplayContinuation,
+      );
+      const position = value.continuation.position;
+      if (
+        !object(position) ||
+        typeof position.attempt !== "number" ||
+        typeof position.sequence !== "number"
+      )
+        throw new Error("Invalid compact display position.");
+      this.displayPosition = {
+        attempt: position.attempt,
+        sequence: position.sequence,
+      };
+      for (const item of this.items.values()) this.displayItem(item);
+      return;
+    }
+    const subagentRunId = string(event.subagentRunId) || undefined;
+    const scope = subagentRunId ? `${this.runId}:${subagentRunId}` : this.runId;
+    const setBlock = (key: string, block: DisplayBlock) =>
+      this.blocks.set(key, {
+        ...block,
+        ...(subagentRunId ? { subagentRunId } : {}),
+      });
+    const value = object(event.value) ? event.value : {};
+    const source = object(value.event) ? value.event : {};
+    const payload = object(source.payload) ? source.payload : {};
+    if (
+      name === "a13n.shell.status" &&
+      this.runId &&
+      typeof source.process_id === "string" &&
+      typeof source.phase === "string"
+    ) {
+      this.processes.status(
+        scope!,
+        source.process_id,
+        source.phase,
+        source.exit_code,
+      );
+      return;
+    }
+    if (
+      !subagentRunId &&
+      name === "a13n.harness.recovery" &&
+      payload.type === "model_retry_scheduled"
+    ) {
+      this.recovery = {
+        id: `${this.runId}:retry:${payload.attempt}`,
+        state: "retrying",
+        // Attempt 1 is the original model request, not a reconnection.
+        retries: typeof payload.attempt === "number" ? payload.attempt - 1 : 1,
+      };
+      return;
+    }
+    if (
+      !subagentRunId &&
+      name === "a13n.harness_ui.checkpoint" &&
+      typeof source.continuation_id === "string"
+    ) {
+      const ordinal = this.checkpoints.size + 1;
+      this.checkpoints.set(source.continuation_id, ordinal);
+      for (const id of this.blocks.keys()) {
+        if (!this.savedBlocks.has(id)) this.savedBlocks.set(id, ordinal);
+      }
+      return;
+    }
+    if (
+      !subagentRunId &&
+      payload.type === "usage_report" &&
+      Array.isArray(payload.records)
+    ) {
+      const resumedScope =
+        typeof payload.usage_id === "string" && value.run_id === this.runId;
+      for (const record of payload.records) {
+        if (
+          !object(record) ||
+          record.kind !== "model" ||
+          (record.source ?? "agent") !== "agent" ||
+          (record.run_id !== this.runId && !resumedScope) ||
+          record.parent_agent_instance_id != null ||
+          record.delegation_id != null ||
+          typeof record.response_ordinal !== "number" ||
+          !object(record.request_usage)
+        )
+          continue;
+        const { input_tokens, output_tokens } = record.request_usage;
+        if (
+          typeof input_tokens === "number" &&
+          typeof output_tokens === "number" &&
+          record.response_ordinal >= (this.contextUsage?.ordinal ?? -1)
+        ) {
+          this.contextUsage = {
+            tokens: input_tokens + output_tokens,
+            ordinal: record.response_ordinal,
+          };
+        }
+      }
+      return;
+    }
+    if (
+      ["a13n.pydantic_ai.part_start", "a13n.pydantic_ai.part_end"].includes(
+        name,
+      ) &&
+      object(source.part)
+    ) {
+      const part = source.part;
+      if (
+        ["builtin-tool-call", "builtin-tool-return"].includes(
+          string(part.part_kind),
+        ) &&
+        typeof part.tool_call_id === "string"
+      ) {
+        const provider = string(part.provider_name) || "provider";
+        const key = `${scope}:native:${provider}:${part.tool_call_id}`;
+        const previous = this.blocks.get(key);
+        const returned = part.part_kind === "builtin-tool-return";
+        setBlock(key, {
+          id: key,
+          kind: "tool",
+          name: string(part.tool_name),
+          text: "",
+          ...previous,
+          provider,
+          ...(returned
+            ? {
+                result: sourceText(part.content),
+                done: true,
+                outcome: [
+                  "success",
+                  "failed",
+                  "denied",
+                  "interrupted",
+                ].includes(string(part.outcome))
+                  ? (part.outcome as ToolView["outcome"])
+                  : undefined,
+              }
+            : {
+                text: sourceText(part.args),
+                done: name === "a13n.pydantic_ai.part_end" || previous?.done,
+              }),
+        });
+        return;
+      }
+    }
+    if (
+      name === "a13n.harness-ui.mcp_apps" &&
+      typeof source.tool_call_id === "string" &&
+      Array.isArray(source.apps)
+    ) {
+      const key = `${scope}:${source.tool_call_id}`;
+      const apps = source.apps.filter(
+        (value): value is Schema<"AppReference"> =>
+          object(value) &&
+          [
+            "app_id",
+            "thread_id",
+            "run_id",
+            "tool_call_id",
+            "server_id",
+            "tool_name",
+          ].every((field) => typeof value[field] === "string"),
+      );
+      setBlock(key, {
+        id: key,
+        kind: "tool",
+        text: "",
+        ...this.blocks.get(key),
+        apps,
+      });
+      return;
+    }
+    if (
+      name === "a13n.harness-ui.tool_images" &&
+      typeof source.tool_call_id === "string" &&
+      Array.isArray(source.images)
+    ) {
+      const key = `${scope}:${source.tool_call_id}`;
+      const block = this.blocks.get(key);
+      const images = source.images.filter(
+        (image): image is Schema<"ToolImageView"> =>
+          object(image) &&
+          typeof image.thread_id === "string" &&
+          object(image.attachment) &&
+          typeof image.attachment.attachment_id === "string" &&
+          typeof image.attachment.name === "string" &&
+          typeof image.attachment.media_type === "string" &&
+          typeof image.attachment.size === "number",
+      );
+      setBlock(key, {
+        id: key,
+        kind: "tool",
+        text: "",
+        name: "computer_observe",
+        ...block,
+        images,
+        imageUnavailable: source.unavailable === true,
+      });
+      return;
+    }
+    if (
+      name === "a13n.filesystem.edit_applied" &&
+      typeof source.tool_call_id === "string" &&
+      typeof source.file_path === "string" &&
+      typeof source.before === "string" &&
+      typeof source.after === "string"
+    ) {
+      const key = `${scope}:${source.tool_call_id}`;
+      const block = this.blocks.get(key);
+      setBlock(key, {
+        id: key,
+        kind: "tool",
+        text: "",
+        name: "edit",
+        ...block,
+        edit: {
+          file_path: source.file_path,
+          before: source.before,
+          after: source.after,
+        },
+      });
+      return;
+    }
+    if (
+      name === "a13n.pydantic_ai.function_tool_result" &&
+      object(source.part) &&
+      typeof source.part.tool_call_id === "string"
+    ) {
+      const part = source.part;
+      if (
+        part.part_kind === "tool-return" ||
+        part.part_kind === "retry-prompt"
+      ) {
+        const key = `${scope}:${part.tool_call_id}`;
+        const block = this.blocks.get(key);
+        if (this.runId && part.part_kind === "tool-return")
+          this.processes.result(
+            scope!,
+            string(part.tool_name),
+            block?.text,
+            part.content,
+          );
+        setBlock(key, {
+          id: key,
+          kind: "tool",
+          text: "",
+          name: string(part.tool_name),
+          ...block,
+          toolCallId: string(part.tool_call_id),
+          result: sourceText(part.content),
+          done: true,
+          retry: part.part_kind === "retry-prompt",
+          outcome:
+            part.outcome === "failed" ||
+            part.outcome === "denied" ||
+            part.outcome === "interrupted" ||
+            part.outcome === "success"
+              ? part.outcome
+              : undefined,
+          failure:
+            part.part_kind === "retry-prompt"
+              ? sourceText(part.content) || "Tool input validation failed."
+              : undefined,
+        });
+        return;
+      }
+    }
+    if (name === "a13n.input.user" || name === "a13n.input.steering") {
+      const key = `${scope}:${string(source.message_id)}`;
+      setBlock(key, {
+        id: key,
+        kind: "user",
+        text: string(source.content),
+        done: true,
+        metadata: object(event.metadata) ? event.metadata : undefined,
+      });
+      return;
+    }
+    if (name.startsWith("a13n.input.") && name !== "a13n.input.media") return;
+    if (name === "a13n.input.media") {
+      if (source.source !== "user" && source.source !== "steering") return;
+      const key = `${scope}:${string(source.message_id)}`;
+      setBlock(key, {
+        id: key,
+        kind: "media",
+        text: "",
+        value: source.content,
+        metadata: object(event.metadata) ? event.metadata : undefined,
+      });
+      return;
+    }
+    if (
+      name === "a13n.harness.state" &&
+      payload.type === "task_changed" &&
+      object(payload.task)
+    ) {
+      const task = payload.task;
+      const key = `${scope}:task:${string(task.id)}`;
+      setBlock(key, {
+        id: key,
+        kind: "task",
+        name: string(task.status),
+        text: string(
+          task.status === "in_progress"
+            ? task.active_form || task.subject
+            : task.subject,
+        ),
+        result: [
+          string(task.owner),
+          Array.isArray(task.blocked_by) && task.blocked_by.length
+            ? `Blocked by ${task.blocked_by.length} tasks`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      });
+      return;
+    }
+    if (
+      name === "a13n.harness.context" &&
+      payload.type === "context_snapshot"
+    ) {
+      return;
+    }
+    if (
+      (name === "a13n.harness.context" &&
+        typeof payload.operation_id === "string") ||
+      name === "a13n.context.compaction_summary" ||
+      name === "a13n.context.handoff_summary"
+    ) {
+      const operation =
+        name === "a13n.context.compaction_summary" ||
+        name === "a13n.context.handoff_summary"
+          ? source
+          : payload;
+      const key = `${subagentRunId ? `${scope}:` : ""}context:${string(operation.operation_id)}`;
+      const previous = this.blocks.get(key);
+      const summary =
+        name === "a13n.context.compaction_summary" ||
+        name === "a13n.context.handoff_summary";
+      const context =
+        name === "a13n.context.compaction_summary" ||
+        string(payload.type).startsWith("compaction_")
+          ? "compaction"
+          : "handoff";
+      setBlock(key, {
+        id: key,
+        kind: "activity",
+        context,
+        name: context === "compaction" ? "Compact Summary" : "Summary",
+        text: summary
+          ? previous?.text || "Summary ready"
+          : [
+              string(payload.type).endsWith("_failed")
+                ? "Failed"
+                : string(payload.type).endsWith("_completed")
+                  ? "Completed"
+                  : string(payload.type).endsWith("_prepared")
+                    ? "Prepared"
+                    : "In progress",
+              string(payload.error_code),
+              string(payload.failed_phase),
+              string(payload.reason),
+            ]
+              .filter(Boolean)
+              .join(" · "),
+        result: summary ? string(source.summary) : previous?.result,
+      });
+      return;
+    }
+    // Internal stream diagnostics are not conversation content.
+  }
+}
+
+export function showFocusedOutput(
+  display: FocusDisplay,
+  continuation: string | null | undefined,
+  activeRunId?: string | null,
+  replacingHistory = false,
+) {
+  // Transcript pages identify the immutable initial state; focused Run bases
+  // use null for the same pre-continuation state. Keep the actual page ID intact.
+  const selected = continuation?.startsWith("initial:") ? null : continuation;
+  return (
+    !!display.runId &&
+    (replacingHistory ||
+      selected === undefined ||
+      selected === display.baseContinuation ||
+      (selected != null &&
+        display.checkpoints.has(selected) &&
+        (!activeRunId || activeRunId === display.runId)))
+  );
+}
+
+export function focusRefresh(frame: FocusFrame): ThreadRefresh | undefined {
+  if (frame.kind === "reset") return "reconcile";
+  if (frame.kind !== "event") return;
+  const event = frame.event;
+  if (["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR"].includes(event.event_type))
+    return "lifecycle";
+  const content = object(event.payload) ? event.payload : {};
+  const value = object(content.value) ? content.value : {};
+  if (content.name === "a13n.display.snapshot" && Array.isArray(value.items)) {
+    const reasons = value.items.filter(isDisplayItem).flatMap((item) => {
+      if (item.kind !== "observation") return [];
+      const payload = item.content;
+      const reason = focusRefresh({
+        ...frame,
+        event: {
+          ...event,
+          event_type: string(payload.type) || "CUSTOM",
+          payload: payload as typeof event.payload,
+        },
+      });
+      return reason ? [reason] : [];
+    });
+    return reasons.includes("lifecycle")
+      ? "lifecycle"
+      : reasons.includes("checkpoint")
+        ? "checkpoint"
+        : reasons[0];
+  }
+  const source = object(value.event) ? value.event : {};
+  const payload = object(source.payload) ? source.payload : {};
+  if (content.name === "a13n.harness_ui.checkpoint") return "checkpoint";
+  if (payload.type === "usage_report") return "usage";
+}
+
+export function watchThread(
+  transport: Transport,
+  threadId: string,
+  display: FocusDisplay,
+  changed: () => void,
+  connection: (value: string) => void,
+  invalidate: (reason: ThreadRefresh) => void,
+  snapshotReceived?: (snapshot: Schema<"ThreadFocusSnapshot">) => void,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let failures = 0;
+  let snapshotRetryAvailable = true;
+  let replacement: FocusDisplay | undefined;
+  let reconcileReplacement = false;
+  let restarting = false;
+  const subscription = transport.realtime.subscribe({
+    stream: "focus",
+    root: threadId,
+    cursor: () => display.cursor,
+    state(value) {
+      if (value === "Reconnecting") {
+        display.processes.end();
+        replacement = undefined;
+        changed();
+      }
+      connection(
+        value === "Live" && !display.ready ? "Loading current output" : value,
+      );
+    },
+    receive(value) {
+      if (restarting) return;
+      let immediate = false;
+      try {
+        const frame = focusFrame(value);
+        if (frame.kind === "reset") {
+          immediate =
+            frame.reason === "live_snapshot_changed" && snapshotRetryAvailable;
+          snapshotRetryAvailable = false;
+          throw new Error(frame.reason);
+        }
+        if (frame.kind === "snapshot") {
+          display.cursor = undefined;
+          reconcileReplacement = !!display.snapshot;
+          replacement = new FocusDisplay();
+          snapshotReceived?.(frame.snapshot);
+        }
+        (replacement ?? display).accept(frame);
+        if (replacement) {
+          if (!replacement.ready) {
+            connection("Loading current output");
+            return;
+          }
+          const retained =
+            display.retainedPresentation ??
+            (display.runId && display.blocks.size
+              ? Object.assign(new FocusDisplay(), display)
+              : undefined);
+          Object.assign(display, replacement);
+          display.retainedPresentation = retained;
+          replacement = undefined;
+          // The prefix seeds cold state. Only a replacement needs HTTP
+          // reconciliation; do not refetch a just-started initial history read.
+          if (reconcileReplacement) invalidate("reconcile");
+        }
+        const reason = focusRefresh(frame);
+        if (reason) invalidate(reason);
+        failures = 0;
+        snapshotRetryAvailable = true;
+        connection(display.ready ? "Live" : "Loading current output");
+        changed();
+      } catch (error) {
+        // Replace only this channel. Other roots and summary keep their cursors
+        // and normal Run transitions never reconnect the physical socket.
+        display.cursor = undefined;
+        display.processes.end();
+        replacement = undefined;
+        restarting = true;
+        if (!display.ready) display.reset();
+        changed();
+        connection("Loading current output");
+        timer = setTimeout(
+          () => {
+            restarting = false;
+            subscription.restart();
+          },
+          immediate || error instanceof RootRunChanged
+            ? 0
+            : Math.min(1000 * 2 ** failures++, 15000),
+        );
+      }
+    },
+  });
+  return () => {
+    display.processes.end();
+    clearTimeout(timer);
+    subscription();
+  };
+}

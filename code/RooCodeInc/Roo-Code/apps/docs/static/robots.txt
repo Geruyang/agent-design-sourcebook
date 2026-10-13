@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://roocodeinc.github.io/Roo-Code/sitemap.xml

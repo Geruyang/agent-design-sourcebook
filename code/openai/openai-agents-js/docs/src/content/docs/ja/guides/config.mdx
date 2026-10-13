@@ -1,0 +1,156 @@
+---
+title: SDK の設定
+description: Configure process-wide OpenAI client, transport, tracing, and logging defaults
+canonicalHeadingIds:
+  - depth: 2
+    id: 'openai-client-and-transport'
+    aliases:
+      - 'openai-クライアントとトランスポート'
+  - depth: 3
+    id: 'api-keys-and-clients'
+    aliases:
+      - 'api-キーとクライアント'
+  - depth: 3
+    id: 'api-selection'
+    aliases:
+      - 'api-の選択'
+  - depth: 3
+    id: 'responses-transport'
+    aliases:
+      - 'responses-トランスポート'
+  - depth: 2
+    id: 'observability-and-debugging'
+    aliases:
+      - 'オブザーバビリティとデバッグ'
+  - depth: 3
+    id: 'tracing'
+    aliases:
+      - 'トレーシング'
+  - depth: 3
+    id: 'debug-logging'
+    aliases:
+      - 'デバッグログ'
+  - depth: 4
+    id: 'sensitive-data-in-logs'
+    aliases:
+      - 'ログ内の機密データ'
+---
+
+import { Code } from '@astrojs/starlight/components';
+import setDefaultOpenAIKeyExample from '../../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
+import setDefaultOpenAIClientExample from '../../../../../../examples/docs/config/setDefaultOpenAIClient.ts?raw';
+import setOpenAIAPIExample from '../../../../../../examples/docs/config/setOpenAIAPI.ts?raw';
+import setOpenAIResponsesTransportExample from '../../../../../../examples/docs/config/setOpenAIResponsesTransport.ts?raw';
+import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
+import setTracingDisabledExample from '../../../../../../examples/docs/config/setTracingDisabled.ts?raw';
+import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
+import setSensitiveDataLoggingEnabledExample from '../../../../../../examples/docs/config/setSensitiveDataLoggingEnabled.ts?raw';
+
+このページでは、デフォルトの OpenAI クライアント、トランスポート、トレーシングのエクスポートキー、デバッグログの動作など、通常はアプリの起動時に一度だけ設定する **SDK 全体のデフォルト設定** について説明します。これらの設定は、デフォルトでプロセス全体に適用されるため、エージェント単位や実行単位の調整ではなく、全体共通の設定に適しています。
+
+特定の `Agent`、`Runner`、または `run()` 呼び出しを設定する必要がある場合は、以下を参照してください。
+
+- `Runner` と実行単位のオプションについては、[エージェントの実行](/openai-agents-js/ja/guides/running-agents)
+- エージェントレベルおよび Runner レベルのモデル設定については、[モデル](/openai-agents-js/ja/guides/models)
+- 実行固有のトレーシング設定とエクスポーターの動作については、[トレーシング](/openai-agents-js/ja/guides/tracing)
+
+## OpenAI クライアントとトランスポート
+
+### API キーとクライアント
+
+デフォルトでは、SDK は OpenAI クライアントの作成が必要になった時点で、`OPENAI_API_KEY` を遅延解決します。環境変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出してください。
+
+<Code
+  lang="typescript"
+  code={setDefaultOpenAIKeyExample}
+  title="デフォルトの OpenAI キーの設定"
+/>
+
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK はデフォルトのキーを使用してクライアントを自動的に作成します。
+
+<Code
+  lang="typescript"
+  code={setDefaultOpenAIClientExample}
+  title="デフォルトの OpenAI クライアントの設定"
+/>
+
+### API の選択
+
+Responses API と Chat Completions API を切り替えることもできます。
+
+<Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API の設定" />
+
+### Responses トランスポート
+
+Responses API を使用している場合は、OpenAI プロバイダーのトランスポートも選択できます。デフォルトは HTTP です。
+
+<Code
+  lang="typescript"
+  code={setOpenAIResponsesTransportExample}
+  title="Responses トランスポートの設定"
+/>
+
+WebSocket トランスポートを有効にするには `setOpenAIResponsesTransport('websocket')` を使用し、HTTP に戻すには `setOpenAIResponsesTransport('http')` を使用します。WebSocket トラフィックをプロキシまたはゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定するか、`OpenAIProvider` の `websocketBaseURL` を設定してください。
+
+このプロセス全体のデフォルト設定は、後からデフォルトの OpenAI プロバイダーを介して解決されるモデルにのみ影響します。具体的な `Model` インスタンスまたはカスタムの `modelProvider` を渡す場合は、そこでトランスポートを設定してください。[モデル](/openai-agents-js/ja/guides/models#responses-websocket-transport)を参照してください。
+
+## オブザーバビリティとデバッグ
+
+### トレーシング
+
+サポートされているサーバーランタイムでは、トレーシングがデフォルトで有効です。ブラウザーおよび `NODE_ENV=test` の場合は、デフォルトで無効になります。
+
+デフォルトでは、トレースのエクスポートに上記のセクションと同じ OpenAI キーが使用されます。
+
+別のキーは `setTracingExportApiKey()` で設定できます。
+
+<Code
+  lang="typescript"
+  code={setTracingExportApiKeyExample}
+  title="トレーシングのエクスポート用 API キーの設定"
+/>
+
+トレーシングを完全に無効にすることもできます。
+
+<Code
+  lang="typescript"
+  code={setTracingDisabledExample}
+  title="トレーシングの無効化"
+/>
+
+トレーシング機能の詳細については、[トレーシング](/openai-agents-js/ja/guides/tracing)を参照してください。
+
+### デバッグログ
+
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
+
+```bash
+export DEBUG=openai-agents*
+```
+
+セッションの永続化処理をログに記録するには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定します。
+
+`@openai/agents` の `getLogger(namespace)` を使用すると、独自のモジュール向けに名前空間付きロガーを取得できます。
+
+<Code lang="typescript" code={getLoggerExample} title="ロガーの取得" />
+
+#### ログ内の機密データ
+
+関連するエラーオブジェクトや詳細を含むモデルおよびツールのデータは、デフォルトではログに含まれません。デバッグ中にこれらの詳細が必要な場合は、プロセスの機密データのログ記録を明示的に有効にできます。
+
+<Code
+  lang="typescript"
+  code={setSensitiveDataLoggingEnabledExample}
+  title="機密データのログ記録の有効化"
+/>
+
+ログが安全に処理される環境でのみ有効にしてください。プログラムによる設定はモデルとツールの両方のデータを制御し、以下の環境変数より優先されます。機密データのログ記録を再び無効にするには、`setSensitiveDataLoggingEnabled(false)` を呼び出します。
+
+環境変数を使用して、モデルとツールのデータを個別に有効にすることもできます。対応する `OPENAI_AGENTS_DONT_LOG_*` 変数を `0` または `false` に設定します。
+
+```bash
+export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0
+export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0
+```
+
+いずれかの変数を `1` または `true` に設定すると、対応するデータと関連するエラーの詳細はマスキングされたままになります。未設定または認識されない値の場合も、安全なデフォルト設定が使用され、機密データはログに含まれません。

@@ -1,0 +1,861 @@
+import {
+  Model,
+  Usage,
+  UserError,
+  withGenerationSpan,
+  resetCurrentSpan,
+  createGenerationSpan,
+  setCurrentSpan,
+} from '@openai/agents-core';
+import type {
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
+  ModelRequest,
+  ModelResponse,
+  ResponseStreamEvent,
+  SerializedOutputType,
+  UsageInput,
+} from '@openai/agents-core';
+import OpenAI from 'openai';
+import type { Stream } from 'openai/streaming';
+import logger from './logger';
+import { HEADERS } from './defaults';
+import { CompletionUsage } from 'openai/resources/completions';
+import type {
+  ResponseFormatText,
+  ResponseFormatJSONSchema,
+  ResponseFormatJSONObject,
+} from 'openai/resources/shared';
+import { Span } from '@openai/agents-core/dist/tracing/spans';
+import { GenerationSpanData } from '@openai/agents-core/dist/tracing/spans';
+import { convertChatCompletionsStreamToResponses } from './openaiChatCompletionsStreaming';
+import {
+  getCompatibleToolChoice,
+  toolToOpenAI,
+  convertHandoffTool,
+  itemsToMessages,
+} from './openaiChatCompletionsConverter';
+
+import { protocol } from '@openai/agents-core';
+import { getOpenAIRetryAdvice } from './retryAdvice';
+import { normalizePromptCacheRetention } from './utils/modelSettings';
+import type { OpenAIClient } from './openaiClient';
+import {
+  CONTENT_FILTER_REFUSAL_MESSAGE,
+  shouldSynthesizeContentFilterRefusal,
+} from './openaiChatCompletionsContentFilter';
+import {
+  reportModelFailureUsage,
+  snapshotRawUsage,
+} from '@openai/agents-core/utils/internal';
+import { FAKE_ID } from './openaiItemIds';
+import {
+  createTruncatedEmptyChatCompletionError,
+  isTruncatedEmptyChatCompletion,
+  isTruncatedEmptyChatCompletionError,
+} from './openaiChatCompletionsTruncation';
+
+export { FAKE_ID };
+
+type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
+
+function getModelTracingParent(request: ModelRequest): ModelTracingParent {
+  return (
+    request as ModelRequest & {
+      _internal?: { tracingParent?: ModelTracingParent };
+    }
+  )._internal?.tracingParent;
+}
+
+const GPT_56_MODEL_PATTERN =
+  /^gpt-5\.6(?:-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?)?$/;
+
+type ChatCompletionStreamResult = {
+  stream: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+  requestId?: string;
+};
+
+type ChatCompletionStreamWithRequestId = PromiseLike<
+  Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
+> & {
+  withResponse?: () => Promise<{
+    data: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+    request_id: string | null;
+  }>;
+};
+
+function normalizeRequestId(requestId: unknown): string | undefined {
+  return typeof requestId === 'string' && requestId.length > 0
+    ? requestId
+    : undefined;
+}
+
+// Some Chat Completions API compatible providers return a reasoning property on the message
+// If that's the case we handle them separately
+type OpenAIMessageWithReasoning =
+  OpenAI.Chat.Completions.ChatCompletionMessage & {
+    reasoning: string;
+  };
+
+function hasReasoningContent(
+  message: OpenAI.Chat.Completions.ChatCompletionMessage,
+): message is OpenAIMessageWithReasoning {
+  return (
+    'reasoning' in message &&
+    typeof message.reasoning === 'string' &&
+    message.reasoning !== ''
+  );
+}
+
+/**
+ * A model that uses (or is compatible with) OpenAI's Chat Completions API.
+ */
+export type OpenAIChatCompletionsModelOptions = {
+  /**
+   * When true, reject Responses-only features that Chat Completions cannot
+   * honor. Defaults to false, which preserves the previous ignore-and-warn
+   * behavior.
+   */
+  strictFeatureValidation?: boolean;
+};
+
+export class OpenAIChatCompletionsModel implements Model {
+  #client: OpenAI;
+  #model: string;
+  #strictFeatureValidation: boolean;
+  #hasWarnedUnsupportedPrompt = false;
+  #hasWarnedUnsupportedConversationState = false;
+  #hasWarnedUnsupportedReasoningSettings = false;
+
+  constructor(
+    client: OpenAIClient,
+    model: string,
+    options: OpenAIChatCompletionsModelOptions = {},
+  ) {
+    this.#client = client as OpenAI;
+    this.#model = model;
+    this.#strictFeatureValidation = options.strictFeatureValidation ?? false;
+  }
+
+  getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+    return getOpenAIRetryAdvice(args);
+  }
+
+  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    this.#handleUnsupportedServerManagedConversationState(request);
+    this.#handleUnsupportedPrompt(request);
+    this.#handleUnsupportedReasoningSettings(request);
+
+    const { response, rawResponse, rawUsage, preservedUsage } =
+      await withGenerationSpan(
+        async (span) => {
+          span.spanData.model = this.#model;
+          span.spanData.model_config = request.modelSettings
+            ? {
+                temperature: request.modelSettings.temperature,
+                top_p: request.modelSettings.topP,
+                frequency_penalty: request.modelSettings.frequencyPenalty,
+                presence_penalty: request.modelSettings.presencePenalty,
+                reasoning_effort: request.modelSettings.reasoning?.effort,
+                verbosity: request.modelSettings.text?.verbosity,
+              }
+            : { base_url: this.#client.baseURL };
+          const rawResponse = await this.#fetchResponse(request, span, false);
+          const rawUsage =
+            request.modelSettings.preserveRawUsage === true
+              ? snapshotRawUsage(rawResponse.usage)
+              : undefined;
+          const preservedUsage =
+            rawUsage !== undefined
+              ? new Usage(
+                  toResponseUsage(rawUsage as unknown as CompletionUsage),
+                )
+              : undefined;
+          let response = rawResponse;
+          const firstChoice = rawResponse.choices?.[0];
+          const message = firstChoice?.message;
+          // Some providers signal a filtered completion only through the finish reason.
+          // Normalize that terminal signal before tracing and protocol conversion.
+          if (
+            firstChoice &&
+            message &&
+            shouldSynthesizeContentFilterRefusal({
+              finishReason: firstChoice.finish_reason,
+              hasOutput: Boolean(
+                message.content ||
+                message.refusal ||
+                message.tool_calls?.length ||
+                message.audio,
+              ),
+            })
+          ) {
+            response = {
+              ...rawResponse,
+              choices: [
+                {
+                  ...firstChoice,
+                  message: {
+                    ...message,
+                    content: null,
+                    refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+                  },
+                },
+                ...rawResponse.choices.slice(1),
+              ],
+            };
+          }
+          if (span && request.tracing === true) {
+            span.spanData.output = [response];
+          }
+          const normalizedMessage = response.choices?.[0]?.message;
+          const hasStrictCustomToolCall = Boolean(
+            this.#strictFeatureValidation &&
+            normalizedMessage?.tool_calls?.some(
+              (toolCall) => toolCall.type === 'custom',
+            ),
+          );
+          if (
+            normalizedMessage &&
+            !hasStrictCustomToolCall &&
+            isTruncatedEmptyChatCompletion({
+              finishReason: response.choices[0]?.finish_reason,
+              hasText:
+                typeof normalizedMessage.content === 'string' &&
+                normalizedMessage.content.length > 0,
+              hasRefusal:
+                typeof normalizedMessage.refusal === 'string' &&
+                normalizedMessage.refusal.length > 0,
+              hasAudio: normalizedMessage.audio != null,
+              hasReasoning: hasReasoningContent(normalizedMessage),
+              hasFunctionCall: Boolean(
+                normalizedMessage.tool_calls?.some(
+                  (toolCall) => toolCall.type === 'function',
+                ),
+              ),
+            })
+          ) {
+            const error = createTruncatedEmptyChatCompletionError();
+            const failureUsage = toResponseUsage(
+              response.usage ?? {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+              },
+            );
+            if (span) {
+              span.spanData.usage = failureUsage;
+            }
+            reportModelFailureUsage(request, error, new Usage(failureUsage));
+            throw error;
+          }
+          return { response, rawResponse, rawUsage, preservedUsage };
+        },
+        undefined,
+        getModelTracingParent(request),
+      );
+
+    const output: protocol.OutputModelItem[] = [];
+    if (response.choices && response.choices[0]) {
+      const message = response.choices[0].message;
+
+      if (hasReasoningContent(message)) {
+        output.push({
+          type: 'reasoning',
+          content: [],
+          rawContent: [
+            {
+              type: 'reasoning_text',
+              text: message.reasoning,
+            },
+          ],
+        });
+      }
+      const hasContent =
+        message.content !== undefined &&
+        message.content !== null &&
+        // Azure OpenAI returns empty string instead of null for tool calls, causing parser rejection
+        !(message.tool_calls && message.content === '');
+
+      if (hasContent) {
+        const { content, ...rest } = message;
+        output.push({
+          id: response.id,
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text: content || '',
+              providerData: rest,
+            },
+          ],
+          status: 'completed',
+        });
+      } else if (message.refusal) {
+        const { refusal, ...rest } = message;
+        output.push({
+          id: response.id,
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'refusal',
+              refusal: refusal || '',
+              providerData: rest,
+            },
+          ],
+          status: 'completed',
+        });
+      } else if (message.audio) {
+        const { data, ...remainingAudioData } = message.audio;
+        output.push({
+          id: response.id,
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'audio',
+              audio: data,
+              providerData: remainingAudioData,
+            },
+          ],
+          status: 'completed',
+        });
+      }
+
+      if (message.tool_calls) {
+        for (const tool_call of message.tool_calls) {
+          if (tool_call.type === 'function') {
+            // Note: custom tools are not supported for now
+            const { id: callId, ...remainingToolCallData } = tool_call;
+            const {
+              arguments: args,
+              name,
+              ...remainingFunctionData
+            } = tool_call.function;
+            output.push({
+              id: response.id,
+              type: 'function_call',
+              arguments: args,
+              name: name,
+              callId: callId,
+              status: 'completed',
+              providerData: {
+                ...remainingToolCallData,
+                ...remainingFunctionData,
+              },
+            });
+          } else if (tool_call.type === 'custom') {
+            if (this.#strictFeatureValidation) {
+              throw new UserError(
+                'Custom tool calls are not supported by the Chat Completions converter.',
+              );
+            }
+          }
+        }
+      }
+    }
+    const modelResponse: ModelResponse = {
+      usage:
+        preservedUsage ??
+        (response.usage
+          ? new Usage(toResponseUsage(response.usage))
+          : new Usage({ requests: 1 })),
+      output,
+      responseId: response.id,
+      requestId: normalizeRequestId(
+        (rawResponse as { _request_id?: unknown })._request_id,
+      ),
+      providerData: rawResponse,
+      ...(rawUsage !== undefined ? { rawUsage } : {}),
+    };
+
+    return modelResponse;
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<ResponseStreamEvent> {
+    this.#handleUnsupportedServerManagedConversationState(request);
+    this.#handleUnsupportedPrompt(request);
+    this.#handleUnsupportedReasoningSettings(request);
+
+    const span = request.tracing
+      ? createGenerationSpan(undefined, getModelTracingParent(request))
+      : undefined;
+    let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
+    try {
+      if (span) {
+        span.spanData.model = this.#model;
+        span.spanData.model_config = request.modelSettings
+          ? {
+              temperature: request.modelSettings.temperature,
+              top_p: request.modelSettings.topP,
+              frequency_penalty: request.modelSettings.frequencyPenalty,
+              presence_penalty: request.modelSettings.presencePenalty,
+              reasoning_effort: request.modelSettings.reasoning?.effort,
+              verbosity: request.modelSettings.text?.verbosity,
+            }
+          : { base_url: this.#client.baseURL };
+        span.start();
+        setCurrentSpan(span);
+      }
+      const { stream, requestId } = await this.#fetchResponse(
+        request,
+        span,
+        true,
+      );
+
+      response = {
+        id: FAKE_ID,
+        created: Math.floor(Date.now() / 1000),
+        model: this.#model,
+        object: 'chat.completion',
+        choices: [],
+        usage: {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+        },
+      };
+      for await (const event of convertChatCompletionsStreamToResponses(
+        response,
+        stream,
+        {
+          strictFeatureValidation: this.#strictFeatureValidation,
+          ...(request.modelSettings.preserveRawUsage === true
+            ? { preserveRawUsage: true }
+            : {}),
+        },
+      )) {
+        if (
+          event.type === 'response_done' &&
+          response.usage?.total_tokens === 0
+        ) {
+          response.usage = {
+            prompt_tokens: event.response.usage.inputTokens,
+            completion_tokens: event.response.usage.outputTokens,
+            total_tokens: event.response.usage.totalTokens,
+            prompt_tokens_details: Array.isArray(
+              event.response.usage.inputTokensDetails,
+            )
+              ? event.response.usage.inputTokensDetails[0]
+              : event.response.usage.inputTokensDetails,
+            completion_tokens_details: Array.isArray(
+              event.response.usage.outputTokensDetails,
+            )
+              ? event.response.usage.outputTokensDetails[0]
+              : event.response.usage.outputTokensDetails,
+          };
+        }
+        if (event.type === 'response_done' && requestId) {
+          event.response.requestId = requestId;
+        }
+        yield event;
+      }
+
+      if (span && response && request.tracing === true) {
+        span.spanData.output = [response];
+      }
+    } catch (error) {
+      const truncatedResponse =
+        response !== undefined && isTruncatedEmptyChatCompletionError(error)
+          ? response
+          : undefined;
+      if (truncatedResponse) {
+        reportModelFailureUsage(
+          request,
+          error,
+          new Usage(
+            toResponseUsage(
+              truncatedResponse.usage ?? {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+              },
+            ),
+          ),
+        );
+      }
+      if (span) {
+        if (truncatedResponse) {
+          if (request.tracing === true) {
+            span.spanData.output = [truncatedResponse];
+          }
+          span.spanData.usage = toResponseUsage(
+            truncatedResponse.usage ?? {
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_tokens: 0,
+            },
+          );
+        }
+        span.setError({
+          message: 'Error streaming response',
+          data: {
+            error:
+              request.tracing === true
+                ? String(error)
+                : error instanceof Error
+                  ? error.name
+                  : undefined,
+          },
+        });
+      }
+      throw error;
+    } finally {
+      if (span) {
+        span.end();
+        resetCurrentSpan();
+      }
+    }
+  }
+
+  #handleUnsupportedServerManagedConversationState(request: ModelRequest) {
+    const unsupported: string[] = [];
+    if (request.previousResponseId) {
+      unsupported.push('previousResponseId');
+    }
+    if (request.conversationId) {
+      unsupported.push('conversationId');
+    }
+
+    if (unsupported.length === 0) {
+      return;
+    }
+
+    const message =
+      'OpenAIChatCompletionsModel does not support server-managed conversation state ' +
+      `(${unsupported.join(', ')}). Chat Completions requires callers to pass the full ` +
+      'conversation history; use a Responses API model for previousResponseId or a ' +
+      'conversation-capable model for conversationId.';
+
+    if (this.#strictFeatureValidation) {
+      throw new UserError(message);
+    }
+
+    if (!this.#hasWarnedUnsupportedConversationState) {
+      logger.warn(
+        `${message} Ignoring unsupported server-managed conversation state; ` +
+          'enable strict feature validation to raise an error instead.',
+      );
+      this.#hasWarnedUnsupportedConversationState = true;
+    }
+  }
+
+  #handleUnsupportedPrompt(request: ModelRequest) {
+    if (!request.prompt) {
+      return;
+    }
+
+    const message =
+      'Reusable prompts are only supported by the Responses API. ' +
+      'OpenAIChatCompletionsModel does not support prompt; use a Responses model instead.';
+
+    if (this.#strictFeatureValidation) {
+      throw new UserError(message);
+    }
+
+    if (!this.#hasWarnedUnsupportedPrompt) {
+      logger.warn(
+        `${message} Ignoring prompt; enable strict feature validation to raise an error instead.`,
+      );
+      this.#hasWarnedUnsupportedPrompt = true;
+    }
+  }
+
+  #handleUnsupportedReasoningSettings(request: ModelRequest) {
+    const reasoning = request.modelSettings.reasoning;
+    if (!reasoning) {
+      return;
+    }
+
+    const unsupported = (['mode', 'context'] as const).filter(
+      (name) => reasoning[name] !== undefined && reasoning[name] !== null,
+    );
+    if (unsupported.length === 0) {
+      return;
+    }
+
+    const unsupportedParams = unsupported
+      .map((name) => `reasoning.${name}`)
+      .join(', ');
+    const message =
+      `OpenAIChatCompletionsModel does not support ${unsupportedParams}. ` +
+      'These reasoning settings require the Responses API; Chat Completions only uses reasoning.effort.';
+
+    if (this.#strictFeatureValidation) {
+      throw new UserError(message);
+    }
+
+    if (!this.#hasWarnedUnsupportedReasoningSettings) {
+      logger.warn(
+        `${message} Ignoring unsupported reasoning settings; ` +
+          'enable strict feature validation to raise an error instead.',
+      );
+      this.#hasWarnedUnsupportedReasoningSettings = true;
+    }
+  }
+
+  /**
+   * @internal
+   */
+  async #fetchResponse(
+    request: ModelRequest,
+    span: Span<GenerationSpanData> | undefined,
+    stream: true,
+  ): Promise<ChatCompletionStreamResult>;
+  async #fetchResponse(
+    request: ModelRequest,
+    span: Span<GenerationSpanData> | undefined,
+    stream: false,
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion>;
+  async #fetchResponse(
+    request: ModelRequest,
+    span: Span<GenerationSpanData> | undefined,
+    stream: boolean,
+  ): Promise<
+    ChatCompletionStreamResult | OpenAI.Chat.Completions.ChatCompletion
+  > {
+    const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
+    if (request.tools) {
+      for (const tool of request.tools) {
+        if (
+          (tool.type === 'function' ||
+            tool.type === 'shell' ||
+            tool.type === 'apply_patch') &&
+          tool.allowedCallers?.some((caller) => caller === 'programmatic')
+        ) {
+          throw new UserError(
+            'Tools callable from Programmatic Tool Calling are only supported with the Responses API.',
+          );
+        }
+        if (tool.type === 'function' && tool.outputSchema) {
+          throw new UserError(
+            'Function tool outputSchema is only supported with the Responses API.',
+          );
+        }
+        if (
+          tool.type === 'hosted_tool' &&
+          (tool.providerData?.type === 'programmatic_tool_calling' ||
+            (Array.isArray(tool.providerData?.allowed_callers) &&
+              tool.providerData.allowed_callers.includes('programmatic')))
+        ) {
+          throw new UserError(
+            'Programmatic Tool Calling is only supported with the Responses API.',
+          );
+        }
+        if (tool.type === 'function') {
+          if (
+            typeof tool.namespace === 'string' &&
+            tool.namespace.trim().length > 0
+          ) {
+            throw new UserError(
+              'Namespaced function tools created with toolNamespace() are only supported with the Responses API.',
+            );
+          }
+          if (tool.deferLoading === true) {
+            throw new UserError(
+              'Function tools with deferLoading: true are only supported with the Responses API.',
+            );
+          }
+        }
+        tools.push(toolToOpenAI(tool));
+      }
+    }
+    if (request.handoffs) {
+      for (const handoff of request.handoffs) {
+        tools.push(convertHandoffTool(handoff));
+      }
+    }
+    const responseFormat = getResponseFormat(request.outputType);
+    const parallelToolCalls = request.modelSettings.parallelToolCalls;
+
+    const messages = itemsToMessages(request.input, {
+      strictFeatureValidation: this.#strictFeatureValidation,
+    });
+    if (request.systemInstructions) {
+      messages.unshift({
+        content: request.systemInstructions,
+        role: 'system',
+      });
+    }
+
+    if (span && request.tracing === true) {
+      span.spanData.input = messages;
+    }
+
+    const providerData = { ...(request.modelSettings.providerData ?? {}) };
+    const requestInternal = (
+      request as ModelRequest & {
+        _internal?: { reasoningEffortImplicit?: boolean };
+      }
+    )._internal;
+    const omitImplicitReasoningEffort =
+      requestInternal?.reasoningEffortImplicit === true &&
+      (providerData.reasoning_effort !== undefined ||
+        (tools.length > 0 && GPT_56_MODEL_PATTERN.test(this.#model)));
+    if (
+      request.modelSettings.reasoning &&
+      request.modelSettings.reasoning.effort &&
+      !omitImplicitReasoningEffort
+    ) {
+      // merge the top-level reasoning.effort into provider data
+      providerData.reasoning_effort = request.modelSettings.reasoning.effort;
+    }
+    if (request.modelSettings.text && request.modelSettings.text.verbosity) {
+      // merge the top-level text.verbosity into provider data
+      providerData.verbosity = request.modelSettings.text.verbosity;
+    }
+
+    type ChatCompletionRequestParams =
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming &
+          Record<string, unknown>)
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming &
+          Record<string, unknown>);
+
+    const requestData: ChatCompletionRequestParams = {
+      model: this.#model,
+      messages,
+      tools: tools.length ? tools : undefined,
+      temperature: request.modelSettings.temperature,
+      top_p: request.modelSettings.topP,
+      frequency_penalty: request.modelSettings.frequencyPenalty,
+      presence_penalty: request.modelSettings.presencePenalty,
+      max_tokens: request.modelSettings.maxTokens,
+      tool_choice: getCompatibleToolChoice(
+        request.modelSettings.toolChoice,
+        tools,
+      ),
+      ...(tools.length > 0 && typeof parallelToolCalls === 'boolean'
+        ? { parallel_tool_calls: parallelToolCalls }
+        : {}),
+      stream: stream ? true : false,
+      stream_options: stream ? { include_usage: true } : undefined,
+      store: request.modelSettings.store,
+      prompt_cache_retention: normalizePromptCacheRetention(
+        request.modelSettings.promptCacheRetention,
+      ),
+      prompt_cache_options: request.modelSettings.promptCacheOptions,
+      ...providerData,
+    };
+
+    if (!requestData.tools?.length) {
+      delete requestData.parallel_tool_calls;
+    }
+
+    if (responseFormat) {
+      requestData.response_format = responseFormat;
+    }
+
+    if (logger.dontLogModelData) {
+      logger.debug('Calling LLM');
+    } else {
+      logger.debug(
+        `Calling LLM. Request data: ${JSON.stringify(requestData, null, 2)}`,
+      );
+    }
+
+    const requestOptions: {
+      headers: typeof HEADERS;
+      signal: AbortSignal | undefined;
+      maxRetries?: number;
+    } = {
+      headers: HEADERS,
+      signal: request.signal,
+    };
+    if (
+      (
+        request as ModelRequest & {
+          _internal?: { runnerManagedRetry?: boolean };
+        }
+      )._internal?.runnerManagedRetry === true
+    ) {
+      requestOptions.maxRetries = 0;
+    }
+
+    const completionPromise = this.#client.chat.completions.create(
+      requestData,
+      requestOptions,
+    );
+
+    let completion:
+      | Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
+      | OpenAI.Chat.Completions.ChatCompletion;
+    let requestId: string | undefined;
+    if (stream) {
+      const withResponse = (
+        completionPromise as ChatCompletionStreamWithRequestId
+      ).withResponse;
+      if (typeof withResponse === 'function') {
+        const streamedResponse = await withResponse.call(completionPromise);
+        completion = streamedResponse.data;
+        requestId = normalizeRequestId(streamedResponse.request_id);
+      } else {
+        completion =
+          (await completionPromise) as Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+      }
+    } else {
+      completion =
+        (await completionPromise) as OpenAI.Chat.Completions.ChatCompletion;
+    }
+
+    if (logger.dontLogModelData) {
+      logger.debug('Response received');
+    } else {
+      logger.debug(`Response received: ${JSON.stringify(completion, null, 2)}`);
+    }
+    return stream
+      ? {
+          stream:
+            completion as Stream<OpenAI.Chat.Completions.ChatCompletionChunk>,
+          ...(requestId ? { requestId } : {}),
+        }
+      : (completion as OpenAI.Chat.Completions.ChatCompletion);
+  }
+}
+
+function getResponseFormat(
+  outputType: SerializedOutputType,
+):
+  | ResponseFormatText
+  | ResponseFormatJSONSchema
+  | ResponseFormatJSONObject
+  | undefined {
+  if (outputType === 'text') {
+    // Avoid sending response_format for plain text responses because some Chat Completions
+    // compatible providers (e.g., Claude) reject non-json_schema values here. OpenAI's API
+    // already treats text as the default when the field is omitted.
+    return undefined;
+  }
+
+  if (outputType.type === 'json_schema') {
+    return {
+      type: 'json_schema',
+      json_schema: {
+        name: outputType.name,
+        strict: outputType.strict,
+        schema: outputType.schema,
+      },
+    };
+  }
+
+  return { type: 'json_object' };
+}
+
+function toResponseUsage(
+  usage: CompletionUsage,
+): UsageInput & { requests: number } {
+  return {
+    requests: 1,
+    input_tokens: usage.prompt_tokens,
+    output_tokens: usage.completion_tokens,
+    total_tokens: usage.total_tokens,
+    input_tokens_details: {
+      cached_tokens: usage.prompt_tokens_details?.cached_tokens || 0,
+    },
+    output_tokens_details: {
+      reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens || 0,
+    },
+  };
+}

@@ -1,0 +1,467 @@
+"""The inbox: acceptance of queued input, capacity, pending edits by their submitter, order, withdrawal, archive."""
+
+import asyncio
+from dataclasses import replace
+
+import pytest
+from a13n_service.infra.db import lock, transaction
+from a13n_service.infra.errors import ServiceError
+from a13n_service.infra.ids import new_object_id
+from a13n_service.runs import accept as acceptance
+from a13n_service.runs import inbox
+from a13n_service.runs.accept import ThreadAdvancer, advance
+from a13n_service.runs.tables import RunRow, ThreadRow
+from sqlalchemy import event
+from sqlalchemy import text as sql
+
+pytestmark = pytest.mark.anyio
+
+
+class _RefusingAgent:
+    """Admission that refuses runs of one agent and admits every call."""
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+
+    async def accept(self, session, intent) -> None:  # type: ignore[no-untyped-def]
+        if intent.agent_id == self.agent_id:
+            raise ServiceError("rate_limited", "No runs of this agent")
+
+    async def proceed(self, session, call) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+
+class _Unavailable:
+    async def accept(self, session, intent) -> None:  # type: ignore[no-untyped-def]
+        raise ServiceError("unavailable", "Admission is unavailable")
+
+    async def proceed(self, session, call) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+
+class _Breaking:
+    """Admission that breaks while accepting runs of the named threads, as a poison thread does."""
+
+    def __init__(self) -> None:
+        self.threads: set[str] = set()
+
+    async def accept(self, session, intent) -> None:  # type: ignore[no-untyped-def]
+        if intent.thread_id in self.threads:
+            raise RuntimeError("poisoned thread")
+
+    async def proceed(self, session, call) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+
+async def _queue(service, runs_kit, thread_id: str, agent: dict, text: str) -> dict:  # type: ignore[no-untyped-def]
+    """Queue a message behind the thread's active run and return its entry."""
+    response = await runs_kit.submit(service, thread_id, runs_kit.message(agent, text, delivery="next_run"))
+    assert response.status_code == 201, response.text
+    return response.json()["entry"]
+
+
+def _dispositions(entries: list[dict]) -> list[tuple[str, str | None]]:
+    return [(entry["status"], (entry["failure"] or {}).get("code")) for entry in entries]
+
+
+async def test_a_refused_entry_fails_alone_and_the_next_one_starts(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    model = await runs_kit.create_model(service, scripted_model)
+    admitted = await runs_kit.add_agent(service, "admitted", model)
+    refused = await runs_kit.add_agent(service, "refused", model)
+    thread_id = (await runs_kit.start_thread(service, admitted, "first"))["thread"]["id"]
+    await _queue(service, runs_kit, thread_id, refused, "refused")
+    await _queue(service, runs_kit, thread_id, admitted, "second")
+
+    # The first run's seal accepts its successor under an admission that refuses the next entry's agent.
+    scripted_model.say("Done")
+    await (await runs_kit.attempt(service, runtime=replace(service.runtime, admission=_RefusingAgent(refused["id"]))))
+    entries = await runs_kit.inbox(service, thread_id)
+    assert _dispositions(entries) == [("consumed", None), ("failed", "rate_limited"), ("assigned", None)]
+    assert (await runs_kit.get_thread(service, thread_id))["current_run_id"] == entries[2]["assigned_run_id"]
+
+
+async def test_an_unavailable_admission_stores_nothing(service, scripted_model, runs_kit, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    agent = await runs_kit.create_agent(service, scripted_model)
+    body, key = runs_kit.message(agent, "hi"), runs_kit.fresh_key()
+    monkeypatch.setattr(service.app.state, "runtime", replace(service.runtime, admission=_Unavailable()))
+    refused = await service.client.post(f"{service.api}/threads", json=body, headers=key)
+    assert refused.status_code == 503, refused.text
+    assert (await service.client.get(f"{service.api}/threads")).json()["items"] == []
+
+    monkeypatch.undo()
+    retried = await service.client.post(f"{service.api}/threads", json=body, headers=key)
+    assert retried.status_code == 201 and retried.json()["run"]["status"] == "accepted", retried.text
+
+
+async def test_the_advance_sweep_passes_a_thread_that_breaks(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    agent = await runs_kit.create_agent(service, scripted_model)
+    policy = _Breaking()
+    runtime = replace(service.runtime, admission=policy)
+    for text in ("one", "two"):
+        thread_id = (await runs_kit.start_thread(service, agent, text))["thread"]["id"]
+        await _queue(service, runs_kit, thread_id, agent, "next")
+        policy.threads.add(thread_id)
+    # Each seal's own advance breaks, which leaves both threads idle with pending input.
+    for _ in range(2):
+        scripted_model.say("Done")
+        await (await runs_kit.attempt(service, runtime=runtime))
+
+    broken, healthy = sorted(policy.threads)
+    policy.threads.discard(healthy)
+    await ThreadAdvancer(runtime, batch=10)()
+    assert (await runs_kit.get_thread(service, broken))["current_run_id"] is None
+    assert (await runs_kit.get_thread(service, healthy))["current_run_id"] is not None
+
+
+async def test_advance_batches_distinct_threads_and_wraps_after_failures(
+    service, scripted_model, runs_kit, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    agent = await runs_kit.create_agent(service, scripted_model)
+    policy = _Breaking()
+    runtime = replace(service.runtime, admission=policy)
+    for text in ("one", "two", "three"):
+        thread_id = (await runs_kit.start_thread(service, agent, text))["thread"]["id"]
+        for queued in ("next", "later", "last"):
+            await _queue(service, runs_kit, thread_id, agent, queued)
+        policy.threads.add(thread_id)
+    for _ in range(3):
+        scripted_model.say("Done")
+        await (await runs_kit.attempt(service, runtime=runtime))
+
+    visited: list[str] = []
+    statements: list[str] = []
+    owner = asyncio.current_task()
+
+    def record(connection, cursor, statement, parameters, context, executemany) -> None:  # type: ignore[no-untyped-def]
+        if asyncio.current_task() is owner:
+            statements.append(statement)
+
+    async def visit(runtime, thread_id, *, skip_locked=False) -> None:  # type: ignore[no-untyped-def]
+        # Only candidate discovery has run before the first acceptance transaction starts.
+        if not visited:
+            assert len(statements) == 1
+            assert statements[0].startswith("SELECT ")
+        visited.append(thread_id)
+        await advance(runtime, thread_id, skip_locked=skip_locked)
+
+    monkeypatch.setattr(acceptance, "advance", visit)
+    engine = runtime.storage.engine.sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    sweep = ThreadAdvancer(runtime, batch=2)
+    ordered = sorted(policy.threads)
+    try:
+        await sweep()
+        assert visited == ordered[:2]
+        assert sweep.after == ordered[1]
+        await sweep()
+        assert visited == ordered
+        assert sweep.after == ""
+        # The failing low-ID threads are retried only after the rest of the pass.
+        await sweep()
+        assert visited == [*ordered, *ordered[:2]]
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+
+@pytest.mark.parametrize("race", ["locked", "accepted", "withdrawn", "archived"])
+async def test_advance_rechecks_a_candidate_after_discovery(
+    service, scripted_model, runs_kit, monkeypatch, race
+) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    agent = await runs_kit.create_agent(service, scripted_model)
+    thread_id = (await runs_kit.start_thread(service, agent, "first"))["thread"]["id"]
+    queued = await _queue(service, runs_kit, thread_id, agent, "next")
+    policy = _Breaking()
+    policy.threads.add(thread_id)
+    scripted_model.say("Done")
+    await (await runs_kit.attempt(service, runtime=replace(service.runtime, admission=policy)))
+
+    async def raced(runtime, candidate, *, skip_locked=False) -> None:  # type: ignore[no-untyped-def]
+        assert candidate == thread_id and skip_locked
+        if race == "locked":
+            async with transaction(runtime.storage) as session:
+                await lock(session, ThreadRow, thread_id)
+                await asyncio.wait_for(advance(runtime, candidate, skip_locked=skip_locked), timeout=2)
+            return
+        if race == "accepted":
+            # Another sweeper accepts this same candidate before ours gets its lock.
+            await advance(runtime, candidate, skip_locked=True)
+        else:
+            thread = await runs_kit.get_thread(service, thread_id)
+            if race == "withdrawn":
+                response = await service.client.delete(
+                    f"{service.api}/threads/{thread_id}/inbox/{queued['id']}",
+                    headers=runs_kit.if_match(thread),
+                )
+            else:
+                response = await service.client.post(
+                    f"{service.api}/threads/{thread_id}/archive", headers=runs_kit.if_match(thread)
+                )
+            assert response.status_code == 200, response.text
+        await advance(runtime, candidate, skip_locked=skip_locked)
+
+    monkeypatch.setattr(acceptance, "advance", raced)
+    await ThreadAdvancer(service.runtime, batch=1)()
+    entries = await runs_kit.inbox(service, thread_id)
+    expected = {"locked": "pending", "accepted": "assigned", "withdrawn": "withdrawn", "archived": "withdrawn"}
+    assert entries[1]["status"] == expected[race]
+    thread = await runs_kit.get_thread(service, thread_id)
+    assert thread["current_run_id"] == (entries[1]["assigned_run_id"] if race == "accepted" else None)
+
+
+async def test_only_the_submitter_edits_a_pending_entry(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    agent = await runs_kit.create_agent(service, scripted_model)
+    thread_id = (await runs_kit.start_thread(service, agent, "first"))["thread"]["id"]
+    queued = await _queue(service, runs_kit, thread_id, agent, "queued")
+    accounts = f"{service.workspace}/service-accounts"
+    account = (await service.client.post(accounts, json={"name": "runner", "role": "runner"})).json()
+    key = await service.client.post(f"{accounts}/{account['id']}/keys", json={"name": "runner"})
+    runner = {"authorization": "Bearer " + key.json()["secret"]}
+    entry = f"{service.api}/threads/{thread_id}/inbox/{queued['id']}"
+    edit = {"payload": {"content": [{"type": "text", "text": "rewritten"}]}}
+
+    thread = runs_kit.if_match(await runs_kit.get_thread(service, thread_id))
+    refused = await service.client.patch(entry, json=edit, headers={**runner, **thread})
+    assert refused.status_code == 403, refused.text
+    edited = await service.client.patch(entry, json=edit, headers=thread)
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["entry"]["payload"] == edit["payload"]
+    # Withdrawal stays open to every member who may run.
+    withdrawn = await service.client.delete(entry, headers={**runner, **runs_kit.if_match(edited.json()["thread"])})
+    assert withdrawn.status_code == 200 and withdrawn.json()["entry"]["status"] == "withdrawn", withdrawn.text
+
+
+async def test_malformed_overrides_fail_before_anything_is_stored(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    agent = await runs_kit.create_agent(service, scripted_model)
+    thread_id = (await runs_kit.start_thread(service, agent, "first"))["thread"]["id"]
+    missing = {"overrides": {"model": "missing"}}
+
+    appended = await runs_kit.submit(service, thread_id, runs_kit.message(agent, "queued", options=missing))
+    assert appended.status_code == 400, appended.text
+    assert len(await runs_kit.inbox(service, thread_id)) == 1
+
+    queued = await _queue(service, runs_kit, thread_id, agent, "queued")
+    thread = runs_kit.if_match(await runs_kit.get_thread(service, thread_id))
+    edited = await service.client.patch(
+        f"{service.api}/threads/{thread_id}/inbox/{queued['id']}", json={"options": missing}, headers=thread
+    )
+    assert edited.status_code == 400, edited.text
+    assert (await runs_kit.inbox(service, thread_id))[1]["options"] == queued["options"]
+
+
+async def test_the_inbox_holds_a_bounded_count_of_outstanding_input(serve, settings, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    small = settings.model_copy(update={"control": settings.control.model_copy(update={"inbox_count": 2})})
+    async with serve(settings=small) as service:
+        agent = await runs_kit.create_agent(service, scripted_model)
+        thread_id = (await runs_kit.start_thread(service, agent, "assigned"))["thread"]["id"]
+        queued = await _queue(service, runs_kit, thread_id, agent, "pending")
+
+        # The assigned source and the pending entry both count.
+        full = await runs_kit.submit(service, thread_id, runs_kit.message(agent, "one too many"))
+        assert full.status_code == 429, full.text
+        details = full.json()["error"]["details"]
+        assert (details["count"], details["limit_count"]) == (2, 2)
+        thread = runs_kit.if_match(await runs_kit.get_thread(service, thread_id))
+        withdrawn = await service.client.delete(
+            f"{service.api}/threads/{thread_id}/inbox/{queued['id']}", headers=thread
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        assert (await runs_kit.submit(service, thread_id, runs_kit.message(agent, "fits again"))).status_code == 201
+
+
+async def _sessions_waiting_on_locks(service, count: int) -> None:  # type: ignore[no-untyped-def]
+    async with asyncio.timeout(5):
+        while True:
+            async with transaction(service.runtime.storage) as session:
+                waiting = await session.scalar(
+                    sql(
+                        "SELECT count(*) FROM pg_stat_activity"
+                        " WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    )
+                )
+            if waiting >= count:
+                return
+            await asyncio.sleep(0.01)
+
+
+async def test_a_duplicate_that_waited_for_its_thread_replays_the_winner_that_filled_the_inbox(
+    serve, settings, scripted_model, runs_kit
+) -> None:  # type: ignore[no-untyped-def]
+    small = settings.model_copy(update={"control": settings.control.model_copy(update={"inbox_count": 2})})
+    async with serve(settings=small) as service:
+        agent = await runs_kit.create_agent(service, scripted_model)
+        thread_id = (await runs_kit.start_thread(service, agent, "assigned"))["thread"]["id"]
+        url, key = f"{service.api}/threads/{thread_id}/inbox", runs_kit.fresh_key()
+        body = runs_kit.message(agent, "once", delivery="next_run")
+        async with transaction(service.runtime.storage) as session:
+            await lock(session, ThreadRow, thread_id)
+            # Both copies find no entry for the key, then wait for the thread.
+            copies = [asyncio.create_task(service.client.post(url, json=body, headers=key)) for _ in range(2)]
+            await _sessions_waiting_on_locks(service, 2)
+        responses = await asyncio.gather(*copies)
+        # The winner fills the inbox; the copy that waited replays it instead of reporting the inbox full.
+        assert sorted(response.status_code for response in responses) == [200, 201], [r.text for r in responses]
+        assert len({response.json()["entry"]["id"] for response in responses}) == 1
+        assert len(await runs_kit.inbox(service, thread_id)) == 2
+
+
+async def test_pending_entries_are_edited_reordered_and_withdrawn(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    agent = await runs_kit.create_agent(service, scripted_model)
+    thread_id = (await runs_kit.start_thread(service, agent, "first"))["thread"]["id"]
+    a, b, c = [(await _queue(service, runs_kit, thread_id, agent, text))["id"] for text in "abc"]
+    inbox = f"{service.api}/threads/{thread_id}/inbox"
+    thread = await runs_kit.get_thread(service, thread_id)
+
+    edit = {"payload": {"content": [{"type": "text", "text": "a, edited"}]}, "delivery": "steer"}
+    edited = await service.client.patch(f"{inbox}/{a}", json=edit, headers=runs_kit.if_match(thread))
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["entry"]["delivery"] == "steer"
+    stale = await service.client.patch(f"{inbox}/{a}", json=edit, headers=runs_kit.if_match(thread))
+    assert stale.status_code == 412, stale.text
+    thread = edited.json()["thread"]
+
+    partial = await service.client.put(f"{inbox}/order", json={"entry_ids": [c, a]}, headers=runs_kit.if_match(thread))
+    assert partial.status_code == 400, partial.text
+    ordered = await service.client.put(
+        f"{inbox}/order", json={"entry_ids": [c, a, b]}, headers=runs_kit.if_match(thread)
+    )
+    assert ordered.status_code == 200, ordered.text
+    assert [entry["id"] for entry in await runs_kit.inbox(service, thread_id)][1:] == [c, a, b]
+
+    withdrawn = await service.client.delete(f"{inbox}/{b}", headers=runs_kit.if_match(ordered.json()))
+    assert withdrawn.status_code == 200, withdrawn.text
+    read = await service.client.get(f"{inbox}/{b}")
+    assert read.status_code == 200 and read.json() == withdrawn.json()["entry"], read.text
+    assert (await service.client.get(f"{inbox}/{new_object_id('inb')}")).status_code == 404
+    thread = withdrawn.json()["thread"]
+    again = await service.client.patch(f"{inbox}/{b}", json=edit, headers=runs_kit.if_match(thread))
+    assert again.status_code == 409 and again.json()["error"]["details"]["reason"] == "entry_withdrawn", again.text
+
+
+async def test_archive_withdraws_input_and_cancels_the_accepted_run(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    agent = await runs_kit.create_agent(service, scripted_model)
+    submitted = await runs_kit.start_thread(service, agent, "first")
+    thread_id, run_id = submitted["thread"]["id"], submitted["run"]["id"]
+    await _queue(service, runs_kit, thread_id, agent, "queued")
+    archive = f"{service.api}/threads/{thread_id}/archive"
+    thread = await runs_kit.get_thread(service, thread_id)
+
+    archived = await service.client.post(archive, headers=runs_kit.if_match(thread))
+    assert archived.status_code == 200 and archived.json()["archived_at"] is not None, archived.text
+    assert (await runs_kit.get_run(service, run_id))["status"] == "cancelled"
+    assert _dispositions(await runs_kit.inbox(service, thread_id)) == [("failed", "run_ended"), ("withdrawn", None)]
+    refused = await runs_kit.submit(service, thread_id, runs_kit.message(agent, "too late"))
+    assert refused.status_code == 409 and refused.json()["error"]["details"]["reason"] == "archived", refused.text
+    repeated = await service.client.post(archive, headers=runs_kit.if_match(archived.json()))
+    assert repeated.status_code == 200 and repeated.json()["archived_at"] == archived.json()["archived_at"]
+
+
+async def test_archive_withdraws_the_steers_a_completing_run_left_unused(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    """The run completes before its worker notices the archive; its unused steers join the withdrawn input."""
+    agent = await runs_kit.create_agent(service, scripted_model)
+    gate = asyncio.Event()
+    scripted_model.say("Done", gate=gate)
+    submitted = await runs_kit.start_thread(service, agent, "first")
+    thread_id, run_id = submitted["thread"]["id"], submitted["run"]["id"]
+    # The attempt's own boundaries take 1 KiB batches, so they never take the steer below themselves.
+    settings = service.runtime.settings
+    worker = settings.worker.model_copy(update={"delivery_bytes": 1024})
+    running = await runs_kit.attempt(
+        service, runtime=replace(service.runtime, settings=settings.model_copy(update={"worker": worker}))
+    )
+    await scripted_model.request()
+    # Request arrival does not await the checkpoint whose input consumption changes the thread's ETag.
+    await runs_kit.checkpointed(service, run_id)
+    steer = (await runs_kit.submit(service, thread_id, runs_kit.message(agent, "x" * 2048))).json()["entry"]
+    # Assigned at a safe boundary as a worker assigns it, but never offered to the run's last request.
+    async with transaction(service.runtime.storage) as session:
+        thread_row, run_row = await lock(session, ThreadRow, thread_id), await lock(session, RunRow, run_id)
+        assert thread_row is not None and run_row is not None
+        assigned = await inbox.assign_steers(
+            session,
+            thread_row,
+            run_row,
+            max_count=settings.worker.delivery_count,
+            max_bytes=settings.worker.delivery_bytes,
+            scan=settings.control.inbox_count,
+        )
+    assert [entry.id for entry in assigned] == [steer["id"]]
+    thread = await runs_kit.get_thread(service, thread_id)
+    archived = await service.client.post(
+        f"{service.api}/threads/{thread_id}/archive", headers=runs_kit.if_match(thread)
+    )
+    assert archived.status_code == 200, archived.text
+
+    gate.set()
+    await running
+    assert (await runs_kit.get_run(service, run_id))["status"] == "completed"
+    entries = {entry["id"]: entry for entry in await runs_kit.inbox(service, thread_id)}
+    assert entries[steer["id"]]["status"] == "withdrawn", entries[steer["id"]]
+
+
+async def test_question_wait_keeps_old_and_new_messages_until_explicit_resume(
+    service, scripted_model, runs_kit
+) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    agent = await runs_kit.create_agent(service, scripted_model, user_questions=True)
+    initial = await runs_kit.start_thread(service, agent, "pick a color")
+    thread_id, run_id = initial["thread"]["id"], initial["run"]["id"]
+    old = await _queue(service, runs_kit, thread_id, agent, "check the weather")
+    scripted_model.call("ask_user_question", {"questions": [runs_kit.QUESTION]}, call_id="call_ask")
+    await (await runs_kit.attempt(service))  # Includes the post-seal advance.
+    assert (await runs_kit.get_run(service, run_id))["status"] == "waiting"
+    new = await _queue(service, runs_kit, thread_id, agent, "another unrelated task")
+    sweep = ThreadAdvancer(service.runtime, batch=1)
+    for _ in range(2):
+        await advance(service.runtime, thread_id)
+        await sweep()
+    thread = await runs_kit.get_thread(service, thread_id)
+    assert thread["current_run_id"] is None and thread["last_run_id"] == run_id
+    queued = (await runs_kit.inbox(service, thread_id))[1:]
+    assert [(e["id"], e["status"]) for e in queued] == [(old["id"], "pending"), (new["id"], "pending")]
+
+    resumed = await service.client.post(
+        f"{service.api}/runs/{run_id}/resume",
+        json={"approvals": {}, "calls": {"call_ask": {"status": "returned", "value": {"response": "blue"}}}},
+        headers=runs_kit.fresh_key(),
+    )
+    assert resumed.status_code == 201, resumed.text
+    scripted_model.say("Blue selected")
+    await (await runs_kit.attempt(service))
+    entries = await runs_kit.inbox(service, thread_id)
+    # Normal FIFO acceptance resumes after the explicit successor completes.
+    assert [(e["id"], e["status"]) for e in entries[1:]] == [(old["id"], "assigned"), (new["id"], "pending")]
+    await scripted_model.request()
+    answered = await scripted_model.request()
+    assert "check the weather" not in str(answered) and "another unrelated task" not in str(answered)
+    scripted_model.say("Weather checked")
+    await (await runs_kit.attempt(service))
+    assert [(e["id"], e["status"]) for e in (await runs_kit.inbox(service, thread_id))[1:]] == [
+        (old["id"], "consumed"),
+        (new["id"], "assigned"),
+    ]
+
+
+async def test_waiting_threads_do_not_use_the_advance_batch(service, scripted_model, runs_kit) -> None:  # type: ignore[no-untyped-def]
+    await runs_kit.pause_sweeps(service)
+    agent = await runs_kit.create_agent(service, scripted_model, user_questions=True)
+    submissions = [await runs_kit.start_thread(service, agent, text) for text in ("first", "second")]
+    blocked, healthy = sorted(item["thread"]["id"] for item in submissions)
+    for item in submissions:
+        await _queue(service, runs_kit, item["thread"]["id"], agent, "queued")
+    policy = _Breaking()
+    policy.threads.add(healthy)
+    for item in submissions:
+        if item["thread"]["id"] == blocked:
+            scripted_model.call("ask_user_question", {"questions": [runs_kit.QUESTION]}, call_id="call_ask")
+        else:
+            scripted_model.say("Done")
+        await (await runs_kit.attempt(service, runtime=replace(service.runtime, admission=policy)))
+    assert (await runs_kit.get_thread(service, healthy))["current_run_id"] is None
+    # The lower-ID waiting thread must be excluded before LIMIT 1, not just rejected after selection.
+    await ThreadAdvancer(service.runtime, batch=1)()
+    assert (await runs_kit.get_thread(service, blocked))["current_run_id"] is None
+    assert (await runs_kit.get_thread(service, healthy))["current_run_id"] is not None

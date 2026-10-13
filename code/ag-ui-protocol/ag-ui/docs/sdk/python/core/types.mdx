@@ -1,0 +1,463 @@
+---
+title: "Types"
+description:
+  "Documentation for the core types used in the Agent User Interaction Protocol
+  Python SDK"
+---
+
+# Core Types
+
+The Agent User Interaction Protocol Python SDK is built on a set of core types
+that represent the fundamental structures used throughout the system. This page
+documents these types and their properties.
+
+## RunAgentInput
+
+`from ag_ui.core import RunAgentInput`
+
+Input parameters for running an agent. In the HTTP API, this is the body of the
+`POST` request.
+
+`tools` contains tools provided by the client for this run. Backend-defined
+tools should remain in the backend agent or framework configuration, and may be
+advertised separately through agent capabilities.
+
+```python
+class RunAgentInput(ConfiguredBaseModel):
+    thread_id: str
+    run_id: str
+    parent_run_id: Optional[str] = None
+    state: Any = None  # optional: absent means "no state"; a bare null reads as absent
+    messages: List[Message]
+    tools: List[Tool]
+    context: List[Context]
+    forwarded_props: Any
+    resume: Optional[List[ResumeEntry]] = None
+```
+
+| Property          | Type                          | Description                                                                                         |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| `thread_id`       | `str`                         | ID of the conversation thread                                                                       |
+| `run_id`          | `str`                         | ID of the current run                                                                               |
+| `parent_run_id`   | `Optional[str]`               | (Optional) ID of the run that spawned this run                                                      |
+| `state`           | `Any`                         | (Optional) Current state of the agent; absent means "no state", and a bare `null` is read as absent |
+| `messages`        | `List[Message]`               | List of messages in the conversation                                                                |
+| `tools`           | `List[Tool]`                  | Client-provided tools available for this run                                                        |
+| `context`         | `List[Context]`               | List of context objects provided to the agent                                                       |
+| `forwarded_props` | `Any`                         | Additional properties forwarded to the agent                                                        |
+| `resume`          | `Optional[List[ResumeEntry]]` | Per-interrupt responses resuming a run that finished with an interrupt outcome                      |
+
+## ResumeEntry
+
+`from ag_ui.core import ResumeEntry`
+
+One per-interrupt response inside `RunAgentInput.resume`, addressing an
+interrupt from the previous run. See
+[Interrupts](/concepts/interrupts#resuming-a-run) for the full resume contract.
+
+```python
+class ResumeEntry(GeneratedBaseModel):
+    interrupt_id: str
+    status: ResumeStatus  # "resolved" | "cancelled"
+    payload: Optional[Any] = None
+    metadata: Optional[Metadata] = None
+```
+
+| Property       | Type                       | Description                                                                           |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------- |
+| `interrupt_id` | `str`                      | ID of the interrupt this entry addresses                                              |
+| `status`       | `ResumeStatus`             | `"resolved"` if the user responded, `"cancelled"` if they abandoned                   |
+| `payload`      | `Optional[Any]`            | The response itself, validated against the interrupt's `response_schema`              |
+| `metadata`     | `Optional[Dict[str, Any]]` | Envelope data about the response — signatures, routing keys — never the answer itself |
+
+`metadata` follows the same conventions as metadata everywhere else in the
+protocol: open by key, any JSON value allowed under a key including `None`, the
+object itself absent or a mapping but never `null` on the wire, and the `ag-ui`
+key reserved. A resume entry is a request field, so nothing merges into it; see
+[Metadata](/concepts/metadata#resume-entries).
+
+## Message Types
+
+The SDK includes several message types that represent different kinds of
+messages in the system.
+
+<Note>
+  Every message type carries an optional `metadata` object (`Optional[Dict[str,
+  Any]]`), and so does `ToolCall`. Both are omitted from the per-type tables
+  below for brevity. It is open by key — any JSON value is allowed under a key,
+  including `None` — and the object itself may be absent but is never `None`.
+  The `ag-ui` key is reserved for AG-UI's own use. Metadata accumulates as a
+  message is built from its events, and tool call events accumulate onto the
+  tool call itself; see [Metadata](/concepts/metadata) for the merge rules.
+</Note>
+
+### Role
+
+`from ag_ui.core import Role`
+
+Represents the possible roles a message sender can have.
+
+```python
+Role = Literal["developer", "system", "assistant", "user", "tool", "activity", "reasoning"]
+```
+
+### DeveloperMessage
+
+`from ag_ui.core import DeveloperMessage`
+
+Represents a message from a developer.
+
+```python
+class DeveloperMessage(BaseMessage):
+    role: Literal["developer"]
+    content: str
+```
+
+| Property  | Type                   | Description                                      |
+| --------- | ---------------------- | ------------------------------------------------ |
+| `id`      | `str`                  | Unique identifier for the message                |
+| `role`    | `Literal["developer"]` | Role of the message sender, fixed as "developer" |
+| `content` | `str`                  | Text content of the message (required)           |
+| `name`    | `Optional[str]`        | Optional name of the sender                      |
+
+### SystemMessage
+
+`from ag_ui.core import SystemMessage`
+
+Represents a system message.
+
+```python
+class SystemMessage(BaseMessage):
+    role: Literal["system"]
+    content: str
+```
+
+| Property  | Type                | Description                                   |
+| --------- | ------------------- | --------------------------------------------- |
+| `id`      | `str`               | Unique identifier for the message             |
+| `role`    | `Literal["system"]` | Role of the message sender, fixed as "system" |
+| `content` | `str`               | Text content of the message (required)        |
+| `name`    | `Optional[str]`     | Optional name of the sender                   |
+
+### AssistantMessage
+
+`from ag_ui.core import AssistantMessage`
+
+Represents a message from an assistant.
+
+```python
+class AssistantMessage(BaseMessage):
+    role: Literal["assistant"]
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+```
+
+| Property     | Type                       | Description                                      |
+| ------------ | -------------------------- | ------------------------------------------------ |
+| `id`         | `str`                      | Unique identifier for the message                |
+| `role`       | `Literal["assistant"]`     | Role of the message sender, fixed as "assistant" |
+| `content`    | `Optional[str]`            | Text content of the message                      |
+| `name`       | `Optional[str]`            | Name of the sender                               |
+| `tool_calls` | `Optional[List[ToolCall]]` | Tool calls made in this message                  |
+
+### UserMessage
+
+`from ag_ui.core import UserMessage`
+
+Represents a message from a user.
+
+```python
+class UserMessage(BaseMessage):
+    role: Literal["user"]
+    content: Union[str, List["ContentPart"]]
+```
+
+| Property  | Type                              | Description                                                           |
+| --------- | --------------------------------- | --------------------------------------------------------------------- |
+| `id`      | `str`                             | Unique identifier for the message                                     |
+| `role`    | `Literal["user"]`                 | Role of the message sender, fixed as "user"                           |
+| `content` | `Union[str, List["ContentPart"]]` | Either a plain text string or an ordered list of multimodal fragments |
+| `name`    | `Optional[str]`                   | Optional name of the sender                                           |
+
+### PartSource
+
+Represents how a non-text part is supplied.
+
+```python
+PartSource = Annotated[
+    Union[DataSource, UrlSource, FileSource],
+    Field(discriminator="type"),
+]
+
+class DataSource(ConfiguredBaseModel):
+    type: Literal["data"]
+    value: str
+    mime_type: str
+
+class UrlSource(ConfiguredBaseModel):
+    type: Literal["url"]
+    value: str
+    mime_type: Optional[str] = None
+
+class FileSource(ConfiguredBaseModel):
+    type: Literal["file"]
+    value: str  # the handle, exactly as the provider issued it
+    provider: Optional[str] = None  # who issued it, e.g. "openai", "anthropic", "google"
+    mime_type: Optional[str] = None
+```
+
+A `FileSource` names bytes that already live at the model provider — an
+OpenAI or Anthropic file id, a Gemini file URI. Nothing is fetched and `value`
+is opaque: an agent hands it to its provider or drops the part, and never
+treats it as a URL.
+
+### TextPart
+
+Represents a text part inside a user message or a tool result.
+
+```python
+class TextPart(ConfiguredBaseModel):
+    type: Literal["text"]
+    id: Optional[str] = None
+    text: str
+    metadata: Optional[Any] = None
+```
+
+| Property   | Type              | Description                                                               |
+| ---------- | ----------------- | ------------------------------------------------------------------------- |
+| `type`     | `Literal["text"]` | Identifies the part type                                                  |
+| `id`       | `Optional[str]`   | Identifies the part within its message                                    |
+| `text`     | `str`             | Text content                                                              |
+| `metadata` | `Optional[Any]`   | Extra information about the part, such as a search hit's source and title |
+
+### BinaryInputContent
+
+Represents binary data such as images, audio, or files.
+
+```python
+class BinaryInputContent(ConfiguredBaseModel):
+    type: Literal["binary"]
+    mime_type: str
+    id: Optional[str] = None
+    url: Optional[str] = None
+    data: Optional[str] = None
+    filename: Optional[str] = None
+```
+
+| Property    | Type                | Description                                   |
+| ----------- | ------------------- | --------------------------------------------- |
+| `type`      | `Literal["binary"]` | Identifies the fragment type                  |
+| `mime_type` | `str`               | MIME type, for example `"image/png"`          |
+| `id`        | `Optional[str]`     | Reference to previously uploaded content      |
+| `url`       | `Optional[str]`     | Remote URL where the content can be retrieved |
+| `data`      | `Optional[str]`     | Base64 encoded content                        |
+| `filename`  | `Optional[str]`     | Optional filename hint                        |
+
+> **Validation:** At least one of `id`, `url`, or `data` must be provided.
+>
+> **Deprecated:** `BinaryInputContent` remains available as a temporary
+> compatibility model. Prefer modality-specific parts below.
+
+### ImagePart / AudioPart / VideoPart / DocumentPart
+
+```python
+class ImagePart(ConfiguredBaseModel):
+    type: Literal["image"]
+    id: Optional[str] = None
+    source: PartSource
+    metadata: Optional[Any] = None
+
+class AudioPart(ConfiguredBaseModel):
+    type: Literal["audio"]
+    id: Optional[str] = None
+    source: PartSource
+    metadata: Optional[Any] = None
+
+class VideoPart(ConfiguredBaseModel):
+    type: Literal["video"]
+    id: Optional[str] = None
+    source: PartSource
+    metadata: Optional[Any] = None
+
+class DocumentPart(ConfiguredBaseModel):
+    type: Literal["document"]
+    id: Optional[str] = None
+    source: PartSource
+    metadata: Optional[Any] = None
+```
+
+### ToolMessage
+
+`from ag_ui.core import ToolMessage`
+
+Represents a message from a tool.
+
+```python
+class ToolMessage(ConfiguredBaseModel):
+    id: str
+    role: Literal["tool"]
+    content: Union[str, List[ContentPart]]
+    tool_call_id: str
+    error: Optional[str] = None
+    encrypted_value: Optional[str] = None
+```
+
+| Property          | Type              | Description                                     |
+| ----------------- | ----------------- | ----------------------------------------------- |
+| `id`              | `str`             | Unique identifier for the message               |
+| `content`         | `str`             | Text content of the message                     |
+| `role`            | `Literal["tool"]` | Role of the message sender, fixed as "tool"     |
+| `tool_call_id`    | `str`             | ID of the tool call this message responds to    |
+| `error`           | `Optional[str]`   | Error message if the tool call failed           |
+| `encrypted_value` | `Optional[str]`   | Optional encrypted value attached via signature |
+
+### ActivityMessage
+
+`from ag_ui.core import ActivityMessage`
+
+Represents structured activity progress emitted between chat messages.
+
+```python
+class ActivityMessage(ConfiguredBaseModel):
+    id: str
+    role: Literal["activity"]
+    activity_type: str
+    content: Dict[str, Any]
+```
+
+| Property        | Type                  | Description                                             |
+| --------------- | --------------------- | ------------------------------------------------------- |
+| `id`            | `str`                 | Unique identifier for the activity message              |
+| `role`          | `Literal["activity"]` | Fixed discriminator identifying the message as activity |
+| `activity_type` | `str`                 | Activity discriminator used for renderer selection      |
+| `content`       | `Dict[str, Any]`      | Structured payload representing the activity state      |
+
+### ReasoningMessage
+
+`from ag_ui.core import ReasoningMessage`
+
+Represents a reasoning/thinking message from an agent's internal thought
+process.
+
+```python
+class ReasoningMessage(ConfiguredBaseModel):
+    id: str
+    role: Literal["reasoning"]
+    content: str
+    encrypted_value: Optional[str] = None
+```
+
+| Property          | Type                   | Description                                        |
+| ----------------- | ---------------------- | -------------------------------------------------- |
+| `id`              | `str`                  | Unique identifier for the reasoning message        |
+| `role`            | `Literal["reasoning"]` | Fixed discriminator identifying the reasoning role |
+| `content`         | `str`                  | The reasoning/thinking content                     |
+| `encrypted_value` | `Optional[str]`        | Optional encrypted value attached via signature    |
+
+### Message
+
+`from ag_ui.core import Message`
+
+A union type representing any type of message in the system.
+
+```python
+Message = Annotated[
+    Union[
+        DeveloperMessage,
+        SystemMessage,
+        AssistantMessage,
+        UserMessage,
+        ToolMessage,
+        ActivityMessage,
+        ReasoningMessage,
+    ],
+    Field(discriminator="role")
+]
+```
+
+### ToolCall
+
+`from ag_ui.core import ToolCall`
+
+Represents a tool call made by an agent.
+
+```python
+class ToolCall(ConfiguredBaseModel):
+    id: str
+    type: Literal["function"]
+    function: FunctionCall
+    encrypted_value: Optional[str] = None
+```
+
+| Property          | Type                  | Description                                     |
+| ----------------- | --------------------- | ----------------------------------------------- |
+| `id`              | `str`                 | Unique identifier for the tool call             |
+| `type`            | `Literal["function"]` | Type of the tool call, always "function"        |
+| `function`        | `FunctionCall`        | Details about the function being called         |
+| `encrypted_value` | `Optional[str]`       | Optional encrypted value attached via signature |
+
+#### FunctionCall
+
+`from ag_ui.core import FunctionCall`
+
+Represents function name and arguments in a tool call.
+
+```python
+class FunctionCall(ConfiguredBaseModel):
+    name: str
+    arguments: str
+```
+
+| Property    | Type  | Description                                      |
+| ----------- | ----- | ------------------------------------------------ |
+| `name`      | `str` | Name of the function to call                     |
+| `arguments` | `str` | JSON-encoded string of arguments to the function |
+
+## Context
+
+`from ag_ui.core import Context`
+
+Represents a piece of contextual information provided to an agent.
+
+```python
+class Context(ConfiguredBaseModel):
+    description: str
+    value: str
+```
+
+| Property      | Type  | Description                                 |
+| ------------- | ----- | ------------------------------------------- |
+| `description` | `str` | Description of what this context represents |
+| `value`       | `str` | The actual context value                    |
+
+## Tool
+
+`from ag_ui.core import Tool`
+
+Defines a tool that can be called by an agent.
+
+```python
+class Tool(ConfiguredBaseModel):
+    name: str
+    description: str
+    parameters: Any  # JSON Schema
+```
+
+| Property      | Type  | Description                                      |
+| ------------- | ----- | ------------------------------------------------ |
+| `name`        | `str` | Name of the tool                                 |
+| `description` | `str` | Description of what the tool does                |
+| `parameters`  | `Any` | JSON Schema defining the parameters for the tool |
+
+## State
+
+`from ag_ui.core import State`
+
+Represents the state of an agent during execution.
+
+```python
+State = Any
+```
+
+The state type is flexible and can hold any data structure needed by the agent
+implementation.

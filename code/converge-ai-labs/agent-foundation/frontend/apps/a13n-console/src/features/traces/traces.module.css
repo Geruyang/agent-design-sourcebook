@@ -1,0 +1,632 @@
+/* Trace detail ----------------------------------------------------------- */
+.detailContent {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
+}
+.facts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 28px;
+  margin: 0;
+  padding: 14px 18px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+}
+.factCells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 36px;
+  min-width: 0;
+}
+.fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.fact dt {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+  line-height: 15px;
+}
+.fact dd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  font-size: var(--a13n-text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+.factsNote {
+  margin: 8px 2px 0;
+  max-width: 78ch;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.5;
+}
+.providerNote {
+  margin: 12px 2px;
+  max-width: 78ch;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.5;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.chips:empty {
+  display: none;
+}
+.chips > * {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+.chips span span {
+  color: var(--a13n-muted);
+}
+.levelPill {
+  display: inline-flex;
+  min-width: 0;
+}
+.levelPill [data-slot="status-pill"] > span[aria-hidden] {
+  display: none;
+}
+
+/* Observations timeline --------------------------------------------------- */
+.observationToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+.observationCount {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 28px;
+}
+.observationControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline {
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+  overflow: hidden;
+}
+/* One grid serves the header and every row, so the scale sits over the track. */
+.timelineHeader,
+.observation {
+  display: grid;
+  grid-template-columns: minmax(200px, 38%) minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 16px;
+  padding-inline: 14px;
+  text-align: start;
+}
+.timelineHeader {
+  min-height: 30px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+}
+.timelineScale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.timelineDurationLabel {
+  text-align: end;
+}
+.timelineRows {
+  display: grid;
+}
+.observation {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-top: 1px solid var(--a13n-border-soft);
+  background: transparent;
+  color: var(--a13n-text);
+  font-weight: 400;
+  cursor: pointer;
+}
+.observation:hover {
+  background: color-mix(in srgb, var(--a13n-text) 3%, transparent);
+}
+.observation[data-selected] {
+  background: var(--a13n-selected);
+}
+.observation:focus-visible {
+  outline: 2px solid var(--a13n-focus);
+  outline-offset: -2px;
+}
+/* A 1px connector per depth step stands in for nesting rules. */
+.observationName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-block: 4px;
+  padding-inline-start: calc(var(--depth) * 16px);
+  background-image: repeating-linear-gradient(
+    to right,
+    color-mix(in srgb, var(--a13n-text) 9%, transparent) 0 1px,
+    transparent 1px 16px
+  );
+  background-position: 7px 0;
+  background-repeat: no-repeat;
+  background-size: calc(var(--depth) * 16px) 100%;
+}
+.caret {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  color: var(--a13n-secondary);
+  transition: rotate 120ms ease;
+}
+.caret[data-open] {
+  rotate: 90deg;
+}
+.caret:hover {
+  color: var(--a13n-text);
+}
+.observationIcon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--a13n-secondary);
+  background: var(--a13n-elevated);
+}
+.observationIcon[data-kind="chat"] {
+  color: var(--success-foreground);
+  background: color-mix(in srgb, var(--a13n-success) 12%, transparent);
+}
+.observationIcon[data-kind="agent"] {
+  color: var(--a13n-text);
+  background: color-mix(in srgb, var(--a13n-text) 8%, transparent);
+}
+.observationIcon[data-kind="tool"] {
+  color: var(--info-foreground);
+  background: color-mix(in srgb, var(--a13n-info) 12%, transparent);
+}
+.errorDot {
+  position: absolute;
+  inset-block-start: -2px;
+  inset-inline-end: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--a13n-danger);
+  box-shadow: 0 0 0 1.5px var(--a13n-surface);
+}
+.observation[data-selected] .errorDot {
+  box-shadow: 0 0 0 1.5px var(--a13n-selected);
+}
+/* Name and kind share one line; the kind gives way first. */
+.observationCopy {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.observationTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.observationMeta {
+  flex: 0 3 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-weight: 400;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.childCount {
+  flex: none;
+  padding-inline: 5px;
+  border-radius: 999px;
+  color: var(--a13n-secondary);
+  background: color-mix(in srgb, var(--a13n-text) 6%, transparent);
+  font-size: var(--a13n-text-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  white-space: nowrap;
+}
+/* The track carries bars only; the header scale states the window. */
+.track {
+  position: relative;
+  display: block;
+  height: 22px;
+  min-width: 0;
+}
+.bar {
+  position: absolute;
+  top: 50%;
+  min-width: 4px;
+  height: 6px;
+  translate: 0 -50%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--a13n-text) 22%, transparent);
+}
+.bar[data-kind="agent"] {
+  background: color-mix(in srgb, var(--a13n-text) 38%, transparent);
+}
+.bar[data-kind="tool"] {
+  background: color-mix(in srgb, var(--a13n-info) 72%, transparent);
+}
+.bar[data-kind="chat"] {
+  background: color-mix(in srgb, var(--a13n-success) 78%, transparent);
+}
+.bar[data-failed] {
+  background: color-mix(in srgb, var(--a13n-danger) 62%, transparent);
+}
+.duration {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+.timelineFooter {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.timelineFooter > button {
+  justify-self: start;
+}
+.timelineFooter > .providerNote {
+  margin: 0 2px;
+}
+
+/* Detail content and metadata -------------------------------------------- */
+.contentPair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+}
+.contentPair > section {
+  min-width: 0;
+}
+.diagnosticValues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 40px;
+  margin-block: 4px 12px;
+}
+.statusMessage {
+  margin-block: 6px 0;
+  font-family: inherit;
+  font-size: var(--a13n-text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Identifier pairs wrap together, never label on one line and value on the next. */
+.identifier {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  overflow-wrap: anywhere;
+}
+.identifier > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.properties {
+  display: grid;
+  gap: 0;
+  font-size: var(--a13n-text-sm);
+}
+.properties > div {
+  display: grid;
+  grid-template-columns: minmax(160px, 38%) minmax(0, 1fr);
+  gap: 16px;
+  padding-block: 10px;
+}
+.properties > div + div {
+  border-top: 1px solid var(--a13n-border-soft);
+}
+.properties dt {
+  color: var(--a13n-secondary);
+  overflow-wrap: anywhere;
+}
+.properties dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.modelIdentity {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+
+/* Observation panel ------------------------------------------------------- */
+.panelIdentity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.panelGlyph {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--a13n-secondary);
+  background: var(--a13n-surface);
+}
+.panelIdentityCopy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.panelIdentityCopy strong {
+  overflow: hidden;
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panelIdentityMeta {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-weight: 400;
+  line-height: 15px;
+  white-space: nowrap;
+}
+.panelIdentityMeta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panelIdentityNumber {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.panelStack {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.panelSection {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.panelLabel {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+}
+/* Input above output: the panel is never wide enough for two readable columns. */
+.panelPair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+.payloads {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.payloadBlock {
+  position: relative;
+  min-width: 0;
+}
+.payloadToolbar {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-end: 2px;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.payloadBlock:hover .payloadToolbar,
+.payloadToolbar:focus-within {
+  opacity: 1;
+}
+.payloadBody {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* A code block brings its own surface; a key list is given one. */
+.payloadBody[data-structured] {
+  padding: 8px 12px;
+  border-radius: var(--a13n-radius-tile);
+  background: var(--a13n-elevated);
+}
+.payloadBody > :only-child {
+  margin-block: 0;
+}
+
+/* Retained content rendering ---------------------------------------------- */
+.content {
+  min-width: 0;
+}
+.contentToolbar,
+.contentToolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.contentToolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+}
+.contentBody {
+  max-height: 560px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-inline-end: 4px;
+}
+.contentSequence {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+.contentEmpty {
+  margin: 4px 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-sm);
+}
+.message {
+  min-width: 0;
+  padding: 4px 0 4px 14px;
+  border-inline-start: 2px solid var(--a13n-border-soft);
+}
+.message[data-role="assistant"] {
+  border-color: color-mix(in srgb, var(--a13n-accent) 45%, transparent);
+}
+.message[data-role="user"] {
+  border-color: color-mix(in srgb, var(--a13n-info) 45%, transparent);
+}
+.message > header,
+.toolContent > header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--a13n-text-supporting);
+  font-size: var(--a13n-text-xs);
+}
+.message header strong,
+.toolContent header strong {
+  font-weight: 500;
+}
+.message header span,
+.toolContent header span {
+  color: var(--a13n-secondary);
+}
+.messageContent {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.toolContent {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--a13n-radius-tile);
+  background: var(--a13n-surface);
+}
+.toolContent > .identifier {
+  margin-bottom: 10px;
+}
+.rawContent {
+  max-height: 560px;
+  overflow: auto;
+  font-family: var(--a13n-mono);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.7;
+  white-space: pre;
+}
+
+/* Narrow widths ----------------------------------------------------------- */
+@media (max-width: 1024px) {
+  .contentPair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Below 860px the waterfall track stops carrying meaning; durations stay. */
+@media (max-width: 860px) {
+  .timelineHeader,
+  .observation {
+    grid-template-columns: minmax(0, 1fr) 68px;
+    gap: 10px;
+    padding-inline: 12px;
+  }
+  .timelineScale,
+  .track {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .facts {
+    padding: 14px 16px;
+  }
+  .factCells {
+    gap: 14px 28px;
+  }
+  .observationToolbar {
+    align-items: flex-start;
+  }
+  .properties > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .modelIdentity {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .contentBody,
+  .rawContent {
+    max-height: 440px;
+  }
+  .message {
+    padding-inline-start: 10px;
+  }
+  .toolContent {
+    padding: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .payloadToolbar {
+    transition: none;
+  }
+}

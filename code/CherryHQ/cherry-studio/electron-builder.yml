@@ -1,0 +1,223 @@
+appId: com.kangfenmao.CherryStudio
+productName: Cherry Studio
+extraMetadata:
+  cherryEdition: global
+electronLanguages:
+  - zh-CN
+  - zh-TW
+  - en-US
+  - ja # macOS/linux/win
+  - ru # macOS/linux/win
+  - zh_CN # for macOS
+  - zh_TW # for macOS
+  - en # for macOS
+  - de
+directories:
+  buildResources: build
+
+protocols:
+  - name: Cherry Studio
+    schemes:
+      - cherrystudio
+files:
+  - "**/*"
+  - "!**/{.vscode,.yarn,.yarn-lock,.github,.cursorrules,.prettierrc}"
+  - "!electron.vite.config.{js,ts,mjs,cjs}}"
+  - "!electron-builder.cn.config.cjs"
+  - "!electron.vite.entries.config.ts"
+  - "!.*"
+  - "!components.json"
+  - "!**/{.eslintignore,.eslintrc.js,.eslintrc.json,.eslintcache,root.eslint.config.js,eslint.config.js,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,eslint.config.mjs,dev-app-update.yml,CHANGELOG.md,README.md,.oxfmtrc.json}"
+  - "!**/{.env,.env.*,.npmrc,pnpm-lock.yaml}"
+  - "!**/{tsconfig.json,tsconfig.tsbuildinfo,tsconfig.node.json,tsconfig.web.json}"
+  - "!**/{.editorconfig,.jekyll-metadata}"
+  - "!src"
+  - "!native"
+  - "!config"
+  - "!patches"
+  - "!**/node_modules/**/*.cpp"
+  - "!**/node_modules/node-addon-api/**"
+  - "!**/node_modules/prebuild-install/**"
+  - "!scripts"
+  - "!local"
+  - "!docs"
+  - "!packages"
+  - "!.swc"
+  - "!.bin"
+  - "!._*"
+  - "!*.log"
+  - "!stats.html"
+  - "!*.md"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!**/*.{map,ts,tsx,jsx,less,scss,sass,css.d.ts,d.cts,d.mts,md,markdown,yaml,yml}"
+  - "!**/{test,tests,__tests__,powered-test,coverage}/**"
+  - "!**/{example,examples}/**"
+  - "!**/*.{spec,test}.{js,jsx,ts,tsx}"
+  - "!**/*.min.*.map"
+  - "!**/*.d.ts"
+  - "!**/dist/es6/**"
+  - "!**/dist/demo/**"
+  - "!**/amd/**"
+  - "!**/{.DS_Store,Thumbs.db,thumbs.db,__pycache__}"
+  - "!**/{LICENSE,license,LICENSE.*,*.LICENSE.txt,NOTICE.txt,README.md,readme.md,CHANGELOG.md}"
+  - "!node_modules/rollup-plugin-visualizer"
+  - "!node_modules/js-tiktoken"
+  - "!node_modules/@tavily/core/node_modules/js-tiktoken"
+  - "!node_modules/pdf-parse/lib/pdf.js/{v1.9.426,v1.10.88,v2.0.550}"
+  - "!node_modules/mammoth/{mammoth.browser.js,mammoth.browser.min.js}"
+  - "!**/node_modules/better-sqlite3/{bin,deps,src}/**"
+  - "!**/node_modules/better-sqlite3/build/{Debug,Release/obj}/**"
+  - "!**/node_modules/{selection-hook,@earendil-works/pi-coding-agent}/docs/**"
+  # node-gyp-build prefers build/Release over prebuilds/, so ship the prebuilds and drop the
+  # host-arch rebuild — a cross-built arm64 package would otherwise load the x86-64 binary (#20530).
+  - "!node_modules/selection-hook/build/**"
+  - "!node_modules/selection-hook/node_modules" # we don't need what in the node_modules dir
+  - "!node_modules/selection-hook/src" # we don't need source files
+  - "!**/node_modules/node-pty/build/**" # ship upstream prebuilds; the rebuilt binary needs GLIBC_2.34 and is never cross-compiled
+  - "!node_modules/tesseract.js-core/{tesseract-core.js,tesseract-core.wasm,tesseract-core.wasm.js}" # we don't need source files
+  - "!node_modules/tesseract.js-core/{tesseract-core-lstm.js,tesseract-core-lstm.wasm,tesseract-core-lstm.wasm.js}" # we don't need source files
+  - "!node_modules/tesseract.js-core/{tesseract-core-simd-lstm.js,tesseract-core-simd-lstm.wasm,tesseract-core-simd-lstm.wasm.js}" # we don't need source files
+  - "!node_modules/onnxruntime-web/**" # transformers.js's browser/WASM backend; local inference always runs onnxruntime-node instead
+  - "!node_modules/@huggingface/transformers/node_modules/onnxruntime-web/**" # same package, nested copy
+  - "!node_modules/onnxruntime-node/bin/**" # native binary is downloaded on first use (Toolchain/onnxruntime), never bundled — see OnnxRuntimeBinaryService
+  - "!**/*.{h,iobj,ipdb,tlog,recipe,vcxproj,vcxproj.filters,Makefile,*.Makefile}" # filter .node build files
+  - "resources/**/*" # include all files in resources, and unpack them from asar for runtime access
+  - "!resources/devtools/**" # dev-only extensions are loaded from source in development
+  - "node_modules/@deepseek-ai/dsh-sandbox-windows-acl/assets/**"
+asarUnpack:
+  - resources/**
+  - "!resources/devtools/**"
+  - "**/*.{metal,exp,lib}"
+  - "node_modules/@img/sharp-*/**"
+  # DSH runs under bundled Bun: bundle its JS and unpack native/runtime files.
+  - "node_modules/@cherrystudio/dsh-bridge/dist/runtime/**"
+  - "node_modules/sharp/**"
+  - "node_modules/@img/colour/**"
+  - "node_modules/detect-libc/**"
+  - "node_modules/semver/**"
+  - "node_modules/node-pty/**"
+  - "node_modules/koffi/**"
+  - "node_modules/@koromix/koffi-*/**"
+  - "node_modules/@deepseek-ai/dsh-sandbox-windows-acl/**"
+  - "node_modules/@deepseek-ai/dsh-win32-process/**"
+  - "node_modules/@deepseek-ai/dsh-lazy-require/**"
+  - "node_modules/@deepseek-ai/dsh-subprocess/**"
+  - "node_modules/@deepseek-ai/dsh-skill/**"
+  - "node_modules/@deepseek-ai/dsh-scope/**"
+  - "node_modules/@deepseek-ai/dsh-util-values/**"
+  - "node_modules/@deepseek-ai/cordis/**"
+  - "node_modules/@deepseek-ai/cosmokit/**"
+  - "node_modules/@deepseek-ai/schemastery/**"
+  - "node_modules/yaml/**"
+  - "node_modules/@deepseek-ai/node-addon-system*/**"
+  - "node_modules/@anthropic-ai/claude-agent-sdk-*/**" # native CLI binary must live on disk to be spawned
+  - "node_modules/@silvia-odwyer/photon-node/**" # pi SDK WASM dep: photon_rs.js does fs.readFileSync(__dirname/photon_rs_bg.wasm)
+  - "node_modules/@aiany/sqlite-vec-*/**" # sqlite-vec extension (.dylib/.so/.dll) is dlopen'd at runtime — must live on disk
+  - "node_modules/@node-rs/xxhash-*/**" # native N-API binary must be unpacked for runtime loading
+  - "node_modules/@firecrawl/anydoc-*/**" # native N-API binary must be unpacked for runtime loading
+  - "node_modules/node-screenshots-*/**" # native N-API binary must be unpacked for runtime loading
+  - "node_modules/node-mac-permissions/**" # native N-API binary must be unpacked for runtime loading
+extraResources:
+  - from: "migrations/sqlite-drizzle"
+    to: "migrations/sqlite-drizzle"
+  - from: "packages/provider-registry/data"
+    to: "provider-registry"
+win:
+  executableName: Cherry Studio
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  extraResources:
+    - from: "node_modules/@aiany/sqlite-vec-windows-${arch}/vec0.dll"
+      to: "app.asar.unpacked/node_modules/@aiany/sqlite-vec-windows-${arch}/vec0.dll"
+  target:
+    - target: nsis
+    - target: portable
+  signtoolOptions:
+    sign: scripts/packaging/win-sign.js
+  signExts:
+    - .node
+  verifyUpdateCodeSignature: false
+nsis:
+  # Preserve the existing global installer identity so either edition replaces the same Windows installation.
+  guid: 41a4ccd8-bcc0-5710-9eee-0e164da68057
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  allowToChangeInstallationDirectory: true
+  oneClick: false
+  include: build/nsis-installer.nsh
+  buildUniversalInstaller: false
+  differentialPackage: true
+portable:
+  artifactName: ${productName}-${version}-${arch}-portable.${ext}
+  buildUniversalInstaller: false
+  # electron-builder 26.15.6 uses true for a unique $PLUGINSDIR on every launch.
+  unpackDirName: true
+mac:
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  target:
+    - target: dmg
+    - target: zip
+dmg:
+  writeUpdateInfo: false
+toolsets:
+  appimage: "1.0.3"
+linux:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  executableName: CherryStudio
+  target:
+    - target: AppImage
+    - target: deb
+    - target: rpm
+  maintainer: electronjs.org
+  category: Utility
+  desktop:
+    entry:
+      Name: Cherry Studio
+      StartupWMClass: CherryStudio
+  mimeTypes:
+    - x-scheme-handler/cherrystudio
+rpm:
+  # Workaround for electron build issue on rpm package:
+  # https://github.com/electron/forge/issues/3594
+  fpm: ["--rpm-rpmbuild-define=_build_id_links none"]
+publish:
+  provider: generic
+  url: https://releases.cherry-ai.com
+  useMultipleRangeRequest: false
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
+beforePack: scripts/packaging/before-pack.js
+afterPack: scripts/packaging/after-pack.js
+afterSign: scripts/packaging/notarize.js
+artifactBuildCompleted: scripts/packaging/artifact-build-completed.js
+releaseInfo:
+  releaseNotes: |
+    <!--LANG:en-->
+    Cherry Studio 2.1.6 - Bug Fixes and Provider Updates
+
+    🐛 Bug Fixes
+    - [Search] Fix searches for programming languages with hash symbols (e.g., C#, F#) not matching messages.
+    - [Backup] Fix restore failing on Windows when browser storage is locked by the current session. Restore progress now stays monotonic, failed attempts are reported with retry guidance, and orphaned restore files are cleaned up.
+    - [Errors] Stop misreporting client-refusal errors as "invalid API key" — now shows the correct permission guidance instead of sending users to regenerate working keys.
+    - [Chat] Context-usage token counts now follow the selected interface language and update when it changes.
+
+    <!--LANG:zh-CN-->
+    Cherry Studio 2.1.6 - 问题修复与供应商更新
+
+    🐛 问题修复
+    - [搜索] 修复搜索包含井号的编程语言（如 C#、F#）时无法匹配消息的问题。
+    - [备份] 修复 Windows 上浏览器存储被当前会话锁定导致恢复失败的问题。恢复进度现在保持单调，失败的恢复会显示重试指引，孤立的恢复文件会被清理。
+    - [错误] 修复客户端拒绝被错误报告为"API 密钥无效"的问题 — 现在显示正确的权限指引，而不是引导用户重新生成有效的密钥。
+    - [对话] 上下文使用量的 token 计数现在跟随所选界面语言，并在切换语言时更新。
+
+    💡 提示
+    - 腾讯 TI 和混元供应商已随腾讯平台下线而停用。请配置 TokenHub 或其他可用供应商以继续使用；现有本地数据已保留。
+    <!--LANG:END-->

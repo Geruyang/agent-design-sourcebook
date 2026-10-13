@@ -1,0 +1,35 @@
+.icon {
+  color: #4b6f9a;
+  flex-shrink: 0;
+}
+:global(.dark) .icon {
+  color: #92b5e2;
+}
+.intro {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+.intro h2 {
+  margin: 0;
+}
+.intro p {
+  max-width: 400px;
+  margin: 0;
+  line-height: 1.65;
+}
+.mark {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.workers {
+  margin-inline-start: 20px;
+  padding-bottom: 8px;
+}
+.workers > small {
+  display: block;
+  padding: 6px 10px;
+  color: var(--a13n-secondary);
+}

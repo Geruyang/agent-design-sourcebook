@@ -1,0 +1,102 @@
+/*
+ * Layout utilities shared by feature screens. Component anatomies live with
+ * their owning composition in page/, collection/, forms/, dialogs/, identity/,
+ * and feedback/.
+ */
+.stack {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.form {
+  display: grid;
+  gap: 16px;
+  max-width: 760px;
+  min-width: 0;
+}
+.form > h3 {
+  margin: 8px 0 0;
+  padding-top: 16px;
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+}
+.twoColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.actions,
+.formActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.formActions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.filters > [data-slot="field"] {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.filters > [data-slot="field"]:has(input[type="search"]) {
+  flex: 0 1 300px;
+}
+.tableWrap {
+  overflow-x: auto;
+}
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.collectionFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.collectionFooter p,
+.collectionFooter > div {
+  margin: 0;
+}
+.muted {
+  color: var(--a13n-secondary);
+}
+@media (max-width: 760px) {
+  .twoColumns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Card grid used by collections that read better as tiles than as rows. */
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 20px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+}
+@media (max-width: 760px) {
+  .cardGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

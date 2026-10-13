@@ -1,0 +1,395 @@
+@import "tailwindcss";
+@import "a13n-ui/theme.css";
+@import "a13n-ui/tokens.css";
+@import "a13n-ui/fonts.css";
+@import "fumadocs-ui/css/shadcn.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumadocs-openapi/css/preset.css";
+
+@source "../../../packages/a13n-ui/src/components/menu.tsx";
+
+/*
+ * The docs follow the a13n-ui design system (spec/frontend/design-system.md):
+ * the system font, neutral surfaces, and the near-black primary for
+ * interface accents, with reading type from its Documentation Pages section.
+ * Hue appears only where it carries meaning: code tokens, callout kinds,
+ * diagram categories, and link underlines. The rules below adapt Fumadocs
+ * components to it.
+ */
+
+@theme inline {
+  --font-sans: var(--a13n-font);
+  --font-mono: var(--a13n-mono);
+}
+
+@layer base {
+  html {
+    scrollbar-gutter: stable;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--foreground) 14%, transparent);
+  }
+}
+
+/* Radix-style scroll locking must not shift the fixed layout. */
+html > body[data-scroll-locked] {
+  margin-right: 0 !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* Page header: title, one-line description, and page actions. */
+#nd-page h1 {
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+/* One centered reading column, balanced between the sidebar and the table of contents. */
+#nd-page[data-full="false"] > * {
+  width: 100%;
+  max-width: 800px;
+  margin-inline: auto;
+}
+
+/* Anchor targets clear the sticky header and the table-of-contents bar. */
+#nd-page [id] {
+  scroll-margin-top: calc(var(--fd-docs-row-3) + 1.5rem);
+}
+
+/*
+ * Prose: 16px body in supporting text, so headings, bold, links, and code
+ * stand out in text color. Sections open with a hairline; headings sit close
+ * to the text they introduce.
+ */
+.prose {
+  --tw-prose-size: 1;
+  --tw-prose-body: var(--a13n-text-supporting);
+  line-height: 1.7;
+}
+
+.prose :where(h2, h3, h4) {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.prose h2 {
+  margin-top: 48px;
+  margin-bottom: 12px;
+  padding-top: 24px;
+  border-top: 1px solid var(--a13n-border);
+  font-size: 22px;
+}
+
+.prose > h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.prose h3 {
+  margin-top: 32px;
+  margin-bottom: 8px;
+  font-size: 18px;
+}
+
+.prose h4 {
+  font-size: 1em;
+}
+
+.prose strong {
+  font-weight: 600;
+}
+
+/* Links keep the text color and carry a brand underline. */
+.prose a:not([data-card], .not-prose *) {
+  font-weight: 500;
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--a13n-signal) 45%,
+    transparent
+  );
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 150ms;
+}
+
+.prose a:not([data-card], .not-prose *):hover {
+  opacity: 1;
+  text-decoration-color: var(--a13n-signal);
+}
+
+/* Inline code is an outlined chip in running text and bare monospace elsewhere (headings, controls). */
+.prose :not(pre) > code:not(.not-prose *) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 0.84em;
+}
+
+.prose :is(p, li, td, blockquote) code:not(pre code, .not-prose *) {
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
+  background: var(--a13n-surface);
+  box-shadow: inset 0 0 0 1px var(--a13n-input-border);
+}
+
+.prose blockquote {
+  border-inline-start-width: 2px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--color-fd-muted-foreground);
+}
+
+.prose blockquote p::before,
+.prose blockquote p::after {
+  content: none;
+}
+
+/* Tables: a rounded header band over hairlines between rows. */
+.prose table {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.prose :is(th, td) {
+  border-inline-start: 0;
+  padding: 10px 12px;
+}
+
+.prose th {
+  padding-block: 8px;
+  background: var(--a13n-surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--a13n-secondary);
+}
+
+.prose th:first-child {
+  border-start-start-radius: 8px;
+  border-end-start-radius: 8px;
+}
+
+.prose th:last-child {
+  border-start-end-radius: 8px;
+  border-end-end-radius: 8px;
+}
+
+/* Code blocks: a hairline frame on the surface, titled by file or language. */
+figure.shiki {
+  border: 1px solid var(--a13n-border);
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+  box-shadow: none;
+}
+
+figure.shiki > div:first-child:not(.absolute) {
+  border-color: var(--a13n-border);
+  background: var(--a13n-surface);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+/* The floating copy button masks code scrolled beneath it and, with a pointer, appears on hover. */
+figure.shiki > div.absolute {
+  background:
+    linear-gradient(var(--a13n-surface), var(--a13n-surface)),
+    var(--color-fd-background);
+  transition: opacity 150ms;
+}
+
+@media (hover: hover) {
+  figure.shiki:not(:hover, :focus-within) > div.absolute {
+    opacity: 0;
+  }
+}
+
+/* Reading pages show code in full; only the API reference's sticky samples scroll. */
+#nd-page[data-full="false"] figure.shiki > [role="region"] {
+  max-height: none;
+}
+
+/* Sidebar and its phone drawer: part of the page, with 32px rows in text color under bold group labels. */
+:is(#nd-sidebar, #nd-sidebar-mobile) {
+  border: 0;
+  background: var(--color-fd-background);
+  color: var(--color-fd-foreground);
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) > [role="presentation"] :is(a, button) {
+  min-height: 32px;
+  padding-block: 6px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  color: var(--color-fd-foreground);
+  transition: background-color 100ms;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile)
+  > [role="presentation"]
+  :is(a, button):hover {
+  background: var(--sidebar-hover);
+  color: var(--color-fd-foreground);
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile)
+  > [role="presentation"]
+  a[data-active="true"] {
+  background: var(--sidebar-accent);
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) > [role="presentation"] :is(a, button) {
+  outline: none;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile)
+  > [role="presentation"]
+  :is(a, button):focus-visible {
+  outline: 2px solid var(--a13n-focus);
+  outline-offset: -2px;
+}
+
+/* Indentation alone shows nesting: no guide rails or active markers. */
+:is(#nd-sidebar, #nd-sidebar-mobile)
+  > [role="presentation"]
+  :is(a[data-active="true"], div)::before {
+  content: none;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) > [role="presentation"] p {
+  margin-top: 24px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fd-foreground);
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) > [role="presentation"] p:first-child {
+  margin-top: 0;
+}
+
+/* API operation methods beside their navigation names (see `lib/source.ts`). */
+[data-method] {
+  margin-inline-start: auto;
+  font-family: var(--a13n-mono);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--success-foreground);
+}
+
+[data-method="post"] {
+  color: var(--info-foreground);
+}
+
+[data-method="put"],
+[data-method="patch"] {
+  color: var(--warning-foreground);
+}
+
+[data-method="delete"] {
+  color: var(--destructive-foreground);
+}
+
+/* The sidebar's section switcher repeats the header tabs on large screens. */
+@media (min-width: 64rem) {
+  #nd-sidebar > div:first-child {
+    display: none;
+  }
+}
+
+/* Search trigger shortcut keys. */
+[data-search-full] kbd {
+  border: 0;
+  border-radius: 5px;
+  padding: 0 5px;
+  background: var(--a13n-surface);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+/* Table of contents: a quiet rail label, 14px entries, and the page actions below. */
+#toc-title {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#toc-title svg {
+  display: none;
+}
+
+#nd-toc a {
+  font-size: 14px;
+}
+
+#nd-toc code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.92em;
+}
+
+/* The phone table-of-contents bar matches the header's frosted surface. */
+[data-toc-popover] > header {
+  background: color-mix(in srgb, var(--color-fd-background) 85%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+/* The rail's active segment is enough; drop its end dot. */
+#nd-toc .size-1.rounded-full {
+  display: none;
+}
+
+/* Framed panels from Fumadocs components (API reference, tabs) become surfaces; code blocks keep their frame. */
+#nd-page .rounded-xl.border:is(.bg-fd-card, .bg-fd-secondary):not(figure) {
+  border-color: transparent;
+  background: var(--a13n-surface);
+}
+
+#nd-page
+  .rounded-xl.border:is(.bg-fd-card, .bg-fd-secondary)
+  :is(figure.shiki, [role="tabpanel"]) {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* API reference: constraint chips and controls follow the surface and input styles. */
+#nd-page .inline-flex.border.shadow-md.bg-fd-secondary {
+  border-color: transparent;
+  background: var(--a13n-surface);
+  box-shadow: none;
+}
+
+#nd-page :is(.shadow-sm:has(> input), button.border.bg-fd-secondary) {
+  border-color: var(--a13n-input-border);
+  background: transparent;
+  box-shadow: none;
+}
+
+#nd-page button.border.bg-fd-secondary:hover {
+  background: var(--a13n-hover);
+}
+
+/* Methods and status codes use the same status colors as the navigation badges. */
+#nd-page .text-green-600 {
+  color: var(--success-foreground);
+}
+
+#nd-page .text-blue-600 {
+  color: var(--info-foreground);
+}
+
+#nd-page :is(.text-yellow-600, .text-orange-600) {
+  color: var(--warning-foreground);
+}
+
+#nd-page :is(.text-red-600, .text-red-400) {
+  color: var(--destructive-foreground);
+}

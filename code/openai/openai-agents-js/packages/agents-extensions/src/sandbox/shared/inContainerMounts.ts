@@ -1,0 +1,1498 @@
+import {
+  Environment,
+  Manifest,
+  SandboxMountError,
+  SandboxUnsupportedFeatureError,
+  type AzureBlobMount,
+  type BoxMount,
+  type Entry,
+  type GCSMount,
+  type MountStrategy,
+  type R2Mount,
+  type RcloneMountPattern,
+  type S3Mount,
+  type SandboxSessionState,
+  isMount,
+} from '@openai/agents-core/sandbox';
+import { shellQuote } from './paths';
+import { readOptionalString } from './typeGuards';
+import {
+  validateCredentialPair as validateSandboxCredentialPair,
+  stableJsonStringify,
+  mountCredentialEnvironmentForEntry,
+  validateMountCredentialBoundaries,
+  validateMountEnvironmentCredentialBoundaries,
+} from '@openai/agents-core/sandbox/internal';
+import { cloneManifestWithRoot } from './manifest';
+
+export type RemoteMountCommandResult = {
+  status: number;
+  stdout?: string;
+  stderr?: string;
+};
+
+export type RemoteMountCommandOptions = {
+  timeoutMs?: number;
+  user?: string;
+};
+
+export type RemoteMountCommand = (
+  command: string,
+  options?: RemoteMountCommandOptions,
+) => Promise<RemoteMountCommandResult>;
+
+export type RemoteMountFileWriter = (
+  path: string,
+  content: string | Uint8Array,
+) => Promise<void>;
+
+export type RcloneCloudBucketMountOptions = {
+  providerName: string;
+  providerId: string;
+  strategyType: string;
+  entry: Entry;
+  mountPath: string;
+  pattern?: RcloneMountPattern;
+  runCommand: RemoteMountCommand;
+  writeFile: RemoteMountFileWriter;
+  packageManagers?: Array<'apt' | 'apk'>;
+  installRcloneViaScript?: boolean;
+  allowAmbientCredentials?: boolean;
+  revalidateMountAuthority?: () => Promise<void>;
+};
+
+export type RcloneMountHandle = {
+  nfsPidPath?: string;
+};
+
+type RemoteMountCommandContext = Pick<
+  RcloneCloudBucketMountOptions,
+  'providerName' | 'providerId' | 'runCommand'
+>;
+
+type RcloneBucketMount =
+  S3Mount | R2Mount | GCSMount | AzureBlobMount | BoxMount;
+
+type RcloneMountConfig = {
+  remoteName: string;
+  remotePath: string;
+  configText: string;
+  readOnly: boolean;
+  mountType: string;
+};
+
+const DEFAULT_PACKAGE_MANAGERS: Array<'apt' | 'apk'> = ['apt'];
+const RCLONE_CHECKSUM_MISMATCH_STATUS = 86;
+const RCLONE_INSTALL_PATH = '/usr/local/bin/rclone';
+const RCLONE_ON_PATH_CHECK_COMMAND = 'command -v rclone >/dev/null 2>&1';
+const RCLONE_AVAILABLE_CHECK_COMMAND = `${RCLONE_ON_PATH_CHECK_COMMAND} || test -x ${RCLONE_INSTALL_PATH}`;
+
+const rcloneMountEnvironmentAuthority = Symbol(
+  'openaiAgentsRcloneMountEnvironmentAuthority',
+);
+
+type RcloneMountEnvironmentState = SandboxSessionState & {
+  environment: Record<string, string>;
+  [rcloneMountEnvironmentAuthority]?: Map<string, Record<string, string>>;
+};
+
+const RCLONE_IN_CONTAINER_STRATEGY_TYPES = new Set([
+  'e2b_cloud_bucket',
+  'daytona_cloud_bucket',
+  'runloop_cloud_bucket',
+]);
+
+// BEGIN RCLONE RELEASE PIN
+const RCLONE_VERSION = '1.74.4';
+const RCLONE_SHA256_BY_ARCH = {
+  '386': '7feee086d7ff72652c5a91ef4b4a576941ccd33b2929772a2d70471904e516f0',
+  amd64: 'fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d',
+  arm: '8135524b9b85111fa512f10a3fa191736a8d4d6ac3b3169af0763503744e95c9',
+  'arm-v6': 'c9e1048feb597938884c0fff314d5d9a002599933cb94ce17fee19599cbfa3f1',
+  'arm-v7': '75844809d25d2534da96220727e7746a300e30ec8c676ca98c47affe5a752e7b',
+  arm64: '97685285c9ad6a0cf17d5844115d2a67245af6444db672187074bd9c358de419',
+} as const;
+// END RCLONE RELEASE PIN
+
+type RcloneArchiveArch = keyof typeof RCLONE_SHA256_BY_ARCH;
+
+const SAFE_PIDFILE_KILL_FUNCTION = String.raw`openai_agents_kill_pidfile() {
+  require_termination=$1
+  shift
+  pidfile=$1
+  shift
+  pid=$(cat "$pidfile" 2>/dev/null || true)
+  case "$pid" in
+    ''|0|*[!0-9]*) [ "$require_termination" = 0 ] && return 0; return 1 ;;
+  esac
+  cmdline=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+  [ -n "$cmdline" ] || { [ "$require_termination" = 0 ] && return 0; return 1; }
+  for expected in "$@"; do
+    case "$cmdline" in
+      *"$expected"*) ;;
+      *) [ "$require_termination" = 0 ] && return 0; return 1 ;;
+    esac
+  done
+  if ! kill "$pid" >/dev/null 2>&1; then
+    [ "$require_termination" = 0 ] && return 0
+    return 1
+  fi
+  [ "$require_termination" = 1 ] || return 0
+  attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    cmdline=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+    [ -n "$cmdline" ] || return 0
+    matches=1
+    for expected in "$@"; do
+      case "$cmdline" in
+        *"$expected"*) ;;
+        *) matches=0 ;;
+      esac
+    done
+    [ "$matches" = 0 ] && return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  return 1
+}`;
+
+export function isRcloneCloudBucketMountEntry(
+  entry: Entry,
+  strategyType: string,
+): entry is RcloneBucketMount {
+  return (
+    isRcloneBucketMount(entry) && entry.mountStrategy?.type === strategyType
+  );
+}
+
+export function rclonePatternFromMountStrategy(
+  strategy: MountStrategy | undefined,
+): RcloneMountPattern | undefined {
+  const pattern = (strategy as { pattern?: unknown } | undefined)?.pattern;
+  if (isRcloneMountPattern(pattern)) {
+    return pattern;
+  }
+  return undefined;
+}
+
+export function validateRcloneMountEnvironmentCredentialExposure(
+  manifest: Manifest,
+  environment: Record<string, string>,
+): void {
+  validateMountEnvironmentCredentialBoundaries(manifest, environment);
+  const candidate = cloneManifestWithRoot(manifest, manifest.root);
+  for (const { entry } of candidate.mountTargetsForMaterialization()) {
+    const credentialEnvironment = rcloneCredentialEnvironmentForEntry(
+      entry,
+      environment,
+    );
+    if (Object.keys(credentialEnvironment).length === 0) {
+      continue;
+    }
+    (entry.mountStrategy as Record<string, unknown>).credentialEnvironment =
+      credentialEnvironment;
+  }
+  validateMountCredentialBoundaries(candidate);
+}
+
+export function rcloneMountEnvironmentAuthorityMatches(
+  state: RcloneMountEnvironmentState,
+  trustedManifest: Manifest,
+  trustedEnvironment: Record<string, string>,
+): boolean {
+  const captured = state[rcloneMountEnvironmentAuthority];
+  if (!captured) {
+    return !hasSharedRcloneMounts(state.manifest);
+  }
+  const trusted = new Map(
+    trustedManifest
+      .mountTargetsForMaterialization()
+      .filter(({ entry }) => isSharedRcloneMount(entry))
+      .map(({ absolutePath, entry }) => [
+        absolutePath,
+        rcloneCredentialEnvironmentForEntry(entry, trustedEnvironment),
+      ]),
+  );
+  return (
+    captured.size === trusted.size &&
+    [...captured].every(
+      ([path, authority]) =>
+        trusted.has(path) &&
+        stableJsonStringify(authority) ===
+          stableJsonStringify(trusted.get(path)),
+    )
+  );
+}
+
+export function assertRcloneMountEnvironmentAuthorityMatches(
+  state: RcloneMountEnvironmentState,
+  trustedManifest: Manifest,
+  trustedEnvironment: Record<string, string>,
+): void {
+  if (
+    rcloneMountEnvironmentAuthorityMatches(
+      state,
+      trustedManifest,
+      trustedEnvironment,
+    )
+  ) {
+    return;
+  }
+  throw new SandboxMountError(
+    'Sandbox mount environment authority does not match the active session. Create a fresh sandbox session from current trusted configuration.',
+    undefined,
+    'mount_config_invalid',
+  );
+}
+
+export function captureRcloneMountEnvironmentAuthority(
+  state: RcloneMountEnvironmentState,
+  absolutePath: string,
+  entry: Entry,
+  environment: Record<string, string> = state.environment,
+): void {
+  if (!isSharedRcloneMount(entry)) {
+    return;
+  }
+  const authority = new Map(state[rcloneMountEnvironmentAuthority] ?? []);
+  authority.set(
+    absolutePath,
+    rcloneCredentialEnvironmentForEntry(entry, environment),
+  );
+  state[rcloneMountEnvironmentAuthority] = authority;
+}
+
+export function captureRcloneMountEnvironmentAuthorityForManifest(
+  state: RcloneMountEnvironmentState,
+  materializedManifest: Manifest = state.manifest,
+  environment: Record<string, string> = state.environment,
+): void {
+  const authority = new Map(state[rcloneMountEnvironmentAuthority] ?? []);
+  for (const {
+    absolutePath,
+    entry,
+  } of materializedManifest.mountTargetsForMaterialization()) {
+    if (!isSharedRcloneMount(entry)) {
+      continue;
+    }
+    authority.set(
+      absolutePath,
+      rcloneCredentialEnvironmentForEntry(entry, environment),
+    );
+  }
+  state[rcloneMountEnvironmentAuthority] = authority;
+}
+
+export function sanitizeRcloneMountEnvironmentForPersistence<
+  TState extends RcloneMountEnvironmentState,
+>(state: TState): TState {
+  const names = rcloneCredentialEnvironmentNames(
+    state.manifest,
+    state.environment,
+  );
+  const {
+    [rcloneMountEnvironmentAuthority]: _mountEnvironmentAuthority,
+    ...persistentState
+  } = state;
+  if (names.size === 0) {
+    return persistentState as TState;
+  }
+  const sanitizedManifest = cloneManifestWithRoot(
+    state.manifest,
+    state.manifest.root,
+  );
+  const sanitizedEnvironment = { ...state.environment };
+  for (const name of names) {
+    delete sanitizedEnvironment[name];
+    const manifestEnvironment = sanitizedManifest.environment[name];
+    if (manifestEnvironment) {
+      sanitizedManifest.environment[name] = new Environment({
+        ...manifestEnvironment.init(),
+        ephemeral: true,
+      });
+    }
+  }
+  return {
+    ...persistentState,
+    manifest: sanitizedManifest,
+    environment: sanitizedEnvironment,
+  } as TState;
+}
+
+function hasSharedRcloneMounts(manifest: Manifest): boolean {
+  return manifest
+    .mountTargetsForMaterialization()
+    .some(({ entry }) => isSharedRcloneMount(entry));
+}
+
+function isSharedRcloneMount(entry: Entry): boolean {
+  return (
+    isMount(entry) &&
+    RCLONE_IN_CONTAINER_STRATEGY_TYPES.has(entry.mountStrategy?.type ?? '')
+  );
+}
+
+function rcloneCredentialEnvironmentNames(
+  manifest: Manifest,
+  environment: Record<string, string>,
+): Set<string> {
+  const names = new Set<string>();
+  for (const { entry } of manifest.mountTargetsForMaterialization()) {
+    for (const name of Object.keys(
+      rcloneCredentialEnvironmentForEntry(entry, environment),
+    )) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+export function manifestUsesRcloneMountCredentialEnvironment(
+  manifest: Manifest,
+  environment: Record<string, string>,
+): boolean {
+  return rcloneCredentialEnvironmentNames(manifest, environment).size > 0;
+}
+
+export function rcloneCredentialEnvironmentForEntry(
+  entry: Entry,
+  environment: Record<string, string>,
+): Record<string, string> {
+  if (!isSharedRcloneMount(entry)) {
+    return {};
+  }
+  return mountCredentialEnvironmentForEntry(entry, environment);
+}
+
+export async function mountRcloneCloudBucket(
+  options: RcloneCloudBucketMountOptions,
+): Promise<RcloneMountHandle> {
+  if (!isRcloneCloudBucketMountEntry(options.entry, options.strategyType)) {
+    throw new SandboxUnsupportedFeatureError(
+      `${options.providerName} only supports ${options.strategyType} mount entries for in-container cloud bucket mounts.`,
+      {
+        provider: options.providerId,
+        feature: 'entry.mountStrategy',
+        mountType: options.entry.type,
+        strategyType: mountStrategyType(options.entry),
+      },
+    );
+  }
+  validateRcloneMountCredentialPairs(options.entry);
+
+  const pattern = options.pattern ?? { type: 'rclone', mode: 'fuse' };
+  if (pattern.type !== 'rclone') {
+    throw new SandboxUnsupportedFeatureError(
+      `${options.providerName} cloud bucket mounts require a rclone mount pattern.`,
+      {
+        provider: options.providerId,
+        feature: 'entry.mountStrategy.pattern',
+        mountType: options.entry.type,
+        patternType: pattern.type,
+      },
+    );
+  }
+  const mode = pattern.mode ?? 'fuse';
+  if (mode !== 'fuse' && mode !== 'nfs') {
+    throw new SandboxUnsupportedFeatureError(
+      `${options.providerName} cloud bucket mounts support rclone fuse and nfs modes only.`,
+      {
+        provider: options.providerId,
+        feature: 'entry.mountStrategy.pattern.mode',
+        mountType: options.entry.type,
+        mode: pattern.mode,
+      },
+    );
+  }
+  const remoteName = resolveRcloneRemoteName(pattern, options);
+
+  if (mode === 'fuse') {
+    await ensureFuseSupport(options);
+  }
+  const rclonePath = await ensureRclone(options);
+  const config = await resolveRcloneMountConfig(options, pattern, remoteName);
+  const configPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.conf`;
+
+  await options.revalidateMountAuthority?.();
+  let mountHandle: RcloneMountHandle | undefined;
+  let mountError: unknown;
+  try {
+    await runRequiredMountCommand(options, {
+      label: 'prepare rclone config',
+      command: [
+        `mkdir -p -- ${shellQuote(options.mountPath)}`,
+        `rm -f -- ${shellQuote(configPath)}`,
+        `touch ${shellQuote(configPath)}`,
+        `chmod 600 ${shellQuote(configPath)}`,
+      ].join(' && '),
+      timeoutMs: 30_000,
+    });
+    await options.revalidateMountAuthority?.();
+    try {
+      await options.writeFile(configPath, config.configText);
+    } catch {
+      throw new SandboxMountError(
+        `${options.providerName} cloud bucket mount failed while trying to write rclone config.`,
+        { provider: options.providerId },
+      );
+    }
+    await runRequiredMountCommand(options, {
+      label: 'protect rclone config',
+      command: `chmod 600 ${shellQuote(configPath)}`,
+      timeoutMs: 30_000,
+    });
+
+    await options.revalidateMountAuthority?.();
+    if (mode === 'nfs') {
+      const nfsPidPath = await mountRcloneNfs(
+        options,
+        pattern,
+        config,
+        configPath,
+        rclonePath,
+      );
+      mountHandle = { nfsPidPath };
+    } else {
+      await mountRcloneFuse(options, pattern, config, configPath, rclonePath);
+      mountHandle = {};
+    }
+  } catch (error) {
+    mountError = error;
+  }
+  let cleanupError: unknown;
+  const preserveCleanupArtifacts =
+    mountError instanceof SandboxMountError &&
+    mountError.details?.cleanupFailed === true;
+  if (!preserveCleanupArtifacts) {
+    try {
+      await runRequiredMountCommand(options, {
+        label: 'remove rclone config',
+        command: `rm -f -- ${shellQuote(configPath)}`,
+        timeoutMs: 30_000,
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (mountError !== undefined && cleanupError !== undefined) {
+    throw new SandboxMountError(
+      `${options.providerName} cloud bucket mount failed and credential cleanup could not complete.`,
+      {
+        provider: options.providerId,
+        operation: 'mount cloud bucket',
+        cleanupFailed: true,
+      },
+      'mount_failed',
+    );
+  }
+  if (mountError !== undefined) {
+    throw mountError;
+  }
+  if (cleanupError !== undefined) {
+    throw cleanupError;
+  }
+  return mountHandle ?? {};
+}
+
+export async function unmountRcloneMount(args: {
+  providerName: string;
+  providerId: string;
+  mountPath: string;
+  runCommand: RemoteMountCommand;
+  handle?: RcloneMountHandle;
+}): Promise<void> {
+  const unmountCommand = [
+    `fusermount3 -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+    `fusermount -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+    `umount ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+    `umount -l ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+  ].join(' || ');
+  const helperCleanup = args.handle?.nfsPidPath
+    ? [
+        safePidFileKillFunctionCommand(),
+        safeKillPidFileCommand({
+          pidFile: shellQuote(args.handle.nfsPidPath),
+          expectedCmdlineFragments: ['rclone', 'serve', 'nfs'],
+          requireTermination: true,
+        }),
+        'helper_status=$?',
+        `rm -f -- ${shellQuote(args.handle.nfsPidPath)}`,
+      ].join(' ; ')
+    : 'helper_status=0';
+  const command = [
+    unmountCommand,
+    'unmount_status=$?',
+    helperCleanup,
+    '[ "$unmount_status" -eq 0 ] && [ "$helper_status" -eq 0 ]',
+  ].join(' ; ');
+  const result = await runMountCommandSafely(
+    args,
+    'unmount cloud bucket',
+    command,
+    {
+      timeoutMs: 30_000,
+    },
+  );
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      `${args.providerName} cloud bucket mount failed while trying to unmount cloud bucket.`,
+      {
+        provider: args.providerId,
+        status: result.status,
+      },
+    );
+  }
+}
+
+export function safePidFileKillFunctionCommand(): string {
+  return SAFE_PIDFILE_KILL_FUNCTION;
+}
+
+export function safeKillPidFileCommand(args: {
+  pidFile: string;
+  expectedCmdlineFragments: string[];
+  requireTermination?: boolean;
+}): string {
+  return [
+    'openai_agents_kill_pidfile',
+    args.requireTermination ? '1' : '0',
+    args.pidFile,
+    ...args.expectedCmdlineFragments.map(shellQuote),
+  ].join(' ');
+}
+
+async function mountRcloneFuse(
+  options: RcloneCloudBucketMountOptions,
+  pattern: RcloneMountPattern,
+  config: RcloneMountConfig,
+  configPath: string,
+  rclonePath: string,
+): Promise<void> {
+  const userIds = await defaultUserIds(options);
+  // rclone FUSE needs stable uid/gid options so files appear owned by the sandbox's
+  // default user instead of root when the provider image supports id lookup.
+  const mountArgs = [
+    rclonePath,
+    'mount',
+    `${config.remoteName}:${config.remotePath}`,
+    options.mountPath,
+    '--config',
+    configPath,
+    '--daemon',
+    '--allow-other',
+    ...(userIds ? ['--uid', userIds.uid, '--gid', userIds.gid] : []),
+    ...(config.readOnly ? ['--read-only'] : []),
+    ...rclonePatternArgs(pattern),
+  ];
+
+  await runRequiredMountCommand(options, {
+    label: 'rclone mount',
+    command: joinShellArgs(mountArgs),
+    timeoutMs: 60_000,
+  });
+}
+
+async function mountRcloneNfs(
+  options: RcloneCloudBucketMountOptions,
+  pattern: RcloneMountPattern,
+  config: RcloneMountConfig,
+  configPath: string,
+  rclonePath: string,
+): Promise<string> {
+  await runRequiredMountCommand(options, {
+    label: 'check rclone nfs server support',
+    command: `${joinShellArgs([rclonePath, 'serve', 'nfs', '--help'])} >/dev/null 2>&1`,
+    timeoutMs: 30_000,
+  });
+
+  const nfsAddr = rclonePatternString(pattern, 'nfsAddr') ?? '127.0.0.1:2049';
+  const pidPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.pid`;
+  const logPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.log`;
+  const serverArgs = [
+    rclonePath,
+    'serve',
+    'nfs',
+    `${config.remoteName}:${config.remotePath}`,
+    '--addr',
+    nfsAddr,
+    '--config',
+    configPath,
+    ...(config.readOnly ? ['--read-only'] : []),
+    ...rclonePatternArgs(pattern),
+  ];
+  await runRequiredMountCommand(options, {
+    label: 'start rclone nfs server',
+    command: `(${joinShellArgs(serverArgs)} > ${shellQuote(logPath)} 2>&1 & pid=$!; printf %s "$pid" > ${shellQuote(pidPath)}; (sleep 2; rm -f -- ${shellQuote(configPath)}) >/dev/null 2>&1 &)`,
+    timeoutMs: 30_000,
+  });
+
+  try {
+    // Keep parity with Python: attempt the mount even when /proc/filesystems does
+    // not advertise NFS support because some sandbox images expose it late.
+    await runMountCommandSafely(
+      options,
+      'check nfs filesystem support',
+      'grep -qw nfs /proc/filesystems',
+      { timeoutMs: 30_000 },
+    );
+
+    const timeoutCheck = await runMountCommandSafely(
+      options,
+      'check timeout command',
+      'command -v timeout >/dev/null 2>&1',
+      { timeoutMs: 30_000 },
+    );
+    const timeoutPrefix = timeoutCheck.status === 0 ? 'timeout 10s ' : '';
+    const { host, port } = splitNfsAddr(nfsAddr);
+    const mountOptions = rclonePatternStringArray(
+      pattern,
+      'nfsMountOptions',
+    ) ?? ['vers=4.1', 'tcp', `port=${port}`, 'soft', 'timeo=50', 'retrans=1'];
+    await runRequiredMountCommand(options, {
+      label: 'mount rclone nfs client',
+      command: [
+        'for i in 1 2 3; do',
+        `${timeoutPrefix}mount -v -t nfs -o ${shellQuote(mountOptions.join(','))} ${shellQuote(`${host}:/`)} ${shellQuote(options.mountPath)}`,
+        '&& exit 0; sleep 1; done; exit 1',
+      ].join(' '),
+      timeoutMs: 60_000,
+      user: 'root',
+    });
+  } catch (error) {
+    try {
+      await stopRcloneNfsServer(options, pidPath, configPath);
+    } catch {
+      throw new SandboxMountError(
+        `${options.providerName} cloud bucket mount failed and credential cleanup could not complete.`,
+        {
+          provider: options.providerId,
+          operation: 'mount rclone nfs',
+          cleanupFailed: true,
+        },
+        'mount_failed',
+      );
+    }
+    throw error;
+  }
+  return pidPath;
+}
+
+function buildRcloneMountConfig(
+  entry: RcloneBucketMount,
+  options: { remoteName: string; allowAmbientCredentials: boolean },
+): RcloneMountConfig {
+  switch (entry.type) {
+    case 's3_mount':
+      return {
+        remoteName: options.remoteName,
+        remotePath: joinRemotePath(entry.bucket, entry.prefix),
+        configText: [
+          `[${options.remoteName}]`,
+          'type = s3',
+          `provider = ${entry.s3Provider ?? 'AWS'}`,
+          ...(entry.endpointUrl ? [`endpoint = ${entry.endpointUrl}`] : []),
+          ...(entry.region ? [`region = ${entry.region}`] : []),
+          ...s3CredentialLines(entry, options.allowAmbientCredentials),
+          '',
+        ].join('\n'),
+        readOnly: entry.readOnly ?? true,
+        mountType: entry.type,
+      };
+    case 'r2_mount':
+      validateCredentialPair({
+        provider: 'R2',
+        mountType: entry.type,
+        accessKeyId: readOptionalString(entry, 'accessKeyId'),
+        secretAccessKey: readOptionalString(entry, 'secretAccessKey'),
+      });
+      if (!entry.accountId) {
+        throw new SandboxMountError(
+          'R2 cloud bucket mounts require accountId.',
+          {
+            mountType: entry.type,
+          },
+        );
+      }
+      return {
+        remoteName: options.remoteName,
+        remotePath: joinRemotePath(entry.bucket, entry.prefix),
+        configText: [
+          `[${options.remoteName}]`,
+          'type = s3',
+          'provider = Cloudflare',
+          `endpoint = ${
+            readOptionalString(entry, 'customDomain') ??
+            `https://${entry.accountId}.r2.cloudflarestorage.com`
+          }`,
+          'acl = private',
+          ...r2CredentialLines(entry, options.allowAmbientCredentials),
+          '',
+        ].join('\n'),
+        readOnly: entry.readOnly ?? true,
+        mountType: entry.type,
+      };
+    case 'gcs_mount':
+      return buildGcsRcloneMountConfig(
+        entry,
+        options.remoteName,
+        options.allowAmbientCredentials,
+      );
+    case 'azure_blob_mount':
+      return buildAzureBlobRcloneMountConfig(
+        entry,
+        options.remoteName,
+        options.allowAmbientCredentials,
+      );
+    case 'box_mount':
+      return buildBoxRcloneMountConfig(entry, options.remoteName);
+    default:
+      throw new SandboxUnsupportedFeatureError(
+        'Unsupported rclone cloud bucket mount type.',
+        {
+          mountType: (entry as Entry).type,
+        },
+      );
+  }
+}
+
+async function resolveRcloneMountConfig(
+  options: RcloneCloudBucketMountOptions,
+  pattern: RcloneMountPattern,
+  remoteName: string,
+): Promise<RcloneMountConfig> {
+  const config = buildRcloneMountConfig(options.entry as RcloneBucketMount, {
+    remoteName,
+    allowAmbientCredentials: options.allowAmbientCredentials === true,
+  });
+  const configFilePath = rclonePatternString(pattern, 'configFilePath');
+  if (!configFilePath) {
+    return config;
+  }
+  await options.revalidateMountAuthority?.();
+  const result = await runMountCommandSafely(
+    options,
+    'read rclone config',
+    `cat -- ${shellQuote(configFilePath)}`,
+    {
+      timeoutMs: 30_000,
+    },
+  );
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      `${options.providerName} failed to read rclone config file.`,
+      {
+        provider: options.providerId,
+        mountType: config.mountType,
+        status: result.status,
+      },
+    );
+  }
+  return {
+    ...config,
+    configText: supplementRcloneConfigText(
+      result.stdout ?? '',
+      remoteName,
+      config.configText,
+      config.mountType,
+      options,
+    ),
+  };
+}
+
+function supplementRcloneConfigText(
+  configText: string,
+  remoteName: string,
+  requiredConfigText: string,
+  mountType: string,
+  options: RcloneCloudBucketMountOptions,
+): string {
+  const escapedRemote = remoteName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const sectionPattern = new RegExp(`^\\s*\\[${escapedRemote}\\]\\s*$`, 'mu');
+  const match = sectionPattern.exec(configText);
+  if (!match) {
+    throw new SandboxMountError(
+      `${options.providerName} rclone config file is missing the required remote section.`,
+      {
+        provider: options.providerId,
+        mountType,
+        remoteName,
+      },
+    );
+  }
+  const sectionStart = match.index;
+  const sectionEnd = match.index + match[0].length;
+  const nextSection = /^\s*\[.+\]\s*$/mu.exec(configText.slice(sectionEnd));
+  const sectionBodyEnd = nextSection
+    ? sectionEnd + nextSection.index
+    : configText.length;
+  const before = configText.slice(0, sectionStart);
+  const sectionBody = configText.slice(sectionStart, sectionBodyEnd).trimEnd();
+  const after = configText.slice(sectionBodyEnd);
+  const requiredLines = requiredConfigText.trimEnd().split('\n').slice(1);
+  const supplement =
+    requiredLines.length > 0 ? `\n${requiredLines.join('\n')}` : '';
+  return `${before}${sectionBody}${supplement}\n${after}`;
+}
+
+function buildGcsRcloneMountConfig(
+  entry: GCSMount,
+  remoteName: string,
+  allowAmbientCredentials: boolean,
+): RcloneMountConfig {
+  const accessId = readOptionalString(entry, 'accessId');
+  const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
+  if (accessId && secretAccessKey) {
+    return {
+      remoteName,
+      remotePath: joinRemotePath(entry.bucket, entry.prefix),
+      configText: [
+        `[${remoteName}]`,
+        'type = s3',
+        'provider = GCS',
+        'env_auth = false',
+        `access_key_id = ${accessId}`,
+        `secret_access_key = ${secretAccessKey}`,
+        `endpoint = ${entry.endpointUrl ?? 'https://storage.googleapis.com'}`,
+        ...(entry.region ? [`region = ${entry.region}`] : []),
+        '',
+      ].join('\n'),
+      readOnly: entry.readOnly ?? true,
+      mountType: entry.type,
+    };
+  }
+
+  return {
+    remoteName,
+    remotePath: joinRemotePath(entry.bucket, entry.prefix),
+    configText: [
+      `[${remoteName}]`,
+      'type = google cloud storage',
+      ...(entry.serviceAccountFile
+        ? [`service_account_file = ${entry.serviceAccountFile}`]
+        : []),
+      ...(entry.serviceAccountCredentials
+        ? [`service_account_credentials = ${entry.serviceAccountCredentials}`]
+        : []),
+      ...(entry.accessToken ? [`access_token = ${entry.accessToken}`] : []),
+      entry.serviceAccountFile ||
+      entry.serviceAccountCredentials ||
+      entry.accessToken ||
+      !allowAmbientCredentials
+        ? 'env_auth = false'
+        : 'env_auth = true',
+      ...(!entry.serviceAccountFile &&
+      !entry.serviceAccountCredentials &&
+      !entry.accessToken &&
+      !allowAmbientCredentials
+        ? ['anonymous = true']
+        : []),
+      '',
+    ].join('\n'),
+    readOnly: entry.readOnly ?? true,
+    mountType: entry.type,
+  };
+}
+
+function buildAzureBlobRcloneMountConfig(
+  entry: AzureBlobMount,
+  remoteName: string,
+  allowAmbientCredentials: boolean,
+): RcloneMountConfig {
+  const account = entry.account ?? entry.accountName;
+  if (!account) {
+    throw new SandboxMountError(
+      'Azure Blob mounts require account or accountName.',
+      {
+        mountType: entry.type,
+      },
+    );
+  }
+  return {
+    remoteName,
+    remotePath: joinRemotePath(entry.container, entry.prefix),
+    configText: [
+      `[${remoteName}]`,
+      'type = azureblob',
+      `account = ${account}`,
+      ...(azureBlobEndpoint(entry)
+        ? [`endpoint = ${azureBlobEndpoint(entry)}`]
+        : []),
+      ...(entry.accountKey
+        ? [`key = ${entry.accountKey}`]
+        : entry.identityClientId
+          ? ['use_msi = true', `msi_client_id = ${entry.identityClientId}`]
+          : allowAmbientCredentials
+            ? ['use_msi = true']
+            : ['use_msi = false', 'env_auth = false']),
+      '',
+    ].join('\n'),
+    readOnly: entry.readOnly ?? true,
+    mountType: entry.type,
+  };
+}
+
+function azureBlobEndpoint(entry: AzureBlobMount): string | undefined {
+  return entry.endpointUrl ?? entry.endpoint;
+}
+
+function buildBoxRcloneMountConfig(
+  entry: BoxMount,
+  remoteName: string,
+): RcloneMountConfig {
+  return {
+    remoteName,
+    remotePath: normalizeBoxRemotePath(entry.path),
+    configText: [
+      `[${remoteName}]`,
+      'type = box',
+      ...boxCredentialLines(entry),
+      ...(entry.boxSubType && entry.boxSubType !== 'user'
+        ? [`box_sub_type = ${entry.boxSubType}`]
+        : []),
+      ...(entry.rootFolderId ? [`root_folder_id = ${entry.rootFolderId}`] : []),
+      ...(entry.impersonate ? [`impersonate = ${entry.impersonate}`] : []),
+      ...(entry.ownedBy ? [`owned_by = ${entry.ownedBy}`] : []),
+      '',
+    ].join('\n'),
+    readOnly: entry.readOnly ?? true,
+    mountType: entry.type,
+  };
+}
+
+function s3CredentialLines(
+  entry: S3Mount,
+  allowAmbientCredentials: boolean,
+): string[] {
+  const accessKeyId = readOptionalString(entry, 'accessKeyId');
+  const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
+  if (!accessKeyId || !secretAccessKey) {
+    return [`env_auth = ${allowAmbientCredentials ? 'true' : 'false'}`];
+  }
+  return [
+    'env_auth = false',
+    `access_key_id = ${accessKeyId}`,
+    `secret_access_key = ${secretAccessKey}`,
+    ...(entry.sessionToken ? [`session_token = ${entry.sessionToken}`] : []),
+  ];
+}
+
+function r2CredentialLines(
+  entry: R2Mount,
+  allowAmbientCredentials: boolean,
+): string[] {
+  const accessKeyId = readOptionalString(entry, 'accessKeyId');
+  const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
+  if (!accessKeyId || !secretAccessKey) {
+    return [`env_auth = ${allowAmbientCredentials ? 'true' : 'false'}`];
+  }
+  return [
+    'env_auth = false',
+    `access_key_id = ${accessKeyId}`,
+    `secret_access_key = ${secretAccessKey}`,
+  ];
+}
+
+function boxCredentialLines(entry: BoxMount): string[] {
+  return [
+    ...(entry.clientId ? [`client_id = ${entry.clientId}`] : []),
+    ...(entry.clientSecret ? [`client_secret = ${entry.clientSecret}`] : []),
+    ...(entry.boxConfigFile
+      ? [`box_config_file = ${entry.boxConfigFile}`]
+      : []),
+    ...(entry.configCredentials
+      ? [`config_credentials = ${entry.configCredentials}`]
+      : []),
+    ...(entry.accessToken ? [`access_token = ${entry.accessToken}`] : []),
+    ...(entry.token ? [`token = ${entry.token}`] : []),
+  ];
+}
+
+async function ensureFuseSupport(
+  options: RcloneCloudBucketMountOptions,
+): Promise<void> {
+  await runRequiredMountCommand(options, {
+    label: 'check /dev/fuse',
+    command: 'test -c /dev/fuse',
+    timeoutMs: 30_000,
+  });
+  await runRequiredMountCommand(options, {
+    label: 'check fuse filesystem support',
+    command: 'grep -qw fuse /proc/filesystems',
+    timeoutMs: 30_000,
+  });
+  const fusermount = await runMountCommandSafely(
+    options,
+    'check fusermount command',
+    'command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1',
+    { timeoutMs: 30_000 },
+  );
+  if (fusermount.status !== 0) {
+    await installPackage(options, 'fuse3', 'fusermount');
+    await runRequiredMountCommand(options, {
+      label: 'check fusermount after install',
+      command:
+        'command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1',
+      timeoutMs: 30_000,
+    });
+  }
+  await runRequiredMountCommand(options, {
+    label: 'enable FUSE allow_other',
+    command:
+      "chmod a+rw /dev/fuse && touch /etc/fuse.conf && (grep -qxF user_allow_other /etc/fuse.conf || printf '\\nuser_allow_other\\n' >> /etc/fuse.conf)",
+    timeoutMs: 30_000,
+    user: 'root',
+  });
+}
+
+async function ensureRclone(
+  options: RcloneCloudBucketMountOptions,
+): Promise<string> {
+  const check = await runMountCommandSafely(
+    options,
+    'check rclone command',
+    RCLONE_AVAILABLE_CHECK_COMMAND,
+    { timeoutMs: 30_000 },
+  );
+  if (check.status === 0) {
+    const onPath = await runMountCommandSafely(
+      options,
+      'check rclone path',
+      RCLONE_ON_PATH_CHECK_COMMAND,
+      { timeoutMs: 30_000 },
+    );
+    return onPath.status === 0 ? 'rclone' : RCLONE_INSTALL_PATH;
+  }
+
+  if (options.installRcloneViaScript) {
+    await installRcloneViaScript(options);
+  } else {
+    await installPackage(options, 'rclone', 'rclone');
+  }
+
+  await runRequiredMountCommand(options, {
+    label: 'check rclone after install',
+    command: RCLONE_AVAILABLE_CHECK_COMMAND,
+    timeoutMs: 30_000,
+  });
+  return options.installRcloneViaScript ? RCLONE_INSTALL_PATH : 'rclone';
+}
+
+async function installRcloneViaScript(
+  options: RcloneCloudBucketMountOptions,
+): Promise<void> {
+  await runRequiredMountCommand(options, {
+    label: 'check apt-get for rclone install',
+    command: 'command -v apt-get >/dev/null 2>&1',
+    timeoutMs: 30_000,
+  });
+  const machineResult = await runMountCommandSafely(
+    options,
+    'check rclone architecture',
+    'uname -m',
+    { timeoutMs: 30_000 },
+  );
+  const machine = (machineResult.stdout ?? '').trim();
+  const arch =
+    machineResult.status === 0 ? rcloneArchiveArch(machine) : undefined;
+  if (!arch) {
+    throw new SandboxMountError(
+      `${options.providerName} cannot install rclone on this architecture.`,
+      {
+        provider: options.providerId,
+        package: 'rclone',
+        architecture: 'unsupported',
+        status: machineResult.status,
+      },
+    );
+  }
+  await runRequiredMountCommand(options, {
+    label: 'install rclone prerequisites',
+    command:
+      'DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 update -qq && DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 install -y -qq ca-certificates coreutils curl unzip',
+    timeoutMs: 300_000,
+    user: 'root',
+  });
+  const install = await runMountCommandSafely(
+    options,
+    'install rclone',
+    rcloneInstallCommand(arch),
+    { timeoutMs: 300_000, user: 'root' },
+  );
+  if (install.status !== 0) {
+    throw new SandboxMountError(
+      install.status === RCLONE_CHECKSUM_MISMATCH_STATUS
+        ? `${options.providerName} rclone archive checksum verification failed.`
+        : `${options.providerName} cloud bucket mount failed while trying to install rclone.`,
+      {
+        provider: options.providerId,
+        package: 'rclone',
+        version: RCLONE_VERSION,
+        architecture: arch,
+        status: install.status,
+      },
+    );
+  }
+}
+
+/** @internal */
+export function rcloneArchiveArch(
+  machine: string,
+): RcloneArchiveArch | undefined {
+  const normalized = machine.trim().toLowerCase();
+  if (normalized === 'x86_64' || normalized === 'amd64') {
+    return 'amd64';
+  }
+  if (normalized === 'x86' || /^i[3-6]86$/u.test(normalized)) {
+    return '386';
+  }
+  if (normalized === 'aarch64' || normalized === 'arm64') {
+    return 'arm64';
+  }
+  if (normalized.startsWith('armv7')) {
+    return 'arm-v7';
+  }
+  if (normalized.startsWith('armv6')) {
+    return 'arm-v6';
+  }
+  if (normalized.startsWith('arm')) {
+    return 'arm';
+  }
+  return undefined;
+}
+
+/** @internal */
+export function rcloneInstallCommand(arch: RcloneArchiveArch): string {
+  const archive = `rclone-v${RCLONE_VERSION}-linux-${arch}.zip`;
+  const sha256 = RCLONE_SHA256_BY_ARCH[arch];
+  const url = `https://downloads.rclone.org/v${RCLONE_VERSION}/${archive}`;
+  return [
+    'set -eu',
+    'tmp_dir="$(mktemp -d)"',
+    'target_tmp=""',
+    'cleanup() {',
+    '  rm -rf "$tmp_dir"',
+    '  if [ -n "$target_tmp" ]; then rm -f "$target_tmp"; fi',
+    '}',
+    'trap cleanup EXIT',
+    "trap 'exit 1' HUP INT TERM",
+    `archive=${shellQuote(archive)}`,
+    `expected_sha256=${shellQuote(sha256)}`,
+    `url=${shellQuote(url)}`,
+    'curl --fail --location --silent --show-error --proto \'=https\' --tlsv1.2 --output "$tmp_dir/$archive" "$url"',
+    'if ! printf \'%s  %s\\n\' "$expected_sha256" "$tmp_dir/$archive" | sha256sum --check --strict -; then',
+    `  exit ${RCLONE_CHECKSUM_MISMATCH_STATUS}`,
+    'fi',
+    'unzip -q "$tmp_dir/$archive" -d "$tmp_dir/unpacked"',
+    'install -d -m 0755 /usr/local/bin',
+    'target_tmp="$(mktemp /usr/local/bin/.rclone.XXXXXX)"',
+    'install -m 0755 "$tmp_dir/unpacked/${archive%.zip}/rclone" "$target_tmp"',
+    'mv -f "$target_tmp" /usr/local/bin/rclone',
+    'target_tmp=""',
+    `/usr/local/bin/rclone version | head -n 1 | grep -Fx ${shellQuote(`rclone v${RCLONE_VERSION}`)}`,
+  ].join('\n');
+}
+
+async function installPackage(
+  options: RcloneCloudBucketMountOptions,
+  packageName: string,
+  label: string,
+): Promise<void> {
+  const managers = options.packageManagers ?? DEFAULT_PACKAGE_MANAGERS;
+  if (managers.includes('apt')) {
+    const apt = await runMountCommandSafely(
+      options,
+      'check apt-get command',
+      'command -v apt-get >/dev/null 2>&1',
+      { timeoutMs: 30_000 },
+    );
+    if (apt.status === 0) {
+      await runRequiredMountCommand(options, {
+        label: `install ${label}`,
+        command: `apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${shellQuote(packageName)}`,
+        timeoutMs: 300_000,
+        user: 'root',
+      });
+      return;
+    }
+  }
+
+  if (managers.includes('apk')) {
+    const apk = await runMountCommandSafely(
+      options,
+      'check apk command',
+      'command -v apk >/dev/null 2>&1',
+      { timeoutMs: 30_000 },
+    );
+    if (apk.status === 0) {
+      await runRequiredMountCommand(options, {
+        label: `install ${label}`,
+        command: `apk add --no-cache ${shellQuote(packageName)}`,
+        timeoutMs: 300_000,
+        user: 'root',
+      });
+      return;
+    }
+  }
+
+  throw new SandboxMountError(
+    `${options.providerName} cloud bucket mounts require ${label}, but no supported package manager is available.`,
+    {
+      provider: options.providerId,
+      package: packageName,
+    },
+  );
+}
+
+async function defaultUserIds(
+  options: RcloneCloudBucketMountOptions,
+): Promise<{ uid: string; gid: string } | undefined> {
+  const result = await runMountCommandSafely(
+    options,
+    'check default user ids',
+    'id -u; id -g',
+    { timeoutMs: 30_000 },
+  );
+  if (result.status !== 0) {
+    return undefined;
+  }
+  const [uid, gid] = (result.stdout ?? '').trim().split(/\r?\n/u);
+  if (!uid || !gid || !/^\d+$/u.test(uid) || !/^\d+$/u.test(gid)) {
+    return undefined;
+  }
+  return { uid, gid };
+}
+
+async function runRequiredMountCommand(
+  options: RcloneCloudBucketMountOptions,
+  command: {
+    label: string;
+    command: string;
+    timeoutMs?: number;
+    user?: string;
+  },
+): Promise<RemoteMountCommandResult> {
+  const result = await runMountCommandSafely(
+    options,
+    command.label,
+    command.command,
+    { timeoutMs: command.timeoutMs, user: command.user },
+  );
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      `${options.providerName} cloud bucket mount failed while trying to ${command.label}.`,
+      {
+        provider: options.providerId,
+        status: result.status,
+      },
+    );
+  }
+  return result;
+}
+
+async function runMountCommandSafely(
+  context: RemoteMountCommandContext,
+  operation: string,
+  command: string,
+  options: RemoteMountCommandOptions = {},
+): Promise<RemoteMountCommandResult> {
+  try {
+    return await context.runCommand(command, options);
+  } catch {
+    throw new SandboxMountError(
+      `${context.providerName} cloud bucket mount failed while trying to ${operation}.`,
+      {
+        provider: context.providerId,
+        operation,
+      },
+    );
+  }
+}
+
+function joinShellArgs(args: string[]): string {
+  return args.map(shellQuote).join(' ');
+}
+
+function joinRemotePath(base: string, prefix: string | undefined): string {
+  const normalizedPrefix = prefix?.replace(/^\/+|\/+$/gu, '');
+  return normalizedPrefix ? `${base}/${normalizedPrefix}` : base;
+}
+
+function resolveRcloneRemoteName(
+  pattern: RcloneMountPattern,
+  options: RcloneCloudBucketMountOptions,
+): string {
+  const remoteName =
+    rclonePatternString(pattern, 'remoteName') ??
+    rclonePatternString(pattern, 'remote');
+  if (typeof remoteName !== 'undefined') {
+    if (
+      typeof remoteName !== 'string' ||
+      !/^[A-Za-z0-9_-]+$/u.test(remoteName)
+    ) {
+      throw new SandboxMountError(
+        `${options.providerName} cloud bucket mounts require remoteName to contain only letters, numbers, underscores, and hyphens.`,
+        {
+          provider: options.providerId,
+          remoteName,
+        },
+      );
+    }
+    return remoteName;
+  }
+
+  return `sandbox_${sanitizeRemoteName(options.providerId)}_${sanitizeRemoteName(options.mountPath)}`;
+}
+
+async function stopRcloneNfsServer(
+  options: RcloneCloudBucketMountOptions,
+  pidPath: string,
+  configPath: string,
+): Promise<void> {
+  const result = await runMountCommandSafely(
+    options,
+    'stop failed rclone nfs helper',
+    [
+      safePidFileKillFunctionCommand(),
+      'helper_status=0',
+      `if [ -f ${shellQuote(pidPath)} ]; then ${safeKillPidFileCommand({
+        pidFile: shellQuote(pidPath),
+        expectedCmdlineFragments: ['rclone', 'serve', 'nfs'],
+        requireTermination: true,
+      })} || helper_status=$?; fi`,
+      `[ "$helper_status" -eq 0 ] && rm -f -- ${shellQuote(pidPath)} ${shellQuote(configPath)}`,
+      '[ "$helper_status" -eq 0 ]',
+    ].join(' ; '),
+    { timeoutMs: 30_000 },
+  );
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      `${options.providerName} cloud bucket credential cleanup failed.`,
+      {
+        provider: options.providerId,
+        operation: 'stop failed rclone nfs helper',
+        status: result.status,
+      },
+      'mount_failed',
+    );
+  }
+}
+
+function splitNfsAddr(addr: string): { host: string; port: string } {
+  if (addr === '::') {
+    return { host: '127.0.0.1', port: '2049' };
+  }
+  const index = addr.lastIndexOf(':');
+  const rawHost = index === -1 ? addr : addr.slice(0, index);
+  const port = index === -1 ? '2049' : addr.slice(index + 1) || '2049';
+  const host =
+    rawHost === '0.0.0.0' || rawHost === '::' ? '127.0.0.1' : rawHost;
+  return { host: host || '127.0.0.1', port };
+}
+
+function rclonePatternString(
+  pattern: RcloneMountPattern,
+  key: string,
+): string | undefined {
+  const value = pattern[key];
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+function rclonePatternStringArray(
+  pattern: RcloneMountPattern,
+  key: string,
+): string[] | undefined {
+  const value = pattern[key];
+  return Array.isArray(value) &&
+    value.every((item): item is string => typeof item === 'string')
+    ? value
+    : undefined;
+}
+
+function rclonePatternArgs(pattern: RcloneMountPattern): string[] {
+  return [
+    ...(rclonePatternStringArray(pattern, 'args') ?? []),
+    ...(rclonePatternStringArray(pattern, 'extraArgs') ?? []),
+  ];
+}
+
+function isRcloneBucketMount(entry: Entry): entry is RcloneBucketMount {
+  return (
+    entry.type === 's3_mount' ||
+    entry.type === 'r2_mount' ||
+    entry.type === 'gcs_mount' ||
+    entry.type === 'azure_blob_mount' ||
+    entry.type === 'box_mount'
+  );
+}
+
+function isRcloneMountPattern(value: unknown): value is RcloneMountPattern {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { type?: unknown }).type === 'rclone'
+  );
+}
+
+function validateCredentialPair(args: {
+  provider: string;
+  mountType: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  accessKeyName?: string;
+}): void {
+  validateSandboxCredentialPair({
+    accessKeyId: args.accessKeyId,
+    secretAccessKey: args.secretAccessKey,
+    message: `${args.provider} cloud bucket mounts require both ${args.accessKeyName ?? 'accessKeyId'} and secretAccessKey when either is provided.`,
+    details: {
+      mountType: args.mountType,
+    },
+  });
+}
+
+function validateRcloneMountCredentialPairs(entry: RcloneBucketMount): void {
+  if (entry.type === 's3_mount' || entry.type === 'r2_mount') {
+    const accessKeyId = readOptionalString(entry, 'accessKeyId');
+    const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
+    validateCredentialPair({
+      provider: entry.type === 's3_mount' ? 'S3' : 'R2',
+      mountType: entry.type,
+      accessKeyId,
+      secretAccessKey,
+    });
+    if (
+      entry.type === 's3_mount' &&
+      entry.sessionToken &&
+      (!accessKeyId || !secretAccessKey)
+    ) {
+      throw new SandboxMountError(
+        'S3 cloud bucket mounts require a complete accessKeyId and secretAccessKey pair when sessionToken is provided.',
+        { mountType: entry.type },
+        'mount_config_invalid',
+      );
+    }
+    return;
+  }
+  if (entry.type === 'gcs_mount') {
+    validateCredentialPair({
+      provider: 'GCS HMAC',
+      mountType: entry.type,
+      accessKeyId: readOptionalString(entry, 'accessId'),
+      secretAccessKey: readOptionalString(entry, 'secretAccessKey'),
+      accessKeyName: 'accessId',
+    });
+  }
+}
+
+function mountStrategyType(entry: Entry): unknown {
+  return (entry as { mountStrategy?: { type?: unknown } }).mountStrategy?.type;
+}
+
+function sanitizeRemoteName(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9_-]+/gu, '_').replace(/^_+|_+$/gu, '');
+  return safe || 'mount';
+}
+
+function normalizeBoxRemotePath(path: string | undefined): string {
+  return path?.replace(/^\/+/gu, '') ?? '';
+}

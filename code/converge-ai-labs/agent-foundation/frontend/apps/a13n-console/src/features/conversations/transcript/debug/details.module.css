@@ -1,0 +1,140 @@
+/* The run's own record: identifiers, attempts, lineage, and the navigator. */
+.details {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0 0 16px 30px;
+  padding: 14px 16px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+}
+.detailColumns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.detailBlock {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  align-content: start;
+}
+.detailLabel {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+}
+.detailNote {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.detailPath {
+  font-family: var(--a13n-mono);
+  font-size: var(--a13n-text-xs);
+  overflow-wrap: anywhere;
+}
+.detailDisclosure {
+  margin-top: 4px;
+}
+.facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: var(--a13n-text-xs);
+}
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 116px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+.facts dt {
+  color: var(--a13n-secondary);
+}
+.facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attempts,
+.lineageList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--a13n-text-xs);
+}
+.attempt {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.attemptHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.attemptHead strong {
+  font-weight: 500;
+}
+.attemptSpan {
+  color: var(--a13n-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.lineageList li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--a13n-secondary);
+}
+
+/* Navigator -------------------------------------------------------------- */
+.navigator {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 2px;
+  pointer-events: none;
+}
+.navigatorPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 32px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--a13n-elevated) 88%, transparent);
+  box-shadow: var(--a13n-shadow);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+.navigatorLabel {
+  gap: 5px;
+  height: 26px;
+  border-radius: 999px;
+  font-size: var(--a13n-text-xs);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.navigatorPopup {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(60vh, 420px);
+}
+/* The gutter has room for the whole tree; the pill is for when it has not. */
+@media (min-width: 1440px) {
+  .navigatorPill {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .details {
+    margin-left: 0;
+  }
+}

@@ -1,0 +1,871 @@
+"""Tests for the ``AgentProfile`` kind-discriminated union.
+
+Mirrors the ``AgentSettingsConfig`` union tests in ``tests/sdk/test_settings.py``:
+round-trip both variants, confirm narrowing on ``agent_kind``, confirm the
+cross-variant fields are rejected, and confirm the ``mcp_server_refs`` null/[]
+distinction. Adds the profile-specific contract: secret-free at rest.
+"""
+
+import json
+from uuid import UUID, uuid4
+
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from openhands.sdk.profiles import (
+    AGENT_PROFILE_SCHEMA_VERSION,
+    ACPAgentProfile,
+    AgentProfile,
+    OpenHandsAgentProfile,
+    validate_agent_profile,
+)
+from openhands.sdk.profiles.agent_profile import (
+    AgentProfileBase,
+    _agent_profile_discriminator,
+)
+
+
+_ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
+    AgentProfile
+)
+
+
+# ---------------------------------------------------------------------------
+# Construction + round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_openhands_profile_round_trips() -> None:
+    profile = OpenHandsAgentProfile(
+        name="my-openhands",
+        llm_profile_ref="default",
+        revision=3,
+        mcp_server_refs=["fetch"],
+        disabled_skills=["pdf-tools"],
+        system_message_suffix="be terse",
+        tool_concurrency_limit=4,
+    )
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+
+    assert isinstance(reloaded, OpenHandsAgentProfile)
+    assert reloaded == profile
+    assert reloaded.agent_kind == "openhands"
+    assert reloaded.agent == "CodeActAgent"
+    assert reloaded.llm_profile_ref == "default"
+    assert reloaded.revision == 3
+    assert reloaded.mcp_server_refs == ["fetch"]
+    assert reloaded.disabled_skills == ["pdf-tools"]
+    assert reloaded.tool_concurrency_limit == 4
+
+
+def test_openhands_profile_new_field_defaults() -> None:
+    """``enable_switch_llm_tool`` defaults True (global parity); ``disabled_skills``
+    defaults ``[]`` — the deny-list starts empty, so an unset field means "all
+    discovered skills" (#4017). Skills are selected by exclusion, never an
+    allow-list of names that could dangle."""
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    assert profile.disabled_skills == []
+    reloaded = validate_agent_profile(
+        {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
+    )
+    assert isinstance(reloaded, OpenHandsAgentProfile)
+    assert reloaded.disabled_skills == []
+
+
+def test_default_profile_preserves_explicit_empty_tools() -> None:
+    profile = OpenHandsAgentProfile(
+        name="default", llm_profile_ref="default", revision=0, tools=[]
+    )
+
+    assert profile.tools == []
+
+
+def test_disabled_skills_round_trips() -> None:
+    """A non-empty deny-list survives the JSON round-trip verbatim."""
+    profile = validate_agent_profile(
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="default", disabled_skills=["a", "b"]
+        ).model_dump(mode="json")
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == ["a", "b"]
+
+
+def test_acp_profile_has_no_skill_field() -> None:
+    """ACP profiles carry no skill-selection field at all — the subprocess owns
+    its tooling and prompt context (#4017). ``extra="forbid"`` rejects a stray
+    ``skill_refs``/``disabled_skills`` on an ACP payload."""
+    from openhands.sdk.profiles import ACPAgentProfile
+
+    profile = ACPAgentProfile(name="acp", acp_server="claude-code")
+    assert not hasattr(profile, "skill_refs")
+    assert not hasattr(profile, "disabled_skills")
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "acp",
+                "name": "acp",
+                "acp_server": "claude-code",
+                "disabled_skills": ["x"],
+            }
+        )
+
+
+def test_persona_round_trips_and_defaults_to_none() -> None:
+    assert OpenHandsAgentProfile(name="oh", llm_profile_ref="d").persona is None
+    profile = validate_agent_profile(
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="d", persona="You are a reviewer."
+        ).model_dump(mode="json")
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.persona == "You are a reviewer."
+
+
+@pytest.mark.parametrize("persona", ["", "x" * 65537])
+def test_persona_rejects_empty_and_oversized(persona: str) -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentProfile(name="oh", llm_profile_ref="d", persona=persona)
+
+
+def test_acp_profile_rejects_persona() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "acp",
+                "name": "acp",
+                "acp_server": "claude-code",
+                "persona": "x",
+            }
+        )
+
+
+def test_acp_profile_round_trips() -> None:
+    profile = ACPAgentProfile(
+        name="my-acp",
+        acp_server="codex",
+        acp_model="gpt-5.5/medium",
+        acp_session_mode="full-access",
+        acp_prompt_timeout=600.0,
+        acp_command="codex-acp",
+        acp_args=["--flag"],
+        mcp_server_refs=None,
+    )
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+
+    assert isinstance(reloaded, ACPAgentProfile)
+    assert reloaded == profile
+    assert reloaded.agent_kind == "acp"
+    assert reloaded.acp_server == "codex"
+    assert reloaded.acp_model == "gpt-5.5/medium"
+    assert reloaded.acp_command == "codex-acp"
+    assert reloaded.acp_args == ["--flag"]
+    assert reloaded.mcp_server_refs is None
+
+
+def test_acp_profile_minimal_defaults() -> None:
+    profile = validate_agent_profile({"agent_kind": "acp", "name": "minimal"})
+
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_server == "claude-code"
+    assert profile.acp_model is None
+    assert profile.acp_session_mode is None
+    assert profile.acp_prompt_timeout == 1800.0
+    assert profile.acp_command is None
+    assert profile.acp_args is None
+
+
+# ---------------------------------------------------------------------------
+# Discriminator + validation
+# ---------------------------------------------------------------------------
+
+
+def test_agent_profile_discriminator_declared_on_base():
+    """AgentProfileBase declares agent_kind.
+
+    The discriminator accesses it directly without getattr.
+    """
+    base = AgentProfileBase(name="test-profile")
+    assert base.agent_kind == "openhands"
+    assert _agent_profile_discriminator(base) == "openhands"
+
+    openhands_profile = OpenHandsAgentProfile(
+        name="test-openhands", llm_profile_ref="default"
+    )
+    assert openhands_profile.agent_kind == "openhands"
+    assert _agent_profile_discriminator(openhands_profile) == "openhands"
+
+    acp_profile = ACPAgentProfile(name="test-acp")
+    assert acp_profile.agent_kind == "acp"
+    assert _agent_profile_discriminator(acp_profile) == "acp"
+
+
+def test_validate_dispatches_on_agent_kind() -> None:
+    openhands = validate_agent_profile(
+        {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
+    )
+    assert isinstance(openhands, OpenHandsAgentProfile)
+    assert openhands.agent_kind == "openhands"
+
+    acp = validate_agent_profile(
+        {"agent_kind": "acp", "name": "acp", "acp_model": "claude-opus-4-8"}
+    )
+    assert isinstance(acp, ACPAgentProfile)
+    assert acp.agent_kind == "acp"
+
+
+def test_missing_discriminator_defaults_to_openhands() -> None:
+    profile = validate_agent_profile({"name": "oh", "llm_profile_ref": "default"})
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.agent_kind == "openhands"
+
+
+def test_type_adapter_narrows_directly() -> None:
+    """A bare ``TypeAdapter(AgentProfile)`` (no migration) narrows correctly."""
+    acp = _ADAPTER.validate_python({"agent_kind": "acp", "name": "acp"})
+    assert isinstance(acp, ACPAgentProfile)
+
+
+def test_validate_passes_through_instances() -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    assert validate_agent_profile(profile) is profile
+
+
+def test_validate_rejects_non_mapping() -> None:
+    with pytest.raises(TypeError, match="must be a mapping or BaseModel"):
+        validate_agent_profile(["not", "a", "mapping"])
+
+
+# ---------------------------------------------------------------------------
+# Cross-variant field rejection (extra="forbid")
+# ---------------------------------------------------------------------------
+
+
+def test_acp_rejects_llm_profile_ref() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {"agent_kind": "acp", "name": "acp", "llm_profile_ref": "default"}
+        )
+
+
+def test_openhands_rejects_acp_fields() -> None:
+    for acp_field, value in (
+        ("acp_server", "codex"),
+        ("acp_model", "gpt-5.5/medium"),
+        ("acp_command", "codex-acp"),
+        ("acp_args", ["--flag"]),
+        ("acp_session_mode", "full-access"),
+        ("acp_prompt_timeout", 600.0),
+    ):
+        with pytest.raises(ValidationError):
+            validate_agent_profile(
+                {
+                    "agent_kind": "openhands",
+                    "name": "oh",
+                    "llm_profile_ref": "default",
+                    acp_field: value,
+                }
+            )
+
+
+def test_openhands_requires_llm_profile_ref() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile({"agent_kind": "openhands", "name": "oh"})
+
+
+def test_acp_rejects_unknown_acp_server() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {"agent_kind": "acp", "name": "acp", "acp_server": "not-a-provider"}
+        )
+
+
+# ---------------------------------------------------------------------------
+# mcp_server_refs: null vs [] are distinct
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_server_refs_null_vs_empty_are_distinct() -> None:
+    use_all = validate_agent_profile(
+        {"name": "a", "llm_profile_ref": "d", "mcp_server_refs": None}
+    )
+    use_none = validate_agent_profile(
+        {"name": "b", "llm_profile_ref": "d", "mcp_server_refs": []}
+    )
+    subset = validate_agent_profile(
+        {"name": "c", "llm_profile_ref": "d", "mcp_server_refs": ["fetch"]}
+    )
+
+    assert use_all.mcp_server_refs is None
+    assert use_none.mcp_server_refs == []
+    assert subset.mcp_server_refs == ["fetch"]
+
+    # The distinction must survive a serialize → reload round-trip.
+    assert (
+        validate_agent_profile(use_all.model_dump(mode="json")).mcp_server_refs is None
+    )
+    assert (
+        validate_agent_profile(use_none.model_dump(mode="json")).mcp_server_refs == []
+    )
+
+
+def test_mcp_server_refs_default_is_null() -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
+    assert profile.mcp_server_refs is None
+
+
+# ---------------------------------------------------------------------------
+# schema_version + migration
+# ---------------------------------------------------------------------------
+
+
+def test_schema_version_defaults_to_current() -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+
+
+def test_payload_missing_schema_version_canonicalizes() -> None:
+    payload = {"agent_kind": "acp", "name": "acp"}
+    assert "schema_version" not in payload
+    profile = validate_agent_profile(payload)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+
+
+def test_schemaless_default_preserves_explicit_empty_tools() -> None:
+    profile = validate_agent_profile(
+        {
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools == []
+
+
+def test_v1_untouched_default_migrates_empty_tools_to_null() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.tools is None
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [[], [{"name": "old-skill", "content": "do stuff"}]],
+)
+def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "skills": skills,
+        }
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.disabled_skills == []
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+@pytest.mark.parametrize(
+    ("switches", "expected"),
+    [
+        ({}, None),
+        ({"enable_switch_llm_tool": True}, None),
+        (
+            {"enable_sub_agents": True},
+            [
+                "terminal",
+                "file_editor",
+                "task_tracker",
+                "browser_tool_set",
+                "task_tool_set",
+                "switch_llm",
+            ],
+        ),
+        (
+            {"enable_switch_llm_tool": False},
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
+    ],
+)
+def test_legacy_empty_tools_migrate_as_the_standard_set(
+    schema_version, switches, expected
+) -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": schema_version,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "tools": [],
+            **switches,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert (
+        None if profile.tools is None else [tool.name for tool in profile.tools]
+    ) == expected
+
+
+def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "enable_sub_agents": True,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert [tool.name for tool in profile.tools or []] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+        "switch_llm",
+    ]
+
+
+def test_v2_sub_agents_switch_does_not_reach_an_explicit_list() -> None:
+    """The switch only ever fed the default set."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [{"name": "glob", "params": {}}],
+            "enable_sub_agents": True,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["glob", "switch_llm"]
+
+
+def test_v2_default_switch_llm_needs_no_pinned_list() -> None:
+    """The default set carries switch_llm, so nothing has to be pinned."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "enable_switch_llm_tool": True,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is None
+
+
+def test_v2_fold_recognises_the_switch_llm_class_alias() -> None:
+    """A stored list naming the built-in by class name already has the tool."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [{"name": "SwitchLLMTool", "params": {}}],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["switch_llm"]
+
+
+def test_v2_switch_llm_turned_off_pins_a_list_without_it() -> None:
+    """Off is not the default, so it has to be said explicitly."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "enable_switch_llm_tool": False,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+    ]
+
+
+def test_v2_sub_agents_switch_leaves_acp_profiles_alone() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "agent_kind": "acp",
+            "name": "acp",
+            "enable_sub_agents": True,
+        }
+    )
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert not hasattr(profile, "tools")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (False, ["glob"]),
+        ("false", ["glob"]),
+        (0, ["glob"]),
+        ("1", ["glob", "switch_llm"]),
+    ],
+)
+def test_v2_switches_coerce_like_booleans(value: object, expected: list[str]) -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "oh",
+            "llm_profile_ref": "d",
+            "tools": [{"name": "glob"}],
+            "enable_switch_llm_tool": value,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == expected
+
+
+def test_v2_rejects_a_non_boolean_switch() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 2,
+                "name": "oh",
+                "llm_profile_ref": "d",
+                "enable_sub_agents": "sometimes",
+            }
+        )
+
+
+_PINNED_WITH_SUB_AGENTS = [
+    "terminal",
+    "file_editor",
+    "task_tracker",
+    "browser_tool_set",
+    "task_tool_set",
+    "switch_llm",
+]
+
+
+@pytest.mark.parametrize("schema_version", [AGENT_PROFILE_SCHEMA_VERSION, None])
+@pytest.mark.parametrize(
+    ("switch", "value", "tools", "expected"),
+    [
+        ("enable_sub_agents", True, None, _PINNED_WITH_SUB_AGENTS),
+        (
+            "enable_sub_agents",
+            True,
+            [{"name": "terminal"}],
+            ["terminal", "task_tool_set"],
+        ),
+        (
+            "enable_sub_agents",
+            False,
+            [{"name": "terminal"}, {"name": "task_tool_set"}],
+            ["terminal"],
+        ),
+        (
+            "enable_switch_llm_tool",
+            False,
+            [{"name": "terminal"}, {"name": "switch_llm"}],
+            ["terminal"],
+        ),
+        (
+            "enable_switch_llm_tool",
+            True,
+            [{"name": "terminal"}],
+            ["terminal", "switch_llm"],
+        ),
+    ],
+)
+def test_current_payload_accepts_retired_switches_as_deprecated_input(
+    schema_version, switch, value, tools, expected
+) -> None:
+    payload = {"name": "oh", "llm_profile_ref": "d", "tools": tools, switch: value}
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+    profile = validate_agent_profile(payload)
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == expected
+    assert switch not in profile.model_dump(mode="json")
+
+
+def test_current_payload_without_retired_switches_keeps_tools_unset() -> None:
+    profile = validate_agent_profile({"name": "oh", "llm_profile_ref": "d"})
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is None
+
+
+@pytest.mark.parametrize("name", ["switch_llm", "SwitchLLMTool", "think", "finish"])
+def test_params_on_a_parameterless_builtin_are_rejected(name) -> None:
+    with pytest.raises(ValidationError, match="does not accept parameters"):
+        validate_agent_profile(
+            _current_payload(tools=[{"name": name, "params": {"a": 1}}])
+        )
+
+
+def test_v2_params_on_a_parameterless_builtin_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="does not accept parameters"):
+        validate_agent_profile(
+            {
+                "schema_version": 2,
+                "name": "oh",
+                "llm_profile_ref": "d",
+                "tools": [{"name": "switch_llm", "params": {"a": 1}}],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "tools", [None, [], [{"name": "terminal"}, {"name": "task_tool_set"}]]
+)
+def test_written_profile_round_trips_without_retired_switches(tools) -> None:
+    profile = validate_agent_profile(_current_payload(tools=tools))
+    written = profile.model_dump(mode="json")
+
+    assert written["schema_version"] == AGENT_PROFILE_SCHEMA_VERSION
+    assert "enable_sub_agents" not in written
+    assert "enable_switch_llm_tool" not in written
+    assert validate_agent_profile(written) == profile
+
+
+def test_saving_a_copy_under_a_new_name_keeps_the_selected_tools() -> None:
+    stored = validate_agent_profile(_current_payload())
+    copy = {
+        **stored.model_dump(mode="json"),
+        "name": "copy",
+        "tools": [{"name": "terminal"}, {"name": "glob"}],
+    }
+
+    profile = validate_agent_profile(copy)
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["terminal", "glob"]
+
+
+def _current_payload(**fields: object) -> dict[str, object]:
+    return {
+        "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+        "name": "oh",
+        "llm_profile_ref": "d",
+        **fields,
+    }
+
+
+def test_tools_canonicalize_builtin_spellings_once() -> None:
+    profile = validate_agent_profile(
+        _current_payload(
+            tools=[
+                {"name": "FinishTool"},
+                {"name": "terminal"},
+                {"name": "finish", "params": {"response_schema": {"type": "object"}}},
+                {"name": "SwitchLLMTool"},
+            ]
+        )
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [(tool.name, tool.params) for tool in profile.tools or []] == [
+        ("finish", {"response_schema": {"type": "object"}}),
+        ("terminal", {}),
+        ("switch_llm", {}),
+    ]
+
+
+def test_retired_switch_does_not_mask_malformed_tools() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            _current_payload(
+                schema_version=2, tools="terminal", enable_switch_llm_tool=False
+            )
+        )
+
+
+def test_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported"):
+        validate_agent_profile(
+            {
+                "name": "oh",
+                "llm_profile_ref": "d",
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION + 1,
+            }
+        )
+
+
+def test_rejects_non_integer_schema_version() -> None:
+    with pytest.raises(TypeError, match="must be an integer"):
+        validate_agent_profile(
+            {"name": "oh", "llm_profile_ref": "d", "schema_version": "1"}
+        )
+
+
+def test_rejects_negative_schema_version() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        validate_agent_profile(
+            {"name": "oh", "llm_profile_ref": "d", "schema_version": -1}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Identity: id (stable UUID) vs name (renameable)
+# ---------------------------------------------------------------------------
+
+
+def test_id_is_uuid_and_autogenerated() -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
+    assert isinstance(profile.id, UUID)
+    other = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
+    assert profile.id != other.id
+
+
+def test_explicit_id_is_preserved_across_round_trip() -> None:
+    fixed = uuid4()
+    profile = validate_agent_profile(
+        {"name": "oh", "llm_profile_ref": "d", "id": str(fixed)}
+    )
+    assert profile.id == fixed
+    assert validate_agent_profile(profile.model_dump(mode="json")).id == fixed
+
+
+def test_name_is_required() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile({"llm_profile_ref": "d"})
+
+
+# ---------------------------------------------------------------------------
+# Secret-free at rest
+# ---------------------------------------------------------------------------
+
+
+def test_openhands_profile_persists_no_secret_fields() -> None:
+    dumped = OpenHandsAgentProfile(name="oh", llm_profile_ref="default").model_dump(
+        mode="json"
+    )
+    # The profile carries a *reference*, never the credential itself.
+    assert "llm" not in dumped
+    assert "api_key" not in dumped
+    assert "llm_profile_ref" in dumped
+
+
+def test_acp_profile_persists_no_secret_fields() -> None:
+    dumped = ACPAgentProfile(name="acp", acp_server="claude-code").model_dump(
+        mode="json"
+    )
+    # No embedded credential and no secret bag on the profile.
+    for key in ("llm", "api_key", "secrets", "agent_context"):
+        assert key not in dumped
+
+
+def test_verification_field_cannot_carry_a_secret() -> None:
+    """The verification block is secret-free: ``critic_api_key`` is not a field,
+    so a payload supplying it is stripped and can never be exposed at rest."""
+    profile = validate_agent_profile(
+        {
+            "name": "oh",
+            "llm_profile_ref": "default",
+            "verification": {
+                "critic_enabled": True,
+                "critic_model_name": "gpt-5.5",
+                "critic_api_key": "sk-real-secret-value",
+            },
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert not hasattr(profile.verification, "critic_api_key")
+    assert profile.verification.critic_enabled is True
+    assert profile.verification.critic_model_name == "gpt-5.5"
+
+    # Even forcing secret exposure must not surface the value (it isn't stored).
+    exposed = profile.model_dump(mode="json", context={"expose_secrets": True})
+    assert "critic_api_key" not in exposed["verification"]
+    assert "sk-real-secret-value" not in json.dumps(exposed)
+
+
+def test_openhands_profile_has_no_embedded_skills_field() -> None:
+    """Profiles no longer carry embedded ``skills`` (#4017): the field is gone,
+    and ``extra="forbid"`` rejects a stray one rather than silently accepting
+    or dropping it. This is what makes the profile genuinely secret-free at
+    rest — the only field that could ever carry a secret (``skills[].mcp_tools``)
+    is gone."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+                "skills": [],
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Removed fields remain invalid in current-version payloads.  ``skills`` is an
+# exception for v1 payloads because the v1-to-v2 migration explicitly retires it.
+# ---------------------------------------------------------------------------
+
+
+def test_current_profile_with_skills_field_is_rejected() -> None:
+    """A v2 payload must not retain the retired embedded ``skills`` field."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skills": [{"name": "old-skill", "content": "do stuff"}],
+            }
+        )
+
+
+def test_removed_skill_refs_field_is_rejected() -> None:
+    """The allow-list ``skill_refs`` was replaced by the ``disabled_skills``
+    deny-list and never shipped, so a payload carrying it is rejected."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 1,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skill_refs": ["pdf-tools"],
+            }
+        )
+
+
+def test_payload_without_disabled_skills_adopts_empty_default() -> None:
+    """A payload that omits ``disabled_skills`` picks up the model default —
+    ``[]`` (all discovered skills)."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "agent_kind": "openhands",
+            "name": "oh",
+            "llm_profile_ref": "default",
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == []
+    assert profile.disabled_skills == []

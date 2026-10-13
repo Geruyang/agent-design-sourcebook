@@ -1,0 +1,95 @@
+import logger from '../logger';
+import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
+import {
+  RunCompactionItem,
+  RunHandoffCallItem,
+  RunHandoffOutputItem,
+  RunItem,
+  RunMessageOutputItem,
+  RunReasoningItem,
+  RunToolApprovalItem,
+  RunToolCallItem,
+  RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
+} from '../items';
+import { StreamedRunResult } from '../result';
+
+export { isAbortError } from '../utils/abortSignals';
+
+function getRunItemStreamEventName(
+  item: RunItem,
+): RunItemStreamEventName | undefined {
+  if (item instanceof RunMessageOutputItem) {
+    return 'message_output_created';
+  }
+  if (item instanceof RunHandoffCallItem) {
+    return 'handoff_requested';
+  }
+  if (item instanceof RunHandoffOutputItem) {
+    return 'handoff_occurred';
+  }
+  // tool_search uses dedicated run items because its payload shape and
+  // downstream UI correlation differ from generic tool call/output events.
+  if (item instanceof RunToolSearchCallItem) {
+    return 'tool_search_called';
+  }
+  if (item instanceof RunToolSearchOutputItem) {
+    return 'tool_search_output_created';
+  }
+  if (item instanceof RunToolCallItem) {
+    return 'tool_called';
+  }
+  if (item instanceof RunToolCallOutputItem) {
+    return 'tool_output';
+  }
+  if (item instanceof RunReasoningItem) {
+    return 'reasoning_item_created';
+  }
+  if (item instanceof RunCompactionItem) {
+    return 'compaction_item_created';
+  }
+  if (item instanceof RunToolApprovalItem) {
+    return 'tool_approval_requested';
+  }
+  return undefined;
+}
+
+function enqueueRunItemStreamEvent(
+  result: StreamedRunResult<any, any>,
+  item: RunItem,
+): void {
+  const itemName = getRunItemStreamEventName(item);
+  if (!itemName) {
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.warn('Unknown item type. Item data is redacted.');
+    } else {
+      logger.warn('Unknown item type: ', item);
+    }
+    return;
+  }
+  result._addItem(new RunItemStreamEvent(itemName, item));
+}
+
+export function streamStepItemsToRunResult(
+  result: StreamedRunResult<any, any>,
+  items: RunItem[],
+): void {
+  for (const item of items) {
+    enqueueRunItemStreamEvent(result, item);
+  }
+}
+
+export function addStepToRunResult(
+  result: StreamedRunResult<any, any>,
+  step: { newStepItems: RunItem[] },
+  options?: { skipItems?: Set<RunItem> },
+): void {
+  const skippedItems = options?.skipItems;
+  for (const item of step.newStepItems) {
+    if (skippedItems?.has(item)) {
+      continue;
+    }
+    enqueueRunItemStreamEvent(result, item);
+  }
+}

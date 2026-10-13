@@ -1,0 +1,133 @@
+---
+title: "Scheduled Agents"
+sidebarTitle: "Scheduled Agents"
+description: "Run agents on cron schedules for recurring automations like daily summaries, code reviews, and maintenance tasks."
+---
+
+The SDK supports running agents on cron schedules. Scheduled agents persist across process restarts and run independently of any client application.
+
+## How Scheduling Works
+
+1. You define a schedule (cron expression + prompt + config)
+2. The SDK stores the schedule and manages execution
+3. At each trigger time a new session is created and the agent is run
+4. Results are stored, and the CLI can post them to a chat through a connector (Telegram, Slack, and others)
+
+Scheduled agents rely on the [hub-spoke architecture](/sdk/architecture/hub-spoke) that is part of `ClineCore`. The hub runs as a background process on your machine. It starts automatically when needed and persists schedules across restarts.
+
+## Creating Schedules Programmatically with Cline SDK
+
+```typescript
+import { ClineCore } from "@cline/sdk"
+
+const cline = await ClineCore.create({
+  clientName: "scheduler",
+  automation: true,
+})
+
+// Automation starts with ClineCore. Pass automation: { autoStart: false }
+// to start it later with cline.automation.start().
+const runs = cline.automation.listRuns()
+```
+
+`cline.automation` reads schedule files from `~/.cline/cron/`, reconciles them, ingests events and lists runs. [`sdk/examples/cron`](https://github.com/cline/cline/tree/main/sdk/examples/cron) has sample schedule files.
+
+## Schedule Wizard with Cline CLI
+
+If you have the Cline CLI installed (`npm i -g cline`), run `cline schedule` to open an interactive menu for creating and managing schedules, browsing execution history, and viewing performance statistics.
+
+## Creating Schedules with Flags
+
+```bash
+# Daily at 9 AM on weekdays
+cline schedule create "PR summary" \
+  --cron "0 9 * * MON-FRI" \
+  --prompt "List all open PRs, their review status, and any that have been open more than 3 days" \
+  --workspace /path/to/repo
+
+# Every 6 hours
+cline schedule create "Health check" \
+  --cron "0 */6 * * *" \
+  --prompt "Run the test suite and report any failures" \
+  --workspace /path/to/project
+
+# Monday mornings
+cline schedule create "Weekly digest" \
+  --cron "0 8 * * MON" \
+  --prompt "Summarize last week's commits, PRs merged, and issues closed" \
+  --workspace /path/to/repo
+```
+
+[Scheduling](/cli/scheduling) lists the other options, such as `--provider` and `--model`.
+
+## Managing Schedules
+
+```bash
+# List all schedules
+cline schedule list
+
+# Trigger a schedule immediately (without waiting for cron)
+cline schedule trigger <schedule-id>
+
+# Pause a schedule
+cline schedule pause <schedule-id>
+
+# Resume a paused schedule
+cline schedule resume <schedule-id>
+
+# Delete a schedule
+cline schedule delete <schedule-id>
+
+# View execution history
+cline schedule history <schedule-id>
+```
+
+## Cron Expression Reference
+
+| Expression | Schedule |
+|-----------|----------|
+| `0 9 * * MON-FRI` | 9 AM, Monday through Friday |
+| `0 */6 * * *` | Every 6 hours |
+| `0 8 * * MON` | 8 AM every Monday |
+| `30 17 * * *` | 5:30 PM every day |
+| `0 0 1 * *` | Midnight on the 1st of each month |
+| `*/30 * * * *` | Every 30 minutes |
+
+## Use Cases
+
+### Daily Standup Summary
+
+```bash
+cline schedule create "Standup prep" \
+  --cron "0 8 * * MON-FRI" \
+  --prompt "Summarize: (1) PRs merged yesterday, (2) PRs currently in review, (3) open issues assigned to team members. Format as a brief standup update." \
+  --workspace /path/to/repo
+```
+
+### Automated Dependency Updates
+
+```bash
+cline schedule create "Dependency check" \
+  --cron "0 10 * * MON" \
+  --prompt "Check for outdated npm dependencies. For any with security vulnerabilities, create a branch with the update and open a PR." \
+  --workspace /path/to/project
+```
+
+### Codebase Health Report
+
+```bash
+cline schedule create "Code health" \
+  --cron "0 6 * * MON" \
+  --prompt "Analyze the codebase for: (1) files with no test coverage, (2) TODO/FIXME comments older than 30 days, (3) functions longer than 100 lines. Produce a health report." \
+  --workspace /path/to/project
+```
+
+## Concurrency Limits
+
+- Each schedule runs one execution at a time unless you raise `--max-parallel`. An execution that comes due while the schedule is busy waits in the queue.
+- The hub runs at most 10 scheduled executions at once across all schedules. `ClineCore.create({ automation: { globalMaxConcurrency } })` changes this limit for the SDK's own scheduler.
+- If the hub was stopped when a run was due, it queues one catch-up run when it starts again, not one for each missed time.
+
+## Routing Results
+
+The CLI can post each run's final reply to a chat through a running [connector](/cli/connectors). [Routing Results](/cli/scheduling#routing-results) shows how to set the chat.

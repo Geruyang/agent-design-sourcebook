@@ -1,0 +1,330 @@
+/*
+ * The contextual settings shell: a tinted 240px navigation column that lists
+ * every scope the reader can reach, and one content column whose left edge
+ * never moves between sections.
+ */
+.layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--a13n-canvas);
+}
+.outline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 12px 24px;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+  background: var(--sidebar);
+}
+.back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--a13n-radius-row);
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-sm);
+  text-decoration: none;
+}
+.back:hover {
+  background: var(--a13n-hover);
+  color: var(--a13n-text);
+}
+.search input {
+  min-height: 32px;
+  height: 32px;
+  font-size: var(--a13n-text-sm);
+  background: var(--a13n-surface);
+  border-color: transparent;
+}
+.search input:focus-visible {
+  border-color: var(--a13n-input-border);
+}
+.outline nav {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  align-content: start;
+}
+.scope {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.scopeLabel {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 8px 6px;
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--a13n-secondary);
+}
+.scopeName {
+  flex: 1;
+  min-width: 0;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline nav a {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: var(--a13n-radius-row);
+  line-height: 18px;
+  color: var(--a13n-secondary);
+  text-decoration: none;
+  font-size: var(--a13n-text-sm);
+}
+.outline nav a svg {
+  flex-shrink: 0;
+}
+.outline nav a:hover {
+  background: var(--a13n-hover);
+  color: var(--a13n-text);
+}
+.outline nav a[aria-current] {
+  background: var(--a13n-selected);
+  color: var(--a13n-text);
+}
+.noResults {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  padding: 0 8px;
+  margin: 0;
+}
+.surface {
+  min-width: 0;
+}
+.content {
+  padding: 36px 48px 96px;
+  width: 100%;
+  max-width: 1040px;
+  min-width: 0;
+  margin: 0 auto;
+}
+/* A section that edits fields keeps a reading measure; one that lists resources uses the column. */
+.content:not([data-content="collection"]) > * {
+  max-width: 680px;
+}
+.heading {
+  margin-bottom: 28px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.heading h1 {
+  font-size: var(--a13n-text-2xl);
+  line-height: 1.2;
+  letter-spacing: var(--a13n-tracking-title);
+  font-weight: 600;
+  margin: 0;
+}
+.heading p {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-sm);
+  line-height: 20px;
+  margin: 6px 0 0;
+}
+.headingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.headingActions:empty,
+.headingActions[data-quiet] {
+  display: none;
+}
+
+/* Section content */
+.sections {
+  display: grid;
+  gap: 36px;
+}
+.note {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  margin: 0;
+}
+.nameControl {
+  width: 260px;
+  max-width: 100%;
+}
+
+/* Detail pane inside a settings section (a service account and its keys). */
+.detailHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.detailIdentity {
+  display: grid;
+  min-width: 0;
+}
+.detailIdentity strong {
+  font-size: var(--a13n-text-xl);
+  font-weight: 600;
+  line-height: 26px;
+}
+.detailIdentity span {
+  font-size: var(--a13n-text-xs);
+  color: var(--a13n-secondary);
+}
+.detailActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 4px 24px;
+  padding: 14px 16px;
+  border-radius: var(--a13n-radius-group);
+  background: var(--a13n-surface);
+  margin: 0;
+}
+.facts div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.facts dt {
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+  color: var(--a13n-secondary);
+}
+.facts dd {
+  margin: 0;
+  font-size: var(--a13n-text-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobileNavigation {
+  display: none;
+}
+@media (max-width: 1000px) {
+  .layout {
+    grid-template-columns: 216px minmax(0, 1fr);
+  }
+  .content {
+    padding: 40px 24px 80px;
+  }
+}
+@media (max-width: 720px) {
+  .layout {
+    display: block;
+  }
+  .mobileNavigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--sidebar);
+    font-size: var(--a13n-text-xs);
+    color: var(--a13n-secondary);
+  }
+  .mobileNavigation button[aria-expanded="true"] svg {
+    transform: rotate(180deg);
+  }
+  .outline {
+    display: none;
+    position: static;
+    height: auto;
+    padding: 12px;
+  }
+  .outline[data-open="true"] {
+    display: flex;
+  }
+  .content {
+    padding: 28px 20px 64px;
+  }
+  .heading {
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+}
+
+/* Name and avatar on one line inside a table cell. */
+.inlineIdentity {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.inlineIdentity > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* An action the content places itself, aligned like a page action. */
+.inlineAction {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* A role is a classification, not a state: a chip without a status dot. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--a13n-radius-chip);
+  background: var(--a13n-surface);
+  color: var(--a13n-text-supporting);
+  font-size: var(--a13n-text-xs);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Back out of a nested settings pane. */
+.contentBack {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  text-decoration: none;
+  width: fit-content;
+}
+.contentBack:hover {
+  color: var(--a13n-text);
+}
+
+/* Two lines in one table cell: the name, then what it refers to. */
+.stacked {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.stacked > span {
+  font-size: var(--a13n-text-sm);
+}
+.stacked > small,
+.stacked > span + * {
+  font-size: var(--a13n-text-xs);
+  color: var(--a13n-secondary);
+}

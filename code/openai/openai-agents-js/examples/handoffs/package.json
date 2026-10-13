@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "name": "handoffs",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "@openai/agents-core": "workspace:*",
+    "zod": "^4.3.5"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "node index.ts",
+    "start:types": "node types.ts",
+    "start:is-enabled": "node is-enabled.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
+  }
+}

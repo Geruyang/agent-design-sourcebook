@@ -1,0 +1,409 @@
+/* Column ----------------------------------------------------------------- */
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 100%;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 8px 24px 0;
+}
+.transcript {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  align-content: start;
+  padding-bottom: 20px;
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.6;
+}
+/* History loading remains an aside rather than a primary action. */
+.earlierRuns {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+.earlierRunsAction {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-weight: 400;
+}
+.earlierRunsAction:hover {
+  color: var(--a13n-text);
+}
+
+/* One turn --------------------------------------------------------------- */
+.turn {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.turnAction {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -6px;
+}
+.turnAction a,
+.turnAction button,
+.separatorLink {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  text-decoration: none;
+}
+.turnAction a:hover,
+.turnAction button:hover,
+.separatorLink:hover {
+  color: var(--a13n-text);
+  text-decoration: underline;
+}
+
+/* What the person sent --------------------------------------------------- */
+.userTurn {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  min-width: 0;
+}
+.userCaption {
+  padding-right: 4px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+}
+.userMessage {
+  max-width: 78%;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: 16px 16px 6px 16px;
+  background: var(--a13n-surface);
+  font-size: var(--a13n-text-md);
+  line-height: 1.6;
+}
+.guidanceMessage {
+  display: grid;
+  gap: 3px;
+  background: transparent;
+  border: 1px dashed var(--a13n-border);
+}
+.guidanceLabel {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-2xs);
+  font-weight: 500;
+}
+.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--a13n-text-md);
+  line-height: 1.6;
+}
+/* The second, quieter fact about a request: a terminal status, a parent task. */
+.requestNote {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.5;
+}
+.resolutions {
+  display: grid;
+  gap: 10px;
+  font-size: var(--a13n-text-sm);
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: var(--a13n-radius-tile);
+  background: var(--a13n-elevated);
+  box-shadow: var(--a13n-shadow-subtle);
+  color: var(--a13n-secondary);
+}
+.attachmentCopy {
+  display: grid;
+  min-width: 0;
+}
+.attachmentCopy strong {
+  overflow: hidden;
+  color: var(--a13n-text);
+  font-size: var(--a13n-text-xs);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachmentCopy small {
+  font-size: var(--a13n-text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the agent answered ------------------------------------------------ */
+.agentTurn {
+  min-width: 0;
+}
+.agentHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+.agentHeading strong {
+  font-size: var(--a13n-text-xs);
+  font-weight: 500;
+}
+.agentAvatar {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--a13n-elevated);
+  box-shadow: var(--a13n-shadow-subtle);
+  color: var(--a13n-text);
+  font-size: var(--a13n-text-2xs);
+}
+.agentStatus {
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.agentStatus[data-state="waiting"] {
+  color: var(--a13n-warning);
+}
+.agentContent {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding-left: 28px;
+}
+.agentMessage {
+  min-width: 0;
+  font-size: var(--a13n-text-md);
+  line-height: 1.65;
+}
+.agentMessage[data-streaming] > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--a13n-text);
+  animation: caret 1.1s step-end infinite;
+}
+.thinking {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-md);
+}
+.messageActions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 4px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.runActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agentMessage:hover .messageActions,
+.agentMessage:focus-within .messageActions {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .messageActions {
+    opacity: 1;
+  }
+}
+.workingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.workingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workingDot,
+  .messageActions,
+  .agentMessage[data-streaming] > :last-child::after {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Failure and structured output ------------------------------------------ */
+.failure {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--a13n-radius-group);
+  background: color-mix(in srgb, var(--a13n-danger) 7%, var(--a13n-canvas));
+}
+.failureHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--a13n-danger);
+}
+.failure h3 {
+  flex: 1;
+  margin: 0;
+  color: var(--a13n-text);
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+}
+.failure p {
+  margin: 0;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.6;
+}
+.failureActions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+.structuredOutput,
+.inlineDisclosure {
+  min-width: 0;
+}
+/* Inside the danger notice the error fold is part of it, not a second block. */
+.failure [data-slot="disclosure-surface"] {
+  background: transparent;
+}
+
+/* Dock ------------------------------------------------------------------- */
+.dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 0 12px;
+  background: linear-gradient(
+    to top,
+    var(--a13n-canvas) 72%,
+    color-mix(in srgb, var(--a13n-canvas) 0%, transparent)
+  );
+}
+.dockNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: var(--a13n-radius-row);
+  background: var(--a13n-surface);
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  line-height: 1.5;
+}
+.dockNotice > span {
+  flex: 1;
+  min-width: 0;
+}
+.dockLink {
+  color: var(--a13n-text);
+  font-weight: 500;
+  text-decoration: none;
+}
+.dockLink:hover {
+  text-decoration: underline;
+}
+.dockReceipt {
+  margin: 0;
+  padding-left: 2px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+}
+.stopButton:hover {
+  background: color-mix(in srgb, var(--a13n-danger) 12%, transparent);
+  color: var(--a13n-danger);
+}
+/* A floating pill over the transcript: it must read as lifted off the page,
+   so it outranks the shared button surface. */
+.dock .jumpToLatest {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  margin-bottom: 10px;
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--a13n-elevated);
+  box-shadow:
+    var(--a13n-shadow),
+    0 0 0 1px color-mix(in srgb, var(--a13n-text) 8%, transparent);
+}
+
+@media (max-width: 680px) {
+  .run {
+    padding-inline: 14px;
+  }
+  .userMessage {
+    max-width: 92%;
+  }
+  .agentContent {
+    padding-left: 0;
+  }
+}
+.branchBoundary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  margin-bottom: 20px;
+}
+.branchBoundary::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--a13n-border);
+}

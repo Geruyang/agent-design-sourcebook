@@ -1,0 +1,809 @@
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from litellm.exceptions import (
+    APIConnectionError,
+    APIError,
+    ContextWindowExceededError,
+    RateLimitError,
+)
+from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.utils import (
+    Choices,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    Usage,
+)
+from pydantic import SecretStr
+
+from openhands.sdk.llm import (
+    LLM,
+    FallbackStrategy,
+    LLMCallContext,
+    Message,
+    TextContent,
+)
+from openhands.sdk.llm.exceptions import (
+    LLMContextWindowExceedError,
+    LLMRateLimitError,
+    LLMServiceUnavailableError,
+)
+
+
+def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
+    return ModelResponse(
+        id="resp-1",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1,
+        model=model,
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+def _get_llm(model: str = "gpt-4o", **kw) -> LLM:
+    return LLM(
+        model=model,
+        api_key=SecretStr("k"),
+        usage_id=f"test-{model}",
+        num_retries=0,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        **kw,
+    )
+
+
+_MSGS = [Message(role="user", content=[TextContent(text="hi")])]
+
+
+def _patch_resolve(primary: LLM, fallback_instances: list[LLM]):
+    """Pre-populate the resolved fallback cache, bypassing LLMProfileStore."""
+    assert primary.fallback_strategy is not None
+    primary.fallback_strategy._resolved = fallback_instances
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_primary_succeeds_fallback_not_tried(mock_comp):
+    mock_comp.return_value = _get_mock_response("primary ok")
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "primary ok"
+    # Only one call – no fallback attempted
+    assert mock_comp.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_fallback_succeeds_after_primary_transient_failure(mock_comp):
+    primary_error = APIConnectionError(
+        message="connection reset", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("fallback ok", model="fallback-model")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_all_fallbacks_fail_raises_primary_error(mock_comp):
+    mock_comp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    fb1 = _get_llm("fb1")
+    fb2 = _get_llm("fb2")
+    strategy = FallbackStrategy(fallback_llms=["fb1-profile", "fb2-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb1, fb2])
+
+    # APIConnectionError is mapped to
+    # LLMServiceUnavailableError by map_provider_exception
+    with pytest.raises(LLMServiceUnavailableError):
+        _ = primary.completion(_MSGS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("quota_code", ["usage_limit_reached", "insufficient_quota"])
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+async def test_quota_exhaustion_fails_over_without_retries(
+    mock_comp, mock_acomp, use_async, quota_code
+):
+    """A hard quota error must fail over immediately, not retry the primary.
+
+    ``usage_limit_reached`` is deterministic (won't recover until the limit
+    resets/raises), so the retry loop should skip retries and hand control to
+    the FallbackStrategy on the first attempt.
+    """
+    primary_error = RateLimitError(
+        message=(
+            f'RateLimitError: OpenAIException - {{"error":{{"type":"{quota_code}",'
+            '"message":"The usage limit has been reached","plan_type":"team"}}'
+        ),
+        llm_provider="openai",
+        model="gpt-5.6-sol",
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-5.6-sol":
+            raise primary_error
+        return _get_mock_response("fallback ok", model="fallback-model")
+
+    mock_comp.side_effect = side_effect
+    mock_acomp.side_effect = side_effect
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    # num_retries > 0 proves the quota error is not retried before fallback.
+    primary = LLM(
+        model="gpt-5.6-sol",
+        api_key=SecretStr("k"),
+        usage_id="test-gpt-5.6-sol",
+        fallback_strategy=strategy,
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.acompletion(_MSGS) if use_async else primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+    # Primary was attempted exactly once (no retries), then the fallback.
+    assert mock_comp.call_count + mock_acomp.await_count == 2
+    assert mock_comp.call_args.kwargs["model"] == "fallback-model"
+    if use_async:
+        assert mock_acomp.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+async def test_transient_quota_rate_limit_still_retries(
+    mock_comp, mock_acomp, use_async
+):
+    """A transient provider quota is still retried before any fallback."""
+    transient = RateLimitError(
+        message=(
+            "Quota exceeded for quota metric Generate Content API requests per minute"
+        ),
+        llm_provider="vertex_ai",
+        model="gemini-test",
+    )
+    mock_comp.side_effect = transient
+    mock_acomp.side_effect = transient
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    primary = LLM(
+        model="gemini-test",
+        api_key=SecretStr("k"),
+        usage_id="test-gemini",
+        fallback_strategy=strategy,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    _patch_resolve(primary, [fb])
+
+    with pytest.raises(LLMRateLimitError):
+        if use_async:
+            await primary.acompletion(_MSGS)
+        else:
+            primary.completion(_MSGS)
+    # num_retries=2 → 2 primary attempts, then 1 fallback attempt (which also
+    # fails). This proves the transient 429 was retried before fallback.
+    assert mock_comp.call_count + mock_acomp.await_count == 3
+    assert mock_comp.call_args.kwargs["model"] == "fallback-model"
+    if use_async:
+        assert mock_acomp.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("denied_model", ["gpt-4o", "fallback-model"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"error":{"type":"budget_exceeded","message":"Team limit reached"}}',
+        "Budget has been exceeded! User=u, Team=t. Current cost: 2, Max budget: 1",
+    ],
+)
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+async def test_budget_denial_stops_retries_and_fallbacks(
+    mock_comp, mock_acomp, use_async, denied_model, message
+):
+    attempted_models = []
+
+    def complete(**kwargs):
+        model = kwargs["model"]
+        attempted_models.append(model)
+        if model == denied_model:
+            raise RateLimitError(message=message, llm_provider="openai", model=model)
+        if model == "gpt-4o":
+            raise APIConnectionError(message="down", llm_provider="openai", model=model)
+        return _get_mock_response("must not bypass the budget", model=model)
+
+    mock_comp.side_effect = complete
+    mock_acomp.side_effect = complete
+    primary = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("k"),
+        usage_id="test-budget",
+        fallback_strategy=FallbackStrategy(fallback_llms=["first", "second"]),
+        num_retries=3 if denied_model == "gpt-4o" else 1,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    first_fallback = LLM(
+        model="fallback-model",
+        api_key=SecretStr("k"),
+        usage_id="test-budget-fallback",
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    _patch_resolve(primary, [first_fallback, _get_llm("second-fallback")])
+
+    with pytest.raises(LLMRateLimitError, match="budget|Budget"):
+        if use_async:
+            await primary.acompletion(_MSGS)
+        else:
+            primary.completion(_MSGS)
+
+    assert attempted_models == (
+        ["gpt-4o"] if denied_model == "gpt-4o" else ["gpt-4o", "fallback-model"]
+    )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_non_transient_error_skips_fallback(mock_comp):
+    """A plain Exception is NOT in LLM_FALLBACK_EXCEPTIONS, so fallback
+    should be skipped."""
+    mock_comp.side_effect = Exception("bad request")
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    with pytest.raises(Exception, match="bad request"):
+        _ = primary.completion(_MSGS)
+
+    # Only the primary call – fallback never attempted
+    assert mock_comp.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_no_fallbacks_configured_normal_error(mock_comp):
+    mock_comp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    primary = _get_llm("gpt-4o")  # no fallback_strategy
+    # APIConnectionError is mapped to
+    # LLMServiceUnavailableError by map_provider_exception
+    with pytest.raises(LLMServiceUnavailableError):
+        _ = primary.completion(_MSGS)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_metrics_merged_from_fallback(mock_comp):
+    primary_error = RateLimitError(
+        message="rate limited", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("ok", model="fb")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    cost_before = primary.metrics.accumulated_cost
+    token_usages_before = len(primary.metrics.token_usages)
+    resp = primary.completion(_MSGS)
+
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "ok"
+    # The fallback's telemetry adds cost/tokens; verify they got merged
+    # into the primary's metrics (accumulated_cost should be >= what it was).
+    assert primary.metrics.accumulated_cost >= cost_before
+
+    # Individual token_usage records carry the fallback model name,
+    # so callers can distinguish which LLM produced the usage.
+    new_usages = primary.metrics.token_usages[token_usages_before:]
+    assert len(new_usages) >= 1
+    assert any(u.model == "fb" for u in new_usages), (
+        "Expected at least one token usage record from the fallback model 'fb'"
+    )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_second_fallback_succeeds(mock_comp):
+    # Second fallback succeeds after first fallback fails
+    call_count = {"n": 0}
+
+    def side_effect(**kwargs):
+        call_count["n"] += 1
+        model = kwargs.get("model")
+        if model in ("gpt-4o", "fb1"):
+            raise APIConnectionError(message="down", llm_provider="openai", model=model)
+        return _get_mock_response("fb2 ok", model="fb2")
+
+    mock_comp.side_effect = side_effect
+
+    fb1 = _get_llm("fb1")
+    fb2 = _get_llm("fb2")
+    strategy = FallbackStrategy(fallback_llms=["fb1-profile", "fb2-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb1, fb2])
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fb2 ok"
+    # primary(1) + fb1(1) + fb2(1) = 3
+    assert call_count["n"] == 3
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_fallback_succeeds(mock_resp):
+    """Ensure fallback works through the responses() code path too."""
+    from litellm.types.llms.openai import ResponsesAPIResponse
+
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    # Build a minimal ResponsesAPIResponse for the fallback
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="fb",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return fallback_response
+
+    mock_resp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.responses(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fb ok"
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_non_transient_skips_fallback(mock_resp):
+    mock_resp.side_effect = Exception("not transient")
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    with pytest.raises(Exception, match="not transient"):
+        primary.responses(_MSGS)
+
+    assert mock_resp.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
+    """Verify that fallback profile names are resolved through LLMProfileStore."""
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("from store", model="claude-sonnet-4-20250514")
+
+    mock_comp.side_effect = side_effect
+
+    # Save a fallback profile to a temp store
+    store = LLMProfileStore(base_dir=tmp_path)
+    fb_llm = _get_llm("claude-sonnet-4-20250514")
+    store.save("my-fallback", fb_llm, include_secrets=True)
+
+    strategy = FallbackStrategy(
+        fallback_llms=["my-fallback"], profile_store_dir=tmp_path
+    )
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "from store"
+
+
+# =========================================================================
+# Async error-handling parity tests (acompletion / aresponses)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_fallback_on_transport_error(mock_acomp, mock_comp):
+    """acompletion must invoke fallback when the primary transport raises."""
+    primary_error = APIConnectionError(
+        message="connection reset", llm_provider="openai", model="gpt-4o"
+    )
+    mock_acomp.side_effect = primary_error
+
+    # Fallback uses sync completion path
+    mock_comp.return_value = _get_mock_response("fallback ok", model="fallback-model")
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.acompletion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_maps_context_window_error(mock_acomp):
+    """acompletion must map ContextWindowExceededError to SDK type."""
+    mock_acomp.side_effect = ContextWindowExceededError(
+        message="context window exceeded",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMContextWindowExceedError):
+        await primary.acompletion(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_maps_connection_error(mock_acomp):
+    """acompletion must map APIConnectionError to LLMServiceUnavailableError."""
+    mock_acomp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMServiceUnavailableError):
+        await primary.acompletion(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_fallback_on_transport_error(mock_aresp, mock_resp):
+    """aresponses must invoke fallback when the primary transport raises."""
+
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    mock_aresp.side_effect = primary_error
+
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="fb",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+    mock_resp.return_value = fallback_response
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.aresponses(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fb ok"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_maps_context_window_error(mock_aresp):
+    """aresponses must map ContextWindowExceededError to SDK type."""
+    mock_aresp.side_effect = ContextWindowExceededError(
+        message="context window exceeded",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMContextWindowExceedError):
+        await primary.aresponses(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_maps_connection_error(mock_aresp):
+    """aresponses must map APIConnectionError to LLMServiceUnavailableError."""
+    mock_aresp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMServiceUnavailableError):
+        await primary.aresponses(_MSGS)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_fallback_forwards_caller_kwargs(mock_comp):
+    """Caller kwargs (e.g. ``metadata``) must reach the fallback LLM call.
+
+    Regression guard for the ``_caller_kwargs`` forwarding added alongside
+    the prompt-cache-too-small retry: the fallback path now receives the
+    same kwargs the caller passed to the primary's ``completion()``.
+    """
+    primary_error = APIConnectionError(
+        message="connection reset", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("fallback ok", model="fallback-model")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS, metadata={"trace": "fallback-kwargs"})
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+
+    # Primary call (failed) + fallback call (succeeded).
+    assert mock_comp.call_count == 2
+    fallback_call_kwargs = mock_comp.call_args_list[1].kwargs
+    assert fallback_call_kwargs.get("metadata") == {"trace": "fallback-kwargs"}
+
+
+# =========================================================================
+# call_context propagation through fallback paths (#3443)
+# =========================================================================
+
+_CTX = LLMCallContext(prompt_cache_key="cache-abc", session_id="sess-xyz")
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_fallback_receives_call_context(mock_comp):
+    """call_context must reach the fallback LLM's completion call."""
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("fb ok", model="gpt-4o-mini")
+
+    mock_comp.side_effect = side_effect
+
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    # The fallback call (second call) must carry the context values
+    fb_call_kwargs = mock_comp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_fallback_receives_call_context(mock_resp):
+    """call_context must reach the fallback LLM's responses call."""
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="gpt-4o-mini",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return fallback_response
+
+    mock_resp.side_effect = side_effect
+
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.responses(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_fallback_receives_call_context(mock_acomp, mock_comp):
+    """call_context must reach the fallback through acompletion."""
+    mock_acomp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    mock_comp.return_value = _get_mock_response("fb ok", model="gpt-4o-mini")
+
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.acompletion(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_comp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
+    """call_context must reach the fallback through aresponses."""
+    mock_aresp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="gpt-4o-mini",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+    mock_resp.return_value = fallback_response
+
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.aresponses(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.parametrize(
+    "status", [408, 409, 429, 501, 505, 520, 522, 524, 599, 402, 403, 405, 406, 410]
+)
+def test_fallback_respects_provider_http_status(status):
+    strategy = FallbackStrategy(fallback_llms=["backup"])
+    error = APIError(
+        status_code=status,
+        message="Provider request failed",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    assert strategy.should_fallback(error) is (
+        status in (408, 409, 429) or status >= 500
+    )

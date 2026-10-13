@@ -1,0 +1,403 @@
+# Desktop App Example
+
+Tauri desktop shell + Bun sidecar backend + Next.js UI for running and inspecting Cline chat sessions.
+
+## Dev Commands
+
+From `apps/examples/desktop-app/`:
+
+- `bun run dev:headless` - Next.js UI (`http://localhost:3125`) and sidecar backend with a fresh shared approval credential
+- `bun run dev:web` - Next.js UI only (approval-gated tools require `dev:headless` or the native app)
+- `bun run dev:sidecar` - sidecar backend only (approval-gated tools require `dev:headless` or the native app)
+- `bun run dev` - Tauri desktop dev
+- `bun run build:web` - build production web assets only (includes the shared UI build)
+- `bun run build` - build web assets and the sidecar binary
+- `bun run build:sidecar` - build the Bun sidecar bundle
+- `bun run build:sidecar:bin` - compile the Bun sidecar into a local binary
+- `bun run build:binary` - build desktop binary
+- `bun run package:desktop` - package the current OS desktop app into `dist/desktop/`
+- `bun run typecheck` - TypeScript check
+
+### Checking webview changes
+
+Run `bun run build:web` from this directory when changing webview imports or shared browser APIs. Type checking and Vitest do not check the production browser bundle: a valid TypeScript import can still pull Node-only modules into a client chunk. Use `@cline/shared/browser` for runtime imports in the webview; the bare `@cline/shared` source alias points to the Node entry point.
+
+## Pull Requests
+
+The composer shows the current branch's GitHub pull request, merge status,
+changed-line totals, and CI checks. Click the PR number to open it in your
+browser, or expand CI to inspect individual checks and their logs. Status
+refreshes every 30 seconds while visible, when the app regains focus, and
+when you click refresh.
+
+This requires GitHub CLI (`gh`) installed and authenticated with `gh auth login`,
+and a GitHub.com `origin` remote (HTTPS or SSH). The row is hidden for the
+default branch, detached HEAD, and unsupported repositories. If the branch
+has no PR, **Create PR** opens GitHub's comparison form; push your commits
+before submitting the form. The app does not push commits or submit PRs itself.
+
+Missing or unauthenticated GitHub CLI also hides the row. Availability checks
+are shared across workspaces and cached for five minutes, so unavailable CLI
+installs do not spawn a failing process on every poll or window focus. After
+installing or signing into `gh`, the feature becomes available on the first
+refresh after the cache expires (or after restarting the desktop backend).
+Initial lookup failures stay hidden. Errors after a successful status load
+can be dismissed and remain dismissed through retries until a load succeeds.
+
+### Pull request telemetry
+
+These events use the desktop telemetry service and respect telemetry opt-out:
+
+| Event | Trigger |
+| --- | --- |
+| `desktop.pull_request.shown` | First visible PR/create row per mounted workspace and branch |
+| `desktop.pull_request.open_clicked` | Click the PR link |
+| `desktop.pull_request.create_clicked` | Click Create PR (intent only, not PR submission) |
+| `desktop.pull_request.checks_expanded` | Open the CI popover |
+| `desktop.pull_request.check_clicked` | Click a check's details link |
+| `desktop.pull_request.refresh_clicked` | Click manual refresh |
+
+Each event contains only `prState`, `ciState`, and `mergeTone` categories.
+The sidecar validates these values and strips extra fields. Repository/branch
+names, paths, PR numbers/titles, check names, and URLs are not included.
+Automatic polling does not emit additional impressions. Telemetry delivery
+does not block interactions, and failures do not interrupt the feature.
+
+## App Icons
+
+`src-tauri/app-icon.png` (1024x1024, edge-to-edge) is the source for
+`bun tauri icon`, which generates the Windows `.ico` and Linux PNGs in
+`src-tauri/icons/`. macOS is the exception: Dock icons are expected to have a
+transparent margin, with the artwork filling 824 of the 1024 canvas, so the
+committed `icons/icon.icns` is built from a padded copy of the source, and the
+selectable runtime icons in `icons/app/macos/` are padded copies of the
+Windows ones in `icons/app/`. To regenerate the macOS icon after changing the
+artwork:
+
+```bash
+cd src-tauri
+magick app-icon.png -resize 824x824 -background none -gravity center -extent 1024x1024 /tmp/app-icon-macos.png
+bun tauri icon /tmp/app-icon-macos.png -o /tmp/icons-macos && cp /tmp/icons-macos/icon.icns icons/icon.icns
+```
+
+## Customizing the macOS Install Window
+
+The drag-to-Applications window is configured by `bundle.macOS.dmg` in
+[`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json). Its artwork comes
+from the PNG sources in [`src-tauri/dmg/`](./src-tauri/dmg/); the
+`background.gen.tiff` Finder actually renders is a gitignored build artifact
+regenerated from them on every build.
+
+1. The current source artwork is `640x400`. Export `background.png` at 1x and
+   `background@2x.png` at 2x.
+2. Currently the app icons are centered at `(140, 200)` and
+   the Applications folder centered at `(500, 200)`. If updating artwork, update `appPosition`
+   and `applicationFolderPosition` to reposition the app icons.
+3. Build with `bun run build:binary`. Before compiling, the build validates
+   both PNG dimensions, combines them with `tiffutil` into the Retina-aware
+   `src-tauri/dmg/background.gen.tiff`, and verifies the TIFF contains the
+   expected 1x and 2x representations. Run `bun run dmg:background` to do just
+   that step, e.g. to sanity-check new artwork without a full build. The DMG
+   is written beneath `src-tauri/target/release/bundle/dmg/`.
+
+Run `bun run test:dmg-background` for the cross-platform checks covering the
+committed PNG dimensions and TIFF validation logic.
+
+The configured `640x432` Finder window is intentionally 32 points taller than
+the `640x400` background. That extra height matches the Finder chrome in the
+currently verified packaged layout; re-check it after material macOS or Finder
+changes. The project deliberately uses a multi-resolution TIFF even though
+Tauri's documented background formats are PNG, JPG, and GIF: Finder renders
+both the 1x and 2x representations from a single background file. Re-check the
+packaged DMG after upgrading Tauri in case its background validation changes.
+
+
+## Login Shell PATH Resolution
+
+Apps launched from Finder/the Dock inherit launchd's minimal `PATH`
+(`/usr/bin:/bin:/usr/sbin:/sbin`), not the one your shell profiles build, so
+agent-run commands would miss Homebrew-installed tools like `gh` even though
+they work fine from a terminal. At startup the sidecar asks the user's login
+shell — read from the account database via `getpwuid`, falling back to
+`$SHELL` — for its `PATH` and merges it into `process.env.PATH`, which every
+agent-spawned child (run_commands, MCP servers) inherits. Only `PATH` is
+imported, deliberately; other login-environment variables (`SSH_AUTH_SOCK`,
+API keys, `JAVA_HOME`-style tool roots) are not pulled in. Set
+`CLINE_SIDECAR_SKIP_SHELL_PATH=1` to disable. Implementation and details:
+[`core shell-path.ts`](../../../sdk/packages/core/src/remote/shell-path.ts).
+
+## SSH Remote Environments
+
+Open **Settings → Remote** to add and test an SSH host. Saving or testing a
+profile does not activate it. From the welcome chat, open the environment
+selector beside the workspace picker and choose the saved host; that selection
+starts the SSH connection at the remote user's home directory. Choose **Add
+project…** from the normal workspace selector to browse that machine and select
+a project, or choose **Local** in the environment selector to disconnect. Recent
+and last-used workspaces are remembered separately for each SSH host and for
+the local machine.
+
+SSH config aliases are supported. Leave **Port** blank to use the alias's SSH
+configuration (including its configured port), or enter a port to override it.
+The desktop keeps its webview and native integration local; only the
+authenticated Cline Hub protocol is forwarded through SSH. Agent tools,
+workspace discovery, Git metadata, and session persistence therefore run on the
+SSH host, while approvals and live session events return to the desktop.
+
+The shared `@cline/core` `RemoteEnvironmentService` owns this feature; other
+clients can use the same service and `ClineCore` remote backend (see `sdk/DOC.md`).
+Desktop owns the settings UI and packaged helper resource lookup.
+
+The service stores host metadata at
+`~/.cline/data/settings/remote-environments.json` with mode `0600`. It stores an
+identity-file path, never private-key contents. On first connect it uploads a
+content-addressed, branch-matched, self-contained Hub helper under
+`~/.cline/remote/`, binds the Hub to remote loopback, and forwards it to a
+random local loopback port. Linux x64 and arm64 helpers are bundled by
+`bun run build:sidecar:bin`; 32-bit Raspberry Pi operating systems are not
+supported. A macOS desktop reaches macOS SSH hosts with its own signed
+universal sidecar, which runs the same helper entrypoint; Windows and Linux
+desktops need a locally built darwin helper passed through
+`CLINE_REMOTE_HELPER_BINARY`. The helper includes its own runtime (about 115 MB
+per helper) and must not be UPX-compressed; Bun reads its embedded code back
+from the executable at runtime, so a packed helper crashes with
+`SyntaxError: Invalid character: '\0'`. It is copied once per matching desktop
+build and cached, with no
+`apt`, `npm`, root access,
+global CLI install, or public Hub port. Disconnecting stops the desktop-owned
+remote Hub but leaves the helper cached for a faster reconnect. The helper
+imports the remote login-shell `PATH`, so user-installed Git, GitHub CLI, and
+MCP executables remain visible.
+
+Each service instance uses its own discovery record, so an existing Cline CLI/Hub on the
+same account is neither replaced nor stopped. Both Hub processes can coexist
+while the desktop is connected; this isolation keeps the remote helper separate from the default CLI Hub.
+
+The desktop currently leaves file attachments and opening a remote file in a local
+editor disabled. Text, images, file mentions/search, Git branch operations,
+session history, and remote agent tools are supported. The current desktop
+provider access/API token is sent through the authenticated tunnel for the
+session; reusable OAuth refresh credentials are not copied into remote provider
+settings.
+
+For a real SSH acceptance run, `scripts/verify-ssh-poc.ts` accepts
+`CLINE_SSH_TEST_HOST`, `CLINE_SSH_TEST_USER`, `CLINE_SSH_TEST_KEY`,
+`CLINE_SSH_TEST_WORKSPACE`, and `CLINE_SSH_TEST_HELPER`. It starts a remote
+connection at the SSH user's home, starts an agent session in the test
+workspace with the selected desktop provider, asks the agent to read
+`REMOTE_MARKER.txt`, then verifies the session appears in remote history and
+that its messages can be read back.
+
+## Web Visual System
+
+The framework-neutral color, typography, radius, and navigation contract lives
+in the internal [`@cline/ui`](../../../sdk/packages/ui/README.md) workspace
+package. Other Cline web surfaces can take only its tokens or opt into the
+Tailwind adapter and shared base styles without depending on the desktop
+runtime. See [`webview/styles/README.md`](./webview/styles/README.md) for the
+desktop integration notes.
+
+## Releases & Auto-Updates
+
+Releases are built, signed, notarized, and published by the `desktop-publish`
+GitHub workflow as a single universal macOS DMG — one download that runs
+natively on both Apple Silicon and Intel (macOS picks the matching slice at
+launch, so users never choose an architecture) — plus a Windows x64 NSIS
+installer and Linux x64 and arm64 `.deb` and `.rpm` packages. The step-by-step flow
+(version bumps, changelog, tag, repo secrets) lives in the `publish-desktop`
+skill (`.cline/skills/publish-desktop/SKILL.md`).
+
+Individual releases are not announced in-app; Settings → About lists the
+bundled release notes. Every so often a one-time "What's new" dialog catches
+users up on accumulated features — see the `desktop-whats-new` skill
+(`.cline/skills/desktop-whats-new/SKILL.md`).
+
+Installed apps auto-update via the Tauri updater: they poll the rolling
+`desktop-latest` release's `latest.json` on launch and every 2 hours, download
+updates in the background, and prompt for a restart. macOS installs the update
+in the background too; Windows and Linux install it when the user restarts
+(the NSIS installer on Windows, `pkexec dpkg -i` / `rpm -U` on Linux, which
+asks for the user's password). Two things must never be lost: the
+`desktop-latest` release/tag (its feed URL is baked into shipped apps) and the
+updater private key (`TAURI_SIGNING_PRIVATE_KEY` — without it, shipped apps
+can't verify new updates).
+
+### Linux
+
+Linux ships as `.deb` (Debian, Ubuntu and derivatives) and `.rpm` (Fedora,
+RHEL, openSUSE) packages for x86_64 and arm64 (aarch64), each built natively
+on Ubuntu 22.04 so they run on distros with at least that era's glibc and
+WebKitGTK 4.1. Install from the release page with the system package manager
+so the runtime dependencies (`libwebkit2gtk-4.1-0`, `libgtk-3-0`,
+`libayatana-appindicator3-1`) resolve:
+
+```bash
+sudo apt install ./Cline_<version>_amd64.deb     # Debian / Ubuntu (x86_64)
+sudo apt install ./Cline_<version>_arm64.deb     # Debian / Ubuntu (arm64)
+sudo dnf install ./Cline_<version>_x86_64.rpm    # Fedora / RHEL (x86_64)
+sudo dnf install ./Cline_<version>_aarch64.rpm   # Fedora / RHEL (arm64)
+```
+
+The app installs as `/usr/bin/cline-app` with a `Cline` launcher entry; the
+sidecar is `/usr/bin/code-sidecar` and the bundled SSH remote helpers live in
+`/usr/lib/Cline/`. The tray icon needs a StatusNotifier host (KDE, XFCE, and
+GNOME with the AppIndicator extension); without one the app still runs but the
+tray menu is unavailable. There is no AppImage: linuxdeploy cannot process the
+Bun-compiled sidecar (`ldd` fails on it and `patchelf` corrupts it), so the
+AppImage target is excluded from `tauri build` on Linux. A Linux desktop
+cannot use a Mac as an SSH remote host (see the changelog).
+
+There is also a beta channel ("Cline Beta", a separate app that installs
+side by side with stable) cut from the `desktop-experimental` branch and
+served by the rolling `desktop-beta` release — the same never-delete rule
+applies to it. The experimental-branch process and beta release flow live in
+[`EXPERIMENTAL.md`](./EXPERIMENTAL.md).
+
+## Shareable Desktop Packages (manual fallback)
+
+Tauri desktop bundles are OS-specific, so build each package on the target OS:
+
+- macOS: `bun run package:desktop:mac`
+- Windows: `bun run package:desktop:windows`
+- Linux: `bun run package:desktop:linux`
+
+The macOS package script refuses to create a shareable package unless Developer ID signing and notarization credentials are configured. This prevents the common Gatekeeper failure where a downloaded unsigned build appears damaged on a teammate's Mac.
+
+Set either `APPLE_CERTIFICATE` or `APPLE_SIGNING_IDENTITY`, plus one notarization credential set before packaging macOS:
+
+- `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
+- `APPLE_API_KEY` or `APPLE_API_KEY_PATH`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`
+
+For local-only macOS testing, use `bun run package:desktop:mac --allow-unsigned-mac`. That ad-hoc signs the `.app` and strips quarantine attributes, but it is not suitable for a downloaded build shared with teammates.
+
+### macOS signing & notarization, step by step
+
+One-time keychain setup:
+
+1. Get the **Developer ID Application** identity from your team admin. A `.cer` alone is not enough — you need the private key. If the admin generated the CSR, have them export the identity from Keychain Access as a `.p12` and import it:
+   `security import BeeCertificates.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign -T /usr/bin/security`
+2. If `security find-identity -v -p codesigning` still reports `0 valid identities`, the Apple intermediate CA is missing. Install it:
+   `curl -O https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer && security import DeveloperIDG2CA.cer -k ~/Library/Keychains/login.keychain-db`
+3. Re-run `security find-identity -v -p codesigning` — it should now list `Developer ID Application: <Team Name> (<TEAMID>)`. That exact quoted string is your `APPLE_SIGNING_IDENTITY`.
+4. Get an **App Store Connect API key** from the admin: the `AuthKey_<KEYID>.p8` file, the Key ID, and the Issuer ID (a UUID from App Store Connect → Users and Access → Integrations). This is used for notarization only — nothing is published.
+
+Per-build:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: <Team Name> (<TEAMID>)"
+export APPLE_API_KEY="<KEYID>"           # Tauri reads APPLE_API_KEY (the Key ID); APPLE_API_KEY_ID alone silently skips notarization
+export APPLE_API_KEY_PATH="/path/to/AuthKey_<KEYID>.p8"
+export APPLE_API_ISSUER="<issuer UUID>"
+bun run package:desktop:mac
+```
+
+The first signing run pops a keychain dialog — enter your macOS login password and click **Always Allow**. Notarization uploads the app to Apple's automated malware scan (typically 2–10 minutes) and staples the ticket. Artifacts land in `dist/desktop/`; share the `.dmg`. The DMG name takes its version from `src-tauri/tauri.conf.json`, the zip name from `package.json` — bump both.
+
+Do not remove `src-tauri/entitlements.plist` or the `bundle.macOS.entitlements` reference in `tauri.conf.json`: notarization requires the hardened runtime, which breaks the Bun-compiled sidecar (`SharedArrayBuffer is not defined`, surfacing in-app as "desktop backend endpoint not ready") unless the JIT entitlements are present.
+
+## Runtime Overview
+
+Startup flow:
+
+1. Tauri starts a persistent local desktop backend and keeps only native window/file-picker/open-path responsibilities.
+2. The desktop backend starts the Bun sidecar, which discovers or starts the
+   canonical shared Cline Hub and exposes one websocket transport (`/transport`)
+   for desktop commands, queries, and pushed events.
+3. The React app uses `lib/desktop-client.ts` and no longer imports `@tauri-apps/api/core` directly in feature code.
+4. Tool approval updates are pushed from the backend instead of polled from the UI.
+5. Session process context resolves `workspaceRoot` from git root and uses that same path as default `cwd` for chat runtime and git operations unless explicitly overridden.
+
+Desktop transport envelope:
+
+- Request: `{ "type": "command", "id": string, "command": string, "args"?: object }`
+- Response: `{ "type": "response", "id": string, "ok": boolean, "result"?: unknown, "error"?: string }`
+- Event: `{ "type": "event", "event": { "name": string, "payload": unknown } }`
+
+## Settings: Routine
+
+- The Settings sidebar includes a `Routine` view for hub-backed automations.
+- `Routine` lists all RPC schedules and shows status (`enabled`, `nextRunAt`, active execution).
+- From the UI you can open a create form and add, pause/resume, trigger-now, and delete schedules.
+- The view is wired to the same scheduler APIs used by `cline schedule` through Tauri commands and `scripts/routine-schedules.ts`.
+
+## Key Files
+
+- [`src-tauri/src/main.rs`](./src-tauri/src/main.rs) - Tauri shell lifecycle, backend launch, and native-only commands
+- [`sidecar/index.ts`](./sidecar/index.ts) - persistent Bun sidecar and Hub-daemon entry dispatch
+- [`sidecar/chat-session.ts`](./sidecar/chat-session.ts) - shared-Hub chat session adapter
+- [`webview/lib/desktop-client.ts`](./webview/lib/desktop-client.ts) - typed desktop websocket client
+- [`webview/hooks/use-chat-session.ts`](./webview/hooks/use-chat-session.ts) - UI chat session state + backend subscriptions
+- [`webview/lib/chat-schema.ts`](./webview/lib/chat-schema.ts) - chat message schema used by the UI
+- [`webview/components/views/settings/routine-view.tsx`](./webview/components/views/settings/routine-view.tsx) - Routine schedules UI
+
+## Data + Storage
+
+- Session artifacts are written under `~/.cline/data/sessions/<sessionId>/` (or `CLINE_SESSION_DATA_DIR`).
+- Canonical replay/export artifact: `<sessionId>.messages.json`.
+- `<sessionId>.messages.json` is expected to contain ordered messages plus assistant `modelInfo` and `metrics` (including cache token fields when provided by the model runtime).
+- `<sessionId>.hooks.jsonl` is observability/debug telemetry and should not be required for normal history replay/export flows.
+- Full v1 schema for the persisted messages file, including failure/retry semantics and golden fixtures, is documented in [`packages/core/docs/messages-contract-v1.md`](../../../sdk/packages/core/docs/messages-contract-v1.md).
+
+## Sidecar observability
+
+The desktop sidecar sends SDK telemetry through the same configured OpenTelemetry
+pipeline used by the CLI and writes structured runtime logs to
+`~/.cline/data/logs/code.log` by default. Telemetry continues to honor the global
+opt-out setting exposed in the desktop settings UI. The sidecar truncates stale
+logs and rotates the active file before it exceeds 50 MiB.
+
+Logging can be configured with the same environment variables as the CLI:
+
+- `CLINE_LOG_ENABLED=0` disables file logging.
+- `CLINE_LOG_LEVEL` sets the Pino level (for example, `debug` or `warn`).
+- `CLINE_LOG_PATH` overrides the log destination.
+- `CLINE_LOG_NAME` overrides the logger name.
+
+In a development webview, sidecar voice-input diagnostics are also streamed to
+the webview console as `[desktop:voice-input]` entries. Production builds can
+enable the same console stream with `NEXT_PUBLIC_CLINE_DEBUG_LOGS=1` at build
+time, or at runtime from DevTools with
+`localStorage.setItem("cline.debugLogs", "1")` followed by a reload. Diagnostic
+events include the selected provider/model and sanitized endpoint, but never
+credentials, request headers, recorded audio, or transcript contents.
+
+## Troubleshooting
+
+- If live updates stall, verify the desktop backend websocket is connected and `chat_event` messages are arriving.
+- Tauri restarts the desktop backend if the sidecar process exits and kills it on app teardown.
+- Chat sends now preflight provider credentials. If a provider that requires API-key auth is selected without a key, the UI blocks the turn with a clear error message instead of starting a hanging session.
+- If a turn completes with `finishReason=error` before any assistant content is produced, the UI now adds an explicit error chat message so failed turns are visible in the transcript.
+- Linux with the proprietary NVIDIA driver: WebKitGTK's DMA-BUF renderer
+  fails there (`KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied`,
+  `Failed to create GBM buffer ...: Permission denied`) and the window stays
+  blank, so when `/sys/module/nvidia` is loaded the app sets
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` before creating the webview (see
+  [Tauri's Linux graphics guide](https://v2.tauri.app/develop/debug/linux-graphics/)).
+  This also matches hybrid-GPU systems where another GPU renders, which then
+  lose the faster DMA-BUF path (not hardware acceleration as a whole). To opt
+  out, fully Quit from the tray (closing the window only hides it) and launch
+  with `WEBKIT_DISABLE_DMABUF_RENDERER=0 cline-app`; any value you set is
+  left untouched.
+- If package changes are not reflected, rebuild SDK packages (`bun run build:sdk`).
+  The next desktop or CLI Hub connection will reuse a compatible running Hub or
+  replace an incompatible one through the shared discovery path.
+- Provider settings updates are patch-style: only fields you edit are changed. Unset fields are preserved instead of being cleared.
+- Voice input requires a configured streaming transcription model. Choose one
+  under **Settings → Models → Voice input**, such as Vercel AI Gateway's
+  `openai/gpt-realtime-whisper`, native OpenAI `gpt-realtime-whisper`, or
+  ElevenLabs `scribe_v2_realtime`.
+  Gateway and native OpenAI audio flow through the AI SDK’s `experimental_streamTranscribe`
+  with continuous PCM input and partial transcript updates. Text updates while
+  you speak; Stop closes the audio stream and waits for final text. Batch-only models are
+  excluded from Voice settings and rejected when saving a voice selection.
+- The voice selection is stored separately from the chat model as
+  `modes.voiceInput` in `~/.cline/data/settings/providers.json`. The sidecar
+  mints a short-lived token, keeping long-lived provider credentials out of the
+  webview.
+- If a recognized network failure interrupts transcription, the mic switches
+  to browser speech recognition when available. Click it again and repeat any
+  missing speech. Browser recognition may also need internet access. An online
+  event restores the configured provider after the current recording ends;
+  authentication, model, and microphone-permission errors remain visible.
+
+SSH requires an already-trusted host key. Before first connection, verify the server fingerprint through a trusted channel and enroll it with your SSH client. Unknown or changed keys are rejected.

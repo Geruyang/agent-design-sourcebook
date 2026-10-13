@@ -1,0 +1,108 @@
+@layer base {
+  /* Pages keep one content width whether or not they scroll. */
+  html {
+    scrollbar-gutter: stable;
+  }
+  .a13n-root {
+    --a13n-page-gutter-mobile: 18px;
+  }
+  .a13n-root :is(h1, h2, h3, h4, h5, h6, strong, b) {
+    font-weight: 500;
+  }
+}
+
+.fieldset-reset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: -60px;
+  background: var(--a13n-elevated);
+  padding: 8px 16px;
+  z-index: 200;
+  border: 1px solid var(--a13n-border);
+  border-radius: 6px;
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* Console modal composition, including dialogs rendered through portals. */
+[data-a13n-modal] {
+  border-radius: 14px;
+}
+[data-a13n-modal]::before {
+  border-radius: 13px;
+}
+:root:not(.dark) [data-a13n-modal] {
+  --popover: var(--card);
+  --a13n-surface: var(--muted);
+  background: var(--popover);
+}
+[data-a13n-modal][data-size="lg"] {
+  max-width: 40rem;
+}
+[data-a13n-modal] [data-slot="dialog-title"] {
+  font-size: var(--a13n-text-xl);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+[data-a13n-modal] [data-slot="dialog-description"] {
+  font-size: var(--a13n-text-sm);
+  line-height: 1.65;
+}
+[data-a13n-modal] form {
+  row-gap: 14px;
+}
+[data-a13n-modal] [data-slot="disclosure-surface"] {
+  border-radius: 10px;
+  background: var(--a13n-surface);
+}
+[data-a13n-modal] [data-slot="disclosure-surface"] > button {
+  min-height: 34px;
+  padding: 7px 12px;
+  font-size: var(--a13n-text-sm);
+}
+[data-a13n-modal]
+  :is([data-a13n-form-actions], [data-slot="dialog-footer"])
+  button {
+  min-height: 32px;
+  padding-inline: 12px;
+  border-radius: 8px;
+}
+[data-a13n-modal] [data-a13n-form-actions] {
+  isolation: isolate;
+  margin-top: 0;
+  padding-top: 4px;
+  padding-bottom: 18px;
+  box-shadow: none;
+}
+[data-a13n-modal] [data-slot="tabs"] {
+  gap: 16px;
+}
+[data-a13n-modal] [data-slot="tabs-list"] {
+  max-width: 100%;
+  overflow-x: auto;
+  justify-content: flex-start;
+}
+
+/* Sidebar animates between expanded and icon-rail widths. */
+[data-slot="sidebar-gap"],
+[data-slot="sidebar-container"] {
+  transition: width 180ms ease-out;
+}

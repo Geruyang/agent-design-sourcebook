@@ -1,0 +1,38 @@
+# Run prettier on staged files.
+pnpm prettier $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g') --write --ignore-unknown
+git update-index --again
+
+# Run lint on staged files.
+pnpm eslint $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g') --fix
+git update-index --again
+
+# Run changeset-validation fixtures when the skill changes.
+run_changeset_fixtures_if_needed() {
+  bash .agents/skills/changeset-validation/scripts/run-fixtures.sh
+}
+
+if command -v rg >/dev/null 2>&1; then
+  if git diff --cached --name-only --diff-filter=ACMR | rg -q '^\.agents/skills/changeset-validation/'; then
+    run_changeset_fixtures_if_needed
+  fi
+else
+  if git diff --cached --name-only --diff-filter=ACMR | grep -Eq '^\.agents/skills/changeset-validation/'; then
+    run_changeset_fixtures_if_needed
+  fi
+fi
+
+# Check for secrets.
+if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
+  if ! command -v trufflehog >/dev/null 2>&1; then
+    echo "trufflehog' is not installed or not in your PATH."
+    echo "Download it from: https://github.com/trufflesecurity/trufflehog"
+    echo "Skipping secrets check due to missing trufflehog."
+    exit 1
+  fi
+
+  staged_dir=$(mktemp -d)
+  trap 'rm -rf "$staged_dir"' EXIT HUP INT TERM
+  git diff --cached --name-only --diff-filter=ACMR -z |
+    git checkout-index --stdin -z --prefix="$staged_dir/"
+  trufflehog --no-update --fail filesystem --max-symlink-depth=0 "$staged_dir"
+fi

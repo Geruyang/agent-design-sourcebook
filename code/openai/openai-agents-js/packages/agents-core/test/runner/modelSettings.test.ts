@@ -1,0 +1,269 @@
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { Agent } from '../../src/agent';
+import { setDefaultModelProvider, setTracingDisabled } from '../../src';
+import * as defaultModelModule from '../../src/defaultModel';
+import type { ModelSettings } from '../../src/model';
+import {
+  adjustModelSettingsForLegacyModel,
+  mergeModelSettings,
+  maybeResetToolChoice,
+} from '../../src/runner/modelSettings';
+import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
+import { ScriptedModelProvider } from '../stubs';
+
+beforeAll(() => {
+  setTracingDisabled(true);
+  setDefaultModelProvider(new ScriptedModelProvider());
+});
+
+describe('maybeResetToolChoice', () => {
+  const agent = new Agent({ name: 'A' });
+  const tracker = new AgentToolUseTracker();
+  const modelSettings = { temperature: 0.5, toolChoice: 'auto' as const };
+
+  it('does not reset when resetToolChoice is false', () => {
+    const result = maybeResetToolChoice(agent, tracker, modelSettings);
+    expect(result.toolChoice).toBe('auto');
+  });
+
+  it('resets tool choice once the agent has used a tool', () => {
+    const resetAgent = new Agent({ name: 'B', resetToolChoice: true });
+    tracker.addToolUse(resetAgent, ['some_tool']);
+
+    const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
+    expect(result.toolChoice).toBeUndefined();
+  });
+
+  it('keeps tool choice when the agent has not yet used tools even if resetToolChoice is true', () => {
+    const resetAgent = new Agent({ name: 'C', resetToolChoice: true });
+    const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
+    expect(result.toolChoice).toBe('auto');
+  });
+
+  it('keeps explicit none tool choice after tool usage', () => {
+    const resetAgent = new Agent({ name: 'D', resetToolChoice: true });
+    tracker.addToolUse(resetAgent, ['some_tool']);
+
+    const result = maybeResetToolChoice(resetAgent, tracker, {
+      ...modelSettings,
+      toolChoice: 'none',
+    });
+    expect(result.toolChoice).toBe('none');
+  });
+});
+
+describe('adjustModelSettingsForLegacyModel', () => {
+  const gpt5Settings: ModelSettings = {
+    providerData: { reasoning: { effort: 'low' }, text: { verbosity: 'low' } },
+    reasoning: { effort: 'low' },
+    text: { verbosity: 'low' },
+  };
+
+  const withGpt5Default = () =>
+    vi.spyOn(defaultModelModule, 'isGpt5OrNewerDefault').mockReturnValue(true);
+
+  it('keeps GPT-5 provider data when the explicit model is GPT-5', () => {
+    const spy = withGpt5Default();
+    const result = adjustModelSettingsForLegacyModel(
+      true,
+      gpt5Settings,
+      { ...gpt5Settings },
+      'gpt-5-mini',
+    );
+    expect(result.providerData?.reasoning).toBeDefined();
+    expect(result.providerData?.text?.verbosity).toBe('low');
+    spy.mockRestore();
+  });
+
+  it('preserves explicit provider data when the resolved model name is unavailable', () => {
+    const spy = withGpt5Default();
+    const result = adjustModelSettingsForLegacyModel(
+      true,
+      gpt5Settings,
+      { ...gpt5Settings },
+      undefined,
+    );
+    expect(result.providerData?.reasoning).toEqual(
+      gpt5Settings.providerData?.reasoning,
+    );
+    expect(result.providerData?.text?.verbosity).toBe('low');
+    spy.mockRestore();
+  });
+
+  it('strips GPT-5-only provider data when a non-GPT-5 model is explicitly set', () => {
+    const spy = withGpt5Default();
+    const result = adjustModelSettingsForLegacyModel(
+      true,
+      gpt5Settings,
+      { ...gpt5Settings },
+      'gpt-4o',
+    );
+    expect(result.providerData?.reasoning).toBeUndefined();
+    expect(result.providerData?.text?.verbosity).toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('does not throw when providerData contains non-serializable values', () => {
+    const spy = withGpt5Default();
+    const uncloneable = () => 'noop';
+    const agentModelSettings: ModelSettings = {
+      providerData: {
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+        fn: uncloneable,
+      },
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    };
+    const modelSettings: ModelSettings = {
+      providerData: {
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+        fn: uncloneable,
+      },
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    };
+
+    const result = adjustModelSettingsForLegacyModel(
+      true,
+      agentModelSettings,
+      modelSettings,
+      'gpt-4o',
+    );
+
+    expect(result.providerData?.fn).toBe(uncloneable);
+    expect(result.providerData?.reasoning).toBeUndefined();
+    expect(result.providerData?.text?.verbosity).toBeUndefined();
+    expect(result.text?.verbosity).toBeUndefined();
+    expect(modelSettings.providerData?.reasoning).toBeDefined();
+    expect(modelSettings.providerData?.text?.verbosity).toBe('low');
+    expect(modelSettings.text?.verbosity).toBe('low');
+    spy.mockRestore();
+  });
+});
+
+describe('mergeModelSettings', () => {
+  it('merges GPT-5.6 reasoning and prompt-cache options', () => {
+    expect(
+      mergeModelSettings(
+        {
+          reasoning: { effort: 'max', context: 'all_turns' },
+          promptCacheOptions: { mode: 'explicit', ttl: '30m' },
+        },
+        {
+          reasoning: { mode: 'pro' },
+          promptCacheOptions: { mode: 'implicit' },
+        },
+      ),
+    ).toEqual({
+      reasoning: { effort: 'max', context: 'all_turns', mode: 'pro' },
+      promptCacheOptions: { mode: 'implicit', ttl: '30m' },
+    });
+  });
+
+  it('deep merges retry settings and nested backoff overrides', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          temperature: 0.1,
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+            },
+          },
+        },
+        {
+          topP: 0.9,
+          retry: {
+            maxRetries: 0,
+            backoff: {
+              maxDelayMs: 500,
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      temperature: 0.1,
+      topP: 0.9,
+      retry: {
+        maxRetries: 0,
+        policy,
+        backoff: {
+          initialDelayMs: 100,
+          maxDelayMs: 500,
+        },
+      },
+    });
+  });
+
+  it('preserves inherited retry policy when an override supplies only retry backoff', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+            },
+          },
+        },
+        {
+          retry: {
+            backoff: {
+              maxDelayMs: 500,
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      retry: {
+        maxRetries: 3,
+        policy,
+        backoff: {
+          initialDelayMs: 100,
+          maxDelayMs: 500,
+        },
+      },
+    });
+  });
+
+  it('allows explicitly clearing inherited retry fields with undefined overrides', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+              maxDelayMs: 500,
+            },
+          },
+        },
+        {
+          retry: {
+            policy: undefined,
+            backoff: undefined,
+          },
+        },
+      ),
+    ).toEqual({
+      retry: {
+        maxRetries: 3,
+        policy: undefined,
+        backoff: undefined,
+      },
+    });
+  });
+});

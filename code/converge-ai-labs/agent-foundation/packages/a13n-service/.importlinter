@@ -1,0 +1,91 @@
+[importlinter]
+root_package = a13n_service
+
+[importlinter:contract:layers]
+name = Business packages depend downward: usage, runs, resources, tenancy, infrastructure
+type = layers
+layers =
+    a13n_service.usage
+    a13n_service.runs
+    a13n_service.resources
+    a13n_service.tenancy
+    a13n_service.infra
+
+[importlinter:contract:providers]
+name = Providers are adapters over infrastructure and never read business packages
+type = forbidden
+source_modules =
+    a13n_service.providers
+forbidden_modules =
+    a13n_service.tenancy
+    a13n_service.resources
+    a13n_service.runs
+    a13n_service.usage
+    a13n_service.provisioning
+
+[importlinter:contract:assembly]
+name = Nothing imports assembly
+type = forbidden
+source_modules =
+    a13n_service.infra
+    a13n_service.tenancy
+    a13n_service.resources
+    a13n_service.runs
+    a13n_service.usage
+    a13n_service.providers
+    a13n_service.provisioning
+forbidden_modules =
+    a13n_service.app
+    a13n_service.distribution
+    a13n_service.cli
+    a13n_service.mcp
+    a13n_service.api_tools
+    a13n_service.documentation
+
+[importlinter:contract:infrastructure]
+name = Infrastructure cannot import configuration
+type = forbidden
+source_modules =
+    a13n_service.infra
+forbidden_modules =
+    a13n_service.settings
+
+[importlinter:contract:environment-providers]
+name = Business packages reach environment providers only through the registry
+type = forbidden
+source_modules =
+    a13n_service.tenancy
+    a13n_service.resources
+    a13n_service.runs
+    a13n_service.usage
+forbidden_modules =
+    a13n_service.providers.environments
+
+[importlinter:contract:acyclic-resources]
+name = Resource packages depend on each other without cycles
+type = acyclic_siblings
+ancestors =
+    a13n_service.resources
+
+[importlinter:contract:provisioning]
+name = Provisioning is independent of execution and usage
+type = forbidden
+source_modules =
+    a13n_service.provisioning
+forbidden_modules =
+    a13n_service.runs
+    a13n_service.usage
+
+[importlinter:contract:provisioning-entry]
+name = Only assembly imports provisioning
+type = forbidden
+source_modules =
+    a13n_service.infra
+    a13n_service.tenancy
+    a13n_service.resources
+    a13n_service.runs
+    a13n_service.usage
+    a13n_service.providers
+    a13n_service.settings
+forbidden_modules =
+    a13n_service.provisioning

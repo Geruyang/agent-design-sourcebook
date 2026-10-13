@@ -1,0 +1,155 @@
+.bar {
+  width: 100%;
+  max-width: 860px;
+  margin: 4px auto 0;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  color: var(--a13n-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.metric {
+  padding: 5px 6px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+}
+button.metric {
+  cursor: pointer;
+}
+button.metric:hover,
+.metric[data-popup-open] {
+  background: var(--a13n-surface);
+  color: var(--a13n-text);
+}
+.metric:focus-visible {
+  outline: 1px solid var(--ring);
+}
+.metrics strong {
+  margin-left: 3px;
+  font-weight: 400;
+  color: var(--a13n-text);
+}
+.stale {
+  color: var(--warning-foreground);
+}
+.popup {
+  width: min(380px, calc(100vw - 24px));
+  font-size: 13px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  max-height: min(720px, 75dvh);
+  overflow-y: auto;
+}
+.numbers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  margin: 16px 0;
+}
+.numbers dt {
+  color: var(--a13n-secondary);
+}
+.numbers dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 500;
+}
+.scope {
+  display: block;
+  margin: 8px 0;
+  color: var(--a13n-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.sectionTitle {
+  margin: 16px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.models {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.models li {
+  padding: 12px 0;
+  border-top: 1px solid var(--a13n-border-soft);
+}
+.modelHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+.usageDetails {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.scopeSelector {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-top: 12px;
+  background: var(--a13n-surface);
+  border-radius: 10px;
+}
+.scopeSelector button {
+  flex: 1;
+}
+.scopeSelector button[aria-pressed="true"] {
+  background: var(--a13n-elevated);
+  color: var(--a13n-text);
+}
+.attribution summary {
+  cursor: pointer;
+  color: var(--a13n-secondary);
+  font-size: 12px;
+}
+.attribution summary:focus-visible {
+  outline: 1px solid var(--ring);
+  outline-offset: 3px;
+}
+.sourceGroup {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--a13n-surface);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.models .numbers {
+  margin: 8px 0;
+  gap: 3px 16px;
+  font-size: 12px;
+}
+.modelName {
+  overflow-wrap: anywhere;
+}
+.modelCost {
+  text-align: right;
+}
+.modelCost strong {
+  font-weight: 500;
+}
+.models .scope,
+.numbers .scope {
+  margin: 2px 0 0;
+}
+
+.goalObjective {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 12px 0;
+}

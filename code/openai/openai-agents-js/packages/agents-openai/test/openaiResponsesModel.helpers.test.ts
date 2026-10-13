@@ -1,0 +1,3233 @@
+import { describe, it, expect, vi } from 'vitest';
+import { Buffer } from 'node:buffer';
+import {
+  getToolChoice,
+  convertTool,
+  getInputItems,
+  convertToOutputItem,
+} from '../src/openaiResponsesModel';
+import {
+  getInputItems as converterGetInputItems,
+  convertToOutputItem as converterConvertToOutputItem,
+} from '../src/openaiResponsesConverter';
+import { UserError } from '@openai/agents-core';
+import logger from '../src/logger';
+
+describe('Responses item conversion exports', () => {
+  it('preserves helper identity through the model module', () => {
+    expect(getInputItems).toBe(converterGetInputItems);
+    expect(convertToOutputItem).toBe(converterConvertToOutputItem);
+  });
+});
+
+describe('getToolChoice', () => {
+  it('returns default choices', () => {
+    expect(getToolChoice('auto')).toBe('auto');
+    expect(getToolChoice('required')).toBe('required');
+    expect(getToolChoice('none')).toBe('none');
+  });
+
+  it('handles hosted tool choices', () => {
+    expect(getToolChoice('file_search')).toEqual({ type: 'file_search' });
+    expect(getToolChoice('web_search')).toEqual({
+      type: 'web_search',
+    });
+    expect(getToolChoice('web_search_preview')).toEqual({
+      type: 'web_search_preview',
+    });
+    expect(getToolChoice('computer_use_preview')).toEqual({
+      type: 'computer_use_preview',
+    });
+    expect(getToolChoice('shell')).toEqual({ type: 'shell' });
+    expect(getToolChoice('apply_patch')).toEqual({ type: 'apply_patch' });
+    expect(getToolChoice('programmatic_tool_calling')).toEqual({
+      type: 'programmatic_tool_calling',
+    });
+  });
+
+  it('supports arbitrary function names', () => {
+    expect(getToolChoice('my_func')).toEqual({
+      type: 'function',
+      name: 'my_func',
+    });
+    expect(getToolChoice('computer')).toEqual({
+      type: 'function',
+      name: 'computer',
+    });
+    expect(getToolChoice('computer_use')).toEqual({
+      type: 'function',
+      name: 'computer_use',
+    });
+    expect(getToolChoice('tool_search')).toEqual({
+      type: 'function',
+      name: 'tool_search',
+    });
+  });
+
+  it('normalizes built-in computer tool choices when a local computer tool exists', () => {
+    const tools = [
+      {
+        type: 'computer',
+        name: 'computer_use_preview',
+      },
+    ] as any;
+
+    expect(
+      getToolChoice('computer_use_preview', { tools, model: 'gpt-5.4' }),
+    ).toEqual({
+      type: 'computer',
+    });
+    expect(getToolChoice('computer_use', { tools, model: 'gpt-5.4' })).toEqual({
+      type: 'computer_use',
+    });
+    expect(
+      getToolChoice('computer', {
+        tools,
+        model: 'computer-use-preview',
+      }),
+    ).toEqual({
+      type: 'computer_use_preview',
+    });
+  });
+
+  it('returns undefined when omitted', () => {
+    expect(getToolChoice(undefined)).toBeUndefined();
+  });
+});
+
+describe('convertTool', () => {
+  it('converts Programmatic Tool Calling tools and eligible metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    expect(
+      convertTool({
+        type: 'function',
+        name: 'lookup',
+        description: 'Lookup a value.',
+        parameters: { type: 'object' },
+        strict: true,
+        allowedCallers: ['programmatic'],
+        outputSchema,
+      } as any).tool,
+    ).toEqual({
+      type: 'function',
+      name: 'lookup',
+      description: 'Lookup a value.',
+      parameters: { type: 'object' },
+      strict: true,
+      allowed_callers: ['programmatic'],
+      output_schema: outputSchema,
+    });
+    expect(
+      convertTool({
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any).tool,
+    ).toEqual({ type: 'programmatic_tool_calling' });
+  });
+
+  it('converts function tools', () => {
+    const t = convertTool({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+      strict: undefined,
+    });
+  });
+
+  it('converts deferred function tools', () => {
+    const t = convertTool({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+      deferLoading: true,
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+      strict: undefined,
+      defer_loading: true,
+    });
+  });
+
+  it('converts computer tools', () => {
+    const t = convertTool({
+      type: 'computer',
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'computer',
+    });
+  });
+
+  it('converts preview computer tools when requested', () => {
+    const t = convertTool(
+      {
+        type: 'computer',
+        environment: 'mac',
+        dimensions: [100, 200],
+      } as any,
+      {
+        usePreviewComputerTool: true,
+      },
+    );
+    expect(t.tool).toEqual({
+      type: 'computer_use_preview',
+      environment: 'mac',
+      display_width: 100,
+      display_height: 200,
+    });
+  });
+
+  it('rejects preview computer tools without display metadata', () => {
+    expect(() =>
+      convertTool(
+        {
+          type: 'computer',
+        } as any,
+        {
+          usePreviewComputerTool: true,
+        },
+      ),
+    ).toThrow('Preview computer tools require environment and dimensions.');
+  });
+
+  it('converts shell tools', () => {
+    const t = convertTool({ type: 'shell', name: 'shell' } as any);
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: { type: 'local' },
+    });
+  });
+
+  it('converts shell tools with custom environment', () => {
+    const t = convertTool({
+      type: 'shell',
+      name: 'shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: { type: 'container_reference', container_id: 'cont_123' },
+    });
+  });
+
+  it('converts shell container auto environment with camelCase fields', () => {
+    const t = convertTool({
+      type: 'shell',
+      name: 'shell',
+      environment: {
+        type: 'container_auto',
+        fileIds: ['file-123'],
+        memoryLimit: '4g',
+        networkPolicy: {
+          type: 'allowlist',
+          allowedDomains: ['example.com'],
+          domainSecrets: [
+            { domain: 'example.com', name: 'TOKEN', value: 'secret' },
+          ],
+        },
+        skills: [
+          {
+            type: 'skill_reference',
+            skillId: 'skill_123',
+            version: 'latest',
+          },
+        ],
+      },
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: {
+        type: 'container_auto',
+        file_ids: ['file-123'],
+        memory_limit: '4g',
+        network_policy: {
+          type: 'allowlist',
+          allowed_domains: ['example.com'],
+          domain_secrets: [
+            { domain: 'example.com', name: 'TOKEN', value: 'secret' },
+          ],
+        },
+        skills: [
+          {
+            type: 'skill_reference',
+            skill_id: 'skill_123',
+            version: 'latest',
+          },
+        ],
+      },
+    });
+  });
+
+  it('converts shell container auto environment with inline skill payloads', () => {
+    const t = convertTool({
+      type: 'shell',
+      name: 'shell',
+      environment: {
+        type: 'container_auto',
+        fileIds: ['file-123'],
+        memoryLimit: '1g',
+        networkPolicy: { type: 'disabled' },
+        skills: [
+          {
+            type: 'inline',
+            name: 'csv-workbench',
+            description: 'Analyze CSV files.',
+            source: {
+              type: 'base64',
+              mediaType: 'application/zip',
+              data: 'ZmFrZS16aXA=',
+            },
+          },
+        ],
+      },
+    } as any);
+
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: {
+        type: 'container_auto',
+        file_ids: ['file-123'],
+        memory_limit: '1g',
+        network_policy: { type: 'disabled' },
+        skills: [
+          {
+            type: 'inline',
+            name: 'csv-workbench',
+            description: 'Analyze CSV files.',
+            source: {
+              type: 'base64',
+              media_type: 'application/zip',
+              data: 'ZmFrZS16aXA=',
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('rejects shell environments with snake_case fields', () => {
+    expect(() =>
+      convertTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_reference',
+          container_id: 'cont_legacy',
+        },
+      } as any),
+    ).toThrow(/requires containerId/);
+  });
+
+  it('throws for invalid local shell skill definitions', () => {
+    expect(() =>
+      convertTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'local',
+          skills: [
+            { name: 'csv-workbench', description: 'Analyze CSV files.' },
+          ],
+        },
+      } as any),
+    ).toThrow(/requires name, description, and path/);
+  });
+
+  it('throws for container_reference without container id', () => {
+    expect(() =>
+      convertTool({
+        type: 'shell',
+        name: 'shell',
+        environment: { type: 'container_reference' },
+      } as any),
+    ).toThrow(/requires containerId/);
+  });
+
+  it('throws for invalid inline shell skill payloads', () => {
+    expect(() =>
+      convertTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_auto',
+          skills: [
+            {
+              type: 'inline',
+              name: 'bad-inline',
+              description: 'bad',
+              source: {
+                type: 'base64',
+                mediaType: 'application/json',
+                data: 'eyJmb28iOiJiYXIifQ==',
+              },
+            },
+          ],
+        },
+      } as any),
+    ).toThrow(/must be application\/zip/);
+  });
+
+  it('throws for skill_reference payloads that omit skillId', () => {
+    expect(() =>
+      convertTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_auto',
+          skills: [{ type: 'skill_reference', skill_id: 'skill_legacy' }],
+        },
+      } as any),
+    ).toThrow(/requires skillId/);
+  });
+
+  it('converts apply_patch tools', () => {
+    const t = convertTool({ type: 'apply_patch', name: 'apply_patch' } as any);
+    expect(t.tool).toEqual({ type: 'apply_patch' });
+  });
+
+  it('converts builtin tools', () => {
+    const web = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'web_search',
+        user_location: {},
+        search_context_size: 'low',
+      },
+    } as any);
+    expect(web.tool).toEqual({
+      type: 'web_search',
+      user_location: {},
+      search_context_size: 'low',
+    });
+
+    const file = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'file_search',
+        vector_store_ids: ['v'],
+        max_num_results: 5,
+        include_search_results: true,
+      },
+    } as any);
+    expect(file.tool).toEqual({
+      type: 'file_search',
+      vector_store_ids: ['v'],
+      max_num_results: 5,
+      ranking_options: undefined,
+      filters: undefined,
+    });
+    expect(file.include).toEqual(['file_search_call.results']);
+
+    const code = convertTool({
+      type: 'hosted_tool',
+      providerData: { type: 'code_interpreter', container: 'python' },
+    } as any);
+    expect(code.tool).toEqual({
+      type: 'code_interpreter',
+      container: 'python',
+    });
+
+    const codeWithOutputs = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'code_interpreter',
+        container: 'python',
+        include_outputs: true,
+      },
+    } as any);
+    expect(codeWithOutputs.tool).toEqual({
+      type: 'code_interpreter',
+      container: 'python',
+    });
+    expect(codeWithOutputs.include).toEqual(['code_interpreter_call.outputs']);
+
+    const toolSearch = convertTool({
+      type: 'hosted_tool',
+      providerData: { type: 'tool_search' },
+    } as any);
+    expect(toolSearch.tool).toEqual({
+      type: 'tool_search',
+    });
+
+    const clientToolSearch = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+        description: 'Search deferred tools locally.',
+        parameters: {
+          type: 'object',
+          properties: {
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
+      },
+    } as any);
+    expect(clientToolSearch.tool).toEqual({
+      type: 'tool_search',
+      execution: 'client',
+      description: 'Search deferred tools locally.',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        },
+      },
+    });
+
+    const img = convertTool({
+      type: 'hosted_tool',
+      providerData: { type: 'image_generation', background: 'auto' },
+    } as any);
+    expect(img.tool).toEqual({
+      type: 'image_generation',
+      background: 'auto',
+      input_image_mask: undefined,
+      model: undefined,
+      moderation: undefined,
+      output_compression: undefined,
+      output_format: undefined,
+      partial_images: undefined,
+      quality: undefined,
+      size: undefined,
+    });
+
+    const custom = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'mcp',
+        server_label: 'deepwiki',
+        server_url: 'https://mcp.deepwiki.com/mcp',
+        server_description: 'Repository knowledge',
+        defer_loading: true,
+        require_approval: 'never',
+      },
+    } as any);
+
+    expect(custom.tool).toEqual({
+      type: 'mcp',
+      server_label: 'deepwiki',
+      server_url: 'https://mcp.deepwiki.com/mcp',
+      server_description: 'Repository knowledge',
+      defer_loading: true,
+      require_approval: 'never',
+    });
+
+    const always = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'mcp',
+        server_label: 'always',
+        server_url: 'https://mcp.example.com',
+        require_approval: 'always',
+      },
+    } as any);
+
+    expect(always.tool).toMatchObject({
+      type: 'mcp',
+      server_label: 'always',
+      require_approval: 'always',
+    });
+
+    const scoped = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'mcp',
+        server_label: 'scoped',
+        server_url: 'https://mcp.example.com',
+        require_approval: {
+          never: { tool_names: ['alpha'] },
+          always: { tool_names: ['beta'] },
+        },
+      },
+    } as any);
+
+    expect(scoped.tool).toMatchObject({
+      type: 'mcp',
+      server_label: 'scoped',
+      require_approval: {
+        never: { tool_names: ['alpha'] },
+        always: { tool_names: ['beta'] },
+      },
+    });
+  });
+
+  it('preserves MCP approval read-only filters when converting tools', () => {
+    const scoped = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'mcp',
+        server_label: 'scoped',
+        server_url: 'https://mcp.example.com',
+        require_approval: {
+          never: { tool_names: ['alpha'], read_only: true },
+          always: { read_only: false },
+        },
+      },
+    } as any);
+
+    expect(scoped.tool).toMatchObject({
+      type: 'mcp',
+      server_label: 'scoped',
+      require_approval: {
+        never: { tool_names: ['alpha'], read_only: true },
+        always: { read_only: false },
+      },
+    });
+  });
+
+  it('rejects invalid MCP approval policies before converting tools', () => {
+    expect(() =>
+      convertTool({
+        type: 'hosted_tool',
+        providerData: {
+          type: 'mcp',
+          server_label: 'scoped',
+          server_url: 'https://mcp.example.com',
+          require_approval: {
+            never: { tool_names: ['alpha'] },
+            always: { tool_names: ['alpha'] },
+          },
+        },
+      } as any),
+    ).toThrow(UserError);
+  });
+
+  it('preserves explicit false external web access on web search tools', () => {
+    const web = convertTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'web_search',
+        search_context_size: 'medium',
+        external_web_access: false,
+      },
+    } as any);
+    expect(web.tool).toEqual({
+      type: 'web_search',
+      user_location: undefined,
+      filters: undefined,
+      search_context_size: 'medium',
+      external_web_access: false,
+    });
+  });
+
+  it('throws on unsupported tool', () => {
+    expect(() => convertTool({ type: 'other' } as any)).toThrow();
+  });
+});
+
+describe('getInputItems', () => {
+  it('keeps SDK tool-search ownership out of provider input and output conversion', () => {
+    const raw = {
+      type: 'tool_search_output' as const,
+      id: 'search-output',
+      execution: 'server' as const,
+      status: 'completed',
+      tools: [],
+    };
+    const owned = { ...raw, toolSearchAgentName: 'Owner' };
+    expect(getInputItems([owned])).toEqual(getInputItems([raw]));
+    expect(owned.toolSearchAgentName).toBe('Owner');
+    expect(
+      convertToOutputItem(getInputItems([owned]) as any)[0],
+    ).not.toHaveProperty('toolSearchAgentName');
+  });
+
+  it('replays caller linkage on MCP approval requests and responses', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'mcpr_1',
+          name: 'mcp_approval_request',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'mcpr_1',
+            name: 'lookup',
+            arguments: '{}',
+            server_label: 'server',
+          },
+        },
+        {
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_response',
+            approve: true,
+            approval_request_id: 'mcpr_1',
+          },
+        },
+      ] as any),
+    ).toMatchObject([
+      {
+        type: 'mcp_approval_request',
+        id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'mcp_approval_response',
+        approve: true,
+        approval_request_id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ]);
+  });
+
+  it('replays Programmatic Tool Calling items and caller linkage', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+        {
+          type: 'function_call_result',
+          id: 'fc_out_1',
+          callId: 'call_1',
+          name: 'lookup',
+          status: 'completed',
+          output: 'ok',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+        },
+        {
+          type: 'program_output',
+          id: 'prog_out_1',
+          callId: 'call_prog_1',
+          output: 'ok',
+          status: 'completed',
+          providerData: {
+            output: 'stale-output',
+            result: 'stale-result',
+            customField: 'kept',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call_output',
+        id: 'fc_out_1',
+        call_id: 'call_1',
+        output: 'ok',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+        custom_field: 'kept',
+      },
+    ]);
+  });
+
+  it('converts messages and tool calls/results', () => {
+    const items = getInputItems([
+      { role: 'user', content: 'hi', id: 'u1' },
+      {
+        type: 'function_call',
+        id: 'f1',
+        name: 'fn',
+        callId: 'c1',
+        arguments: '{}',
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        id: 'fr1',
+        callId: 'c1',
+        output: { type: 'text', text: 'ok' },
+      },
+      {
+        type: 'computer_call',
+        id: 'cc1',
+        callId: 'c2',
+        action: 'open',
+        status: 'completed',
+      },
+      {
+        type: 'computer_call_result',
+        id: 'cr1',
+        callId: 'c2',
+        output: { data: 'img' },
+      },
+      {
+        type: 'shell_call',
+        id: 'sh1',
+        callId: 's1',
+        status: 'completed',
+        action: {
+          commands: ['echo hi'],
+          timeoutMs: 10,
+          maxOutputLength: 5,
+        },
+        providerData: {
+          environment: {
+            type: 'container_reference',
+            container_id: 'cont_123',
+          },
+        },
+      },
+      {
+        type: 'shell_call_output',
+        id: 'sh2',
+        callId: 's1',
+        status: 'incomplete',
+        output: [
+          {
+            stdout: 'hi',
+            stderr: '',
+            outcome: { type: 'exit', exitCode: 0 },
+          },
+        ],
+      },
+      {
+        type: 'apply_patch_call',
+        id: 'ap1',
+        callId: 'p1',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'tmp.txt' },
+      },
+      {
+        type: 'apply_patch_call_output',
+        id: 'ap2',
+        callId: 'p1',
+        status: 'failed',
+        output: 'conflict',
+      },
+      { type: 'reasoning', id: 'r1', content: [{ text: 'why' }] },
+    ] as any);
+
+    expect(items[0]).toEqual({ id: 'u1', role: 'user', content: 'hi' });
+    expect(items.some((entry) => entry.type === 'function_call')).toBe(true);
+    expect(items.some((entry) => entry.type === 'function_call_output')).toBe(
+      true,
+    );
+    expect(items.some((entry) => entry.type === 'computer_call')).toBe(true);
+    expect(items.some((entry) => entry.type === 'computer_call_output')).toBe(
+      true,
+    );
+    const shellCall = items.find((entry) => entry.type === 'shell_call') as any;
+    expect(shellCall).toMatchObject({
+      type: 'shell_call',
+      call_id: 's1',
+      action: { commands: ['echo hi'], timeout_ms: 10, max_output_length: 5 },
+      environment: {
+        type: 'container_reference',
+        container_id: 'cont_123',
+      },
+    });
+    const shellCallOutput = items.find(
+      (entry) => entry.type === 'shell_call_output',
+    ) as any;
+    expect(shellCallOutput).toMatchObject({
+      type: 'shell_call_output',
+      id: 'sh2',
+      call_id: 's1',
+      status: 'incomplete',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exit_code: 0 },
+        },
+      ],
+    });
+    const applyPatchCall = items.find(
+      (entry) => entry.type === 'apply_patch_call',
+    ) as any;
+    expect(applyPatchCall).toMatchObject({
+      type: 'apply_patch_call',
+      call_id: 'p1',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    });
+    const applyPatchCallOutput = items.find(
+      (entry) => entry.type === 'apply_patch_call_output',
+    ) as any;
+    expect(applyPatchCallOutput).toMatchObject({
+      type: 'apply_patch_call_output',
+      call_id: 'p1',
+      status: 'failed',
+    });
+    expect(items.some((entry) => entry.type === 'reasoning')).toBe(true);
+  });
+
+  it('serializes apply_patch update move destinations for Responses input', () => {
+    const [item, inPlaceItem] = getInputItems([
+      {
+        type: 'apply_patch_call',
+        id: 'ap-move',
+        callId: 'p-move',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'old.txt',
+          diff: '@@\n-old\n+new\n',
+          moveTo: 'renamed/new.txt',
+        },
+      },
+      {
+        type: 'apply_patch_call',
+        id: 'ap-in-place',
+        callId: 'p-in-place',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'keep.txt',
+          diff: '@@\n-old\n+new\n',
+        },
+      },
+    ] as any);
+
+    expect(item).toMatchObject({
+      type: 'apply_patch_call',
+      call_id: 'p-move',
+      operation: {
+        type: 'update_file',
+        path: 'old.txt',
+        diff: '@@\n-old\n+new\n',
+        move_to: 'renamed/new.txt',
+      },
+    });
+    expect((item as any).operation).not.toHaveProperty('moveTo');
+    expect((inPlaceItem as any).operation).toEqual({
+      type: 'update_file',
+      path: 'keep.txt',
+      diff: '@@\n-old\n+new\n',
+    });
+  });
+
+  it('preserves replay-only Responses fields when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'message',
+        id: 'assistant-1',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'done',
+            providerData: {
+              annotations: [
+                { type: 'url_citation', url: 'https://example.com' },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        type: 'reasoning',
+        id: 'reasoning-1',
+        content: [{ type: 'input_text', text: 'thinking' }],
+        providerData: {
+          encrypted_content: 'enc_reasoning',
+        },
+      },
+      {
+        type: 'computer_call',
+        id: 'computer-1',
+        callId: 'computer-call-1',
+        action: 'open',
+        status: 'in_progress',
+        providerData: {
+          pending_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-result-1',
+        callId: 'computer-call-1',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'message',
+      id: 'assistant-1',
+      role: 'assistant',
+      content: [
+        {
+          type: 'output_text',
+          text: 'done',
+          annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'reasoning',
+      id: 'reasoning-1',
+      encrypted_content: 'enc_reasoning',
+    });
+    expect(items[2]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-1',
+      call_id: 'computer-call-1',
+      pending_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+    });
+    expect(items[3]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-result-1',
+      call_id: 'computer-call-1',
+      acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+    });
+  });
+
+  it('omits empty computer safety checks when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-empty-1',
+        callId: 'computer-empty-call-1',
+        action: { type: 'wait' },
+        status: 'completed',
+        providerData: {
+          pending_safety_checks: [],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-empty-result-1',
+        callId: 'computer-empty-call-1',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-empty-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[0]).not.toHaveProperty('pending_safety_checks');
+
+    expect(items[1]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-empty-result-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[1]).not.toHaveProperty('acknowledged_safety_checks');
+  });
+
+  it('preserves batched computer actions when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-2',
+        callId: 'computer-call-2',
+        status: 'completed',
+        actions: [
+          { type: 'move', x: 1, y: 2 },
+          { type: 'click', x: 1, y: 2, button: 'left' },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-2',
+      call_id: 'computer-call-2',
+      action: { type: 'move', x: 1, y: 2 },
+      actions: [
+        { type: 'move', x: 1, y: 2 },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    });
+  });
+
+  it('converts tool search items and namespaced function calls', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          namespaceHints: ['crm'],
+          terms: ['orders'],
+          maxResults: 3,
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'list_open_orders',
+            namespace: 'crm',
+          },
+        ],
+      },
+      {
+        type: 'function_call',
+        id: 'fc1',
+        callId: 'call_1',
+        name: 'list_open_orders',
+        namespace: 'crm',
+        arguments: '{"customer_id":"customer_42"}',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      status: 'completed',
+      arguments: {
+        namespaceHints: ['crm'],
+        terms: ['orders'],
+        maxResults: 3,
+      },
+    });
+    expect(items[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          function_name: 'list_open_orders',
+          namespace: 'crm',
+        },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call',
+      id: 'fc1',
+      call_id: 'call_1',
+      name: 'list_open_orders',
+      namespace: 'crm',
+      arguments: '{"customer_id":"customer_42"}',
+      status: 'completed',
+    });
+  });
+
+  it('converts top-level tool search references without a namespace', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          function_name: 'get_shipping_eta',
+        },
+      ],
+    });
+  });
+
+  it('preserves concrete tool payloads in tool search outputs', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'namespace',
+            name: 'crm',
+            description: 'CRM tools.',
+            tools: [
+              {
+                type: 'function',
+                name: 'list_open_orders',
+                description: 'List open orders.',
+                deferLoading: true,
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    customerId: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['customerId'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders.',
+              defer_loading: true,
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerId: {
+                    type: 'string',
+                  },
+                },
+                required: ['customerId'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('strips output-only created_by when replaying tool search outputs', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [],
+        providerData: {
+          call_id: 'call_ts_1',
+          execution: 'client',
+          created_by: 'assistant',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [],
+      call_id: 'call_ts_1',
+      execution: 'client',
+    });
+  });
+
+  it('strips output-only created_by after expanding provider data', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call',
+        id: 'fc_created_by',
+        callId: 'call_created_by',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        providerData: {
+          created_by: 'assistant',
+          retained: 'provider metadata',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'function_call',
+      id: 'fc_created_by',
+      call_id: 'call_created_by',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      retained: 'provider metadata',
+    });
+  });
+
+  it('preserves raw tool search call_id and execution fields when replaying raw Responses items', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        status: 'completed',
+        arguments: {
+          paths: ['crm.lookup_account'],
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        status: 'completed',
+        tools: [],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      call_id: 'call_ts_1',
+      execution: 'client',
+      status: 'completed',
+      arguments: {
+        paths: ['crm.lookup_account'],
+      },
+    });
+    expect(items[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      call_id: 'call_ts_1',
+      execution: 'client',
+      status: 'completed',
+      tools: [],
+    });
+  });
+
+  it('converts structured tool outputs into input items', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c2',
+        namespace: 'crm',
+        output: [
+          { type: 'input_text', text: 'hello' },
+          {
+            type: 'input_image',
+            image: 'https://example.com/img.png',
+            detail: 'auto',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c2',
+      output: [
+        { type: 'input_text', text: 'hello' },
+        {
+          type: 'input_image',
+          image_url: 'https://example.com/img.png',
+          detail: 'auto',
+        },
+      ],
+    });
+  });
+
+  it('keeps only supported shell_call fields when replaying input items', () => {
+    const items = getInputItems([
+      {
+        type: 'shell_call',
+        id: 'sh3',
+        callId: 's3',
+        status: 'completed',
+        action: {
+          commands: ['echo ok'],
+        },
+        providerData: {
+          environment: {
+            type: 'container_reference',
+            containerId: 'cont_789',
+          },
+          created_by: 'api',
+          unexpected: 'value',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'shell_call',
+      id: 'sh3',
+      call_id: 's3',
+      status: 'completed',
+      action: {
+        commands: ['echo ok'],
+        timeout_ms: null,
+        max_output_length: null,
+      },
+      environment: {
+        type: 'container_reference',
+        container_id: 'cont_789',
+      },
+    });
+    expect((items[0] as any).created_by).toBeUndefined();
+    expect((items[0] as any).unexpected).toBeUndefined();
+  });
+
+  it('handles string and fallback outputs for function_call_result', () => {
+    const schemaJson = JSON.stringify({ type: 'text', text: 'ok' });
+    const items = getInputItems([
+      { type: 'function_call_result', callId: 'str', output: 'ok' },
+      { type: 'function_call_result', callId: 'num', output: 42 },
+      {
+        type: 'function_call_result',
+        callId: 'schema',
+        output: { type: 'text', text: schemaJson },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'str',
+      output: 'ok',
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'num',
+      output: '42',
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'schema',
+      output: schemaJson,
+    });
+  });
+
+  it('converts message content arrays for user and assistant roles', () => {
+    const items = getInputItems([
+      {
+        id: 'u1',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'hello' },
+          {
+            type: 'input_image',
+            image: 'https://example.com/user.png',
+          },
+          {
+            type: 'input_image',
+            image: { id: 'file_img' },
+            detail: 'high',
+          },
+          {
+            type: 'input_file',
+            file: 'data:text/plain;base64,Zm9v',
+            filename: 'foo.txt',
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_doc' },
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/doc.txt' },
+          },
+        ],
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          { type: 'output_text', text: 'done' },
+          { type: 'refusal', refusal: 'nope' },
+        ],
+      },
+      {
+        id: 's1',
+        role: 'system',
+        content: 'system',
+      },
+    ] as any);
+
+    const user = items.find((entry) => (entry as any).role === 'user') as any;
+    expect(user.content).toEqual([
+      { type: 'input_text', text: 'hello' },
+      {
+        type: 'input_image',
+        image_url: 'https://example.com/user.png',
+        detail: 'auto',
+      },
+      { type: 'input_image', file_id: 'file_img', detail: 'high' },
+      {
+        type: 'input_file',
+        file_data: 'data:text/plain;base64,Zm9v',
+        filename: 'foo.txt',
+      },
+      { type: 'input_file', file_id: 'file_doc' },
+      { type: 'input_file', file_url: 'https://example.com/doc.txt' },
+    ]);
+
+    const assistant = items.find(
+      (entry) =>
+        (entry as any).type === 'message' &&
+        (entry as any).role === 'assistant',
+    ) as any;
+    expect(assistant.content).toEqual([
+      { type: 'output_text', text: 'done', annotations: [] },
+      { type: 'refusal', refusal: 'nope' },
+    ]);
+
+    const system = items.find(
+      (entry) => (entry as any).role === 'system',
+    ) as any;
+    expect(system).toMatchObject({
+      id: 's1',
+      role: 'system',
+      content: 'system',
+    });
+  });
+
+  it('rejects unsupported string file inputs in messages', () => {
+    expect(() =>
+      getInputItems([
+        {
+          role: 'user',
+          content: [{ type: 'input_file', file: 'file_123' }],
+        },
+      ] as any),
+    ).toThrow(UserError);
+  });
+
+  it('treats raw base64 input_file strings in messages as inline data', () => {
+    const base64 = Buffer.from('message-inline').toString('base64');
+    const items = getInputItems([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: base64,
+            filename: 'inline.txt',
+          },
+        ],
+      },
+    ] as any);
+
+    const user = items.find((entry) => (entry as any).role === 'user') as any;
+    expect(user.content).toEqual([
+      {
+        type: 'input_file',
+        file_data: base64,
+        filename: 'inline.txt',
+      },
+    ]);
+  });
+
+  it('converts legacy input_image fields in structured outputs', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'legacy-images',
+        output: [
+          { type: 'input_image', imageUrl: 'https://example.com/legacy.png' },
+          { type: 'input_image', fileId: 'file_legacy' },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'legacy-images',
+      output: [
+        { type: 'input_image', image_url: 'https://example.com/legacy.png' },
+        { type: 'input_image', file_id: 'file_legacy' },
+      ],
+    });
+  });
+
+  it('passes through unknown image detail values', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c3',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/custom.png',
+            detail: 'creative+1',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c3',
+      output: [
+        {
+          type: 'input_image',
+          image_url: 'https://example.com/custom.png',
+          detail: 'creative+1',
+        },
+      ],
+    });
+  });
+
+  it('converts structured image outputs with file ids', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c4',
+        output: [
+          {
+            type: 'input_image',
+            image: { id: 'file_abc' },
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c4',
+      output: [
+        {
+          type: 'input_image',
+          file_id: 'file_abc',
+        },
+      ],
+    });
+  });
+
+  it('converts ToolOutputImage data from Uint8Array', () => {
+    const bytes = Buffer.from('ai-image');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c5',
+        output: {
+          type: 'image',
+          image: {
+            data: new Uint8Array(bytes),
+            mediaType: 'image/png',
+          },
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c5',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/png;base64,${bytes.toString('base64')}`,
+        },
+      ],
+    });
+  });
+
+  it('converts ToolOutputImage mimeType aliases into data URLs', () => {
+    const base64 = Buffer.from('ai-image').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c6',
+        output: {
+          type: 'image',
+          image: {
+            data: base64,
+            mimeType: 'image/jpeg',
+          },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'c7',
+        output: {
+          type: 'image',
+          data: base64,
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c6',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c7',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+  });
+
+  it('preserves existing data URLs when ToolOutputImage mimeType aliases are present', () => {
+    const base64 = Buffer.from('existing-data-url').toString('base64');
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c8',
+        output: {
+          type: 'image',
+          image: {
+            data: dataUrl,
+            mimeType: 'image/jpeg',
+          },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'c9',
+        output: {
+          type: 'image',
+          data: dataUrl,
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c8',
+      output: [
+        {
+          type: 'input_image',
+          image_url: dataUrl,
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c9',
+      output: [
+        {
+          type: 'input_image',
+          image_url: dataUrl,
+        },
+      ],
+    });
+  });
+
+  it('falls back to top-level mimeType for nested image data', () => {
+    const base64 = Buffer.from('top-level-mimetype').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c10',
+        output: {
+          type: 'image',
+          image: {
+            data: base64,
+          },
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c10',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+  });
+
+  it('preserves filenames for inline input_file data', () => {
+    const base64 = Buffer.from('file-payload').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c6',
+        output: [
+          {
+            type: 'input_file',
+            file: `data:application/pdf;base64,${base64}`,
+            filename: 'system-card.pdf',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c6',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/pdf;base64,${base64}`,
+          filename: 'system-card.pdf',
+        },
+      ],
+    });
+  });
+
+  it('treats raw base64 input_file strings as inline data', () => {
+    const base64 = Buffer.from('raw-inline').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'raw-base64',
+        output: [
+          {
+            type: 'input_file',
+            file: base64,
+            filename: 'inline.txt',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'raw-base64',
+      output: [
+        {
+          type: 'input_file',
+          file_data: base64,
+          filename: 'inline.txt',
+        },
+      ],
+    });
+  });
+
+  it('treats non-http input_file strings as file URLs', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'file-url',
+        output: [
+          {
+            type: 'input_file',
+            file: 'file://local/path.txt',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file-url',
+      output: [
+        {
+          type: 'input_file',
+          file_url: 'file://local/path.txt',
+        },
+      ],
+    });
+  });
+
+  it('preserves filenames for legacy ToolOutputFileContent values', () => {
+    const bytes = Buffer.from('legacy file data');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c7',
+        output: {
+          type: 'file',
+          file: {
+            data: new Uint8Array(bytes),
+            mediaType: 'application/pdf',
+            filename: 'legacy.pdf',
+          },
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c7',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/pdf;base64,${bytes.toString('base64')}`,
+          filename: 'legacy.pdf',
+        },
+      ],
+    });
+  });
+
+  it('converts built-in tool calls', () => {
+    const web = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'w',
+        status: 'completed',
+        providerData: {
+          type: 'web_search',
+          action: {
+            type: 'search',
+            query: 'latest sdk',
+            queries: ['latest sdk'],
+          },
+        },
+      },
+    ] as any);
+    expect(web[0]).toMatchObject({
+      type: 'web_search_call',
+      action: { type: 'search', query: 'latest sdk', queries: ['latest sdk'] },
+    });
+
+    const webCall = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'w',
+        status: 'completed',
+        providerData: {
+          type: 'web_search_call',
+          action: { type: 'open_page', url: 'https://example.com' },
+        },
+      },
+    ] as any);
+    expect(webCall[0]).toMatchObject({
+      type: 'web_search_call',
+      action: { type: 'open_page', url: 'https://example.com' },
+    });
+
+    const file = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'f',
+        status: 'completed',
+        providerData: { type: 'file_search', queries: [] },
+      },
+    ] as any);
+    expect(file[0]).toMatchObject({ type: 'file_search_call', queries: [] });
+
+    const ci = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'c',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: { type: 'code_interpreter', code: 'print()' },
+      },
+    ] as any);
+    expect(ci[0]).toMatchObject({
+      type: 'code_interpreter_call',
+      code: 'print()',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
+    });
+
+    const mcp = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'mcp_1',
+        name: 'mcp_call',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'mcp_call',
+          id: 'mcp_1',
+          name: 'lookup',
+          arguments: '{}',
+          server_label: 'server',
+        },
+      },
+    ] as any);
+    expect(mcp[0]).toMatchObject({
+      type: 'mcp_call',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
+    });
+
+    const img = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'i',
+        status: 'completed',
+        providerData: { type: 'image_generation', result: 'img' },
+      },
+    ] as any);
+    expect(img[0]).toMatchObject({
+      type: 'image_generation_call',
+      result: 'img',
+    });
+  });
+
+  it('converts legacy tool outputs for functions', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        id: 'f',
+        callId: 'c',
+        output: { type: 'image', image: 'https://example.com/tool.png' },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c',
+      output: [
+        {
+          type: 'input_image',
+          image_url: 'https://example.com/tool.png',
+        },
+      ],
+    });
+  });
+
+  it('converts legacy image output variations for functions', () => {
+    const base64 = Buffer.from('img-data').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'img1',
+        output: { type: 'image', image: { url: 'https://example.com/a.png' } },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img2',
+        output: {
+          type: 'image',
+          image: { data: base64, mediaType: 'image/png' },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img3',
+        output: { type: 'image', image: { id: 'file_123' } },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img4',
+        output: { type: 'image', imageUrl: 'https://example.com/legacy.png' },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img5',
+        output: { type: 'image', fileId: 'file_999' },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img6',
+        output: { type: 'image', data: base64 },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img1',
+      output: [{ type: 'input_image', image_url: 'https://example.com/a.png' }],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img2',
+      output: [
+        { type: 'input_image', image_url: `data:image/png;base64,${base64}` },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img3',
+      output: [{ type: 'input_image', file_id: 'file_123' }],
+    });
+    expect(items[3]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img4',
+      output: [
+        { type: 'input_image', image_url: 'https://example.com/legacy.png' },
+      ],
+    });
+    expect(items[4]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img5',
+      output: [{ type: 'input_image', file_id: 'file_999' }],
+    });
+    expect(items[5]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img6',
+      output: [{ type: 'input_image', image_url: base64 }],
+    });
+  });
+
+  it('converts legacy image outputs with details and binary data', () => {
+    const bytes = Buffer.from('binary-image');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'img7',
+        output: {
+          type: 'image',
+          detail: 'high',
+          image: { fileId: 'file_nested' },
+          providerData: { note: 'meta' },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'img8',
+        output: {
+          type: 'image',
+          data: new Uint8Array(bytes),
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img7',
+      output: [{ type: 'input_image', file_id: 'file_nested', detail: 'high' }],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'img8',
+      output: [{ type: 'input_image', image_url: bytes.toString('base64') }],
+    });
+  });
+
+  it('converts legacy file output variations for functions', () => {
+    const base64 = Buffer.from('file-data').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'file1',
+        output: {
+          type: 'file',
+          file: 'https://example.com/file.txt',
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file2',
+        output: {
+          type: 'file',
+          file: { url: 'https://example.com/other.txt', filename: 'other.txt' },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file3',
+        output: { type: 'file', id: 'file_abc', filename: 'legacy.txt' },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file4',
+        output: {
+          type: 'file',
+          fileData: base64,
+          mediaType: 'text/plain',
+          filename: 'legacy-data.txt',
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file5',
+        output: {
+          type: 'file',
+          fileUrl: 'https://example.com/legacy-url.txt',
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file6',
+        output: {
+          type: 'file',
+          fileData: new Uint8Array(Buffer.from('binary-data')),
+          mediaType: 'application/octet-stream',
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file7',
+        output: {
+          type: 'file',
+          fileId: 'file_legacy_id',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file1',
+      output: [
+        { type: 'input_file', file_url: 'https://example.com/file.txt' },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file2',
+      output: [
+        {
+          type: 'input_file',
+          file_url: 'https://example.com/other.txt',
+          filename: 'other.txt',
+        },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file3',
+      output: [
+        { type: 'input_file', file_id: 'file_abc', filename: 'legacy.txt' },
+      ],
+    });
+    expect(items[3]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file4',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:text/plain;base64,${base64}`,
+          filename: 'legacy-data.txt',
+        },
+      ],
+    });
+    expect(items[4]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file5',
+      output: [
+        {
+          type: 'input_file',
+          file_url: 'https://example.com/legacy-url.txt',
+        },
+      ],
+    });
+    expect(items[5]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file6',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/octet-stream;base64,${Buffer.from(
+            'binary-data',
+          ).toString('base64')}`,
+        },
+      ],
+    });
+    expect(items[6]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file7',
+      output: [
+        {
+          type: 'input_file',
+          file_id: 'file_legacy_id',
+        },
+      ],
+    });
+  });
+
+  it('converts file outputs with inline data objects and ids', () => {
+    const bytes = Buffer.from('inline-data');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'file8',
+        output: {
+          type: 'file',
+          file: {
+            data: bytes.toString('base64'),
+            mediaType: 'text/plain',
+            filename: 'inline.txt',
+          },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file9',
+        output: {
+          type: 'file',
+          file: {
+            data: new Uint8Array(bytes),
+            mediaType: 'application/octet-stream',
+          },
+          providerData: { note: 'meta' },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'file10',
+        output: {
+          type: 'file',
+          file: { fileId: 'file_nested' },
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file8',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:text/plain;base64,${bytes.toString('base64')}`,
+          filename: 'inline.txt',
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file9',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/octet-stream;base64,${bytes.toString(
+            'base64',
+          )}`,
+        },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'file10',
+      output: [{ type: 'input_file', file_id: 'file_nested' }],
+    });
+  });
+
+  it('converts structured input_file outputs with file objects and legacy fields', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'structured-files',
+        output: [
+          { type: 'input_file', file: { id: 'file_obj' } },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/file.txt' },
+          },
+          {
+            type: 'input_file',
+            fileData: 'Zm9v',
+            fileUrl: 'https://example.com/legacy.txt',
+            fileId: 'file_legacy',
+            filename: 'legacy.txt',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'structured-files',
+      output: [
+        { type: 'input_file', file_id: 'file_obj' },
+        {
+          type: 'input_file',
+          file_url: 'https://example.com/file.txt',
+        },
+        {
+          type: 'input_file',
+          file_data: 'Zm9v',
+          file_url: 'https://example.com/legacy.txt',
+          file_id: 'file_legacy',
+          filename: 'legacy.txt',
+        },
+      ],
+    });
+  });
+
+  it('throws on unsupported structured output types', () => {
+    expect(() =>
+      getInputItems([
+        {
+          type: 'function_call_result',
+          callId: 'unsupported',
+          output: [{ type: 'input_audio', data: '...' }],
+        },
+      ] as any),
+    ).toThrow(UserError);
+  });
+
+  it('accepts web search call without action for backward compatibility', () => {
+    const items = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'w-missing-action',
+        providerData: { type: 'web_search_call' },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'web_search_call',
+      id: 'w-missing-action',
+      status: 'failed',
+    });
+    expect(items[0]).not.toHaveProperty('action');
+  });
+
+  it('errors when web search call action is malformed', () => {
+    expect(() =>
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'w-invalid-action',
+          providerData: {
+            type: 'web_search_call',
+            action: { query: 'latest sdk' },
+          },
+        },
+      ] as any),
+    ).toThrow(/invalid action/);
+  });
+
+  it('errors on unsupported built-in tool', () => {
+    expect(() =>
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'b',
+          providerData: { type: 'other' },
+        },
+      ] as any),
+    ).toThrow(UserError);
+  });
+});
+
+describe('convertToOutputItem', () => {
+  it('lifts hosted Programmatic Tool Calling caller linkage', () => {
+    expect(
+      convertToOutputItem([
+        {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+          status: 'completed',
+          caller: { type: 'program', caller_id: 'call_prog_1' },
+        },
+      ] as any),
+    ).toEqual([
+      {
+        type: 'hosted_tool_call',
+        id: 'ci_1',
+        name: 'code_interpreter_call',
+        status: 'completed',
+        output: undefined,
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+        },
+      },
+    ]);
+  });
+
+  it('lifts hosted MCP caller linkage', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_1',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'completed',
+        output: 'ok',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ] as any);
+
+    expect(output).toMatchObject({
+      type: 'hosted_tool_call',
+      id: 'mcp_1',
+      name: 'mcp_call',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+    });
+    expect(output.providerData).not.toHaveProperty('caller');
+  });
+
+  it('preserves empty hosted MCP outputs', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_1',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'completed',
+        output: '',
+      },
+    ] as any);
+
+    expect(output).toMatchObject({
+      type: 'hosted_tool_call',
+      id: 'mcp_1',
+      name: 'mcp_call',
+      output: '',
+    });
+    expect(output.providerData).not.toHaveProperty('output');
+  });
+
+  it('converts Programmatic Tool Calling items and caller linkage', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        callId: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+        providerData: {},
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        callId: 'call_1',
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: { id: 'fc_1', type: 'function_call' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        callId: 'call_prog_1',
+        output: 'ok',
+        status: 'completed',
+        providerData: {},
+      },
+    ]);
+  });
+
+  it('converts output items', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'message',
+        id: 'm',
+        role: 'assistant',
+        content: [
+          {
+            type: 'output_text',
+            text: 'hi',
+            annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+          },
+        ],
+        status: 'completed',
+      },
+      {
+        type: 'function_call',
+        id: 'f',
+        call_id: 'c',
+        name: 'fn',
+        arguments: '{}',
+        status: 'completed',
+      },
+      { type: 'web_search_call', id: 'w', status: 'completed' },
+      {
+        type: 'computer_call',
+        id: 'cc',
+        call_id: 'x',
+        action: { type: 'wait' },
+        status: 'completed',
+        pending_safety_checks: [],
+      },
+    ] as any);
+    expect(out[0]).toMatchObject({ type: 'message', role: 'assistant' });
+    expect(out[1]).toMatchObject({ type: 'function_call', name: 'fn' });
+    expect(out[2]).toMatchObject({
+      type: 'hosted_tool_call',
+      name: 'web_search_call',
+    });
+    expect(out[3]).toMatchObject({ type: 'computer_call' });
+    expect((out[0] as any).content[0]).toEqual({
+      type: 'output_text',
+      text: 'hi',
+      providerData: {
+        annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+      },
+    });
+  });
+
+  it('preserves batched computer actions in output items', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'computer_call',
+        id: 'cc-actions',
+        call_id: 'x-actions',
+        actions: [
+          { type: 'move', x: 10, y: 20 },
+          { type: 'click', x: 10, y: 20, button: 'left' },
+        ],
+        status: 'completed',
+        pending_safety_checks: [],
+      },
+    ] as any);
+
+    expect(out[0]).toMatchObject({
+      type: 'computer_call',
+      callId: 'x-actions',
+      action: { type: 'move', x: 10, y: 20 },
+      actions: [
+        { type: 'move', x: 10, y: 20 },
+        { type: 'click', x: 10, y: 20, button: 'left' },
+      ],
+    });
+  });
+
+  it('converts tool search outputs and preserves function namespaces', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          namespaceHints: ['crm'],
+          terms: ['orders'],
+          maxResults: 3,
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            function_name: 'list_open_orders',
+            namespace: 'crm',
+          },
+        ],
+      },
+      {
+        type: 'function_call',
+        id: 'fc1',
+        call_id: 'call_1',
+        name: 'list_open_orders',
+        namespace: 'crm',
+        arguments: '{"customer_id":"customer_42"}',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      status: 'completed',
+      arguments: {
+        namespaceHints: ['crm'],
+        terms: ['orders'],
+        maxResults: 3,
+      },
+      providerData: {},
+    });
+    expect(out[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          functionName: 'list_open_orders',
+          namespace: 'crm',
+        },
+      ],
+      providerData: {},
+    });
+    expect(out[2]).toMatchObject({
+      type: 'function_call',
+      id: 'fc1',
+      callId: 'call_1',
+      name: 'list_open_orders',
+      namespace: 'crm',
+      arguments: '{"customer_id":"customer_42"}',
+      status: 'completed',
+    });
+  });
+
+  it('converts top-level tool search outputs without a namespace', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            function_name: 'get_shipping_eta',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          functionName: 'get_shipping_eta',
+        },
+      ],
+      providerData: {},
+    });
+  });
+
+  it('preserves concrete tool payloads from tool search outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'namespace',
+            name: 'crm',
+            description: 'CRM tools.',
+            tools: [
+              {
+                type: 'function',
+                name: 'list_open_orders',
+                description: 'List open orders.',
+                defer_loading: true,
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    customerId: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['customerId'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA.',
+            defer_loading: true,
+            strict: true,
+            parameters: {
+              type: 'object',
+              properties: {
+                trackingNumber: {
+                  type: 'string',
+                },
+              },
+              required: ['trackingNumber'],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders.',
+              deferLoading: true,
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerId: {
+                    type: 'string',
+                  },
+                },
+                required: ['customerId'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA.',
+          deferLoading: true,
+          strict: true,
+          parameters: {
+            type: 'object',
+            properties: {
+              trackingNumber: {
+                type: 'string',
+              },
+            },
+            required: ['trackingNumber'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      providerData: {},
+    });
+  });
+
+  it('preserves official tool search metadata when converting outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        created_by: 'assistant',
+        tools: [],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [],
+      providerData: {
+        call_id: 'call_ts_1',
+        execution: 'client',
+        created_by: 'assistant',
+      },
+    });
+  });
+
+  it('rejects unknown message content', () => {
+    expect(() =>
+      convertToOutputItem([
+        {
+          type: 'message',
+          id: 'm',
+          role: 'assistant',
+          content: [{ type: 'other' }],
+          status: 'completed',
+        },
+      ] as any),
+    ).toThrow();
+  });
+
+  it('converts function_call_output items into function_call_result entries', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-1',
+        call_id: 'call-1',
+        name: 'lookup',
+        namespace: 'crm',
+        output: 'done',
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      id: 'out-1',
+      callId: 'call-1',
+      name: 'lookup',
+      namespace: 'crm',
+      output: 'done',
+      status: 'completed',
+    });
+  });
+
+  it('converts structured function_call_output payloads into structured outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-2',
+        call_id: 'call-2',
+        function_name: 'search',
+        status: 'in_progress',
+        output: [
+          { type: 'input_text', text: 'hello' },
+          {
+            type: 'input_image',
+            image_url: 'https://example.com/img.png',
+            detail: 'high',
+          },
+          {
+            type: 'input_file',
+            file_url: 'https://example.com/file.txt',
+            filename: 'file.txt',
+          },
+        ],
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-2',
+      name: 'search',
+      status: 'in_progress',
+      output: [
+        { type: 'input_text', text: 'hello' },
+        {
+          type: 'input_image',
+          image: 'https://example.com/img.png',
+          detail: 'high',
+        },
+        {
+          type: 'input_file',
+          file: { url: 'https://example.com/file.txt' },
+          filename: 'file.txt',
+        },
+      ],
+    });
+  });
+
+  it('converts input_image file_id outputs into protocol images', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-2b',
+        call_id: 'call-2b',
+        output: [{ type: 'input_image', file_id: 'file_abc' }],
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-2b',
+      output: [{ type: 'input_image', image: { id: 'file_abc' } }],
+    });
+  });
+
+  it('drops invalid input_image items from function_call_output results', () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-3',
+        call_id: 'call-3',
+        output: [{ type: 'input_image' }, { type: 'input_text', text: 'ok' }],
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-3',
+      output: [{ type: 'input_text', text: 'ok' }],
+    });
+    expect(debugSpy).toHaveBeenCalled();
+    debugSpy.mockRestore();
+  });
+
+  it('converts file_data and file_id outputs into protocol input_file payloads', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-4',
+        call_id: 'call-4',
+        output: [
+          {
+            type: 'input_file',
+            file_data: 'data:text/plain;base64,Zm9v',
+            filename: 'foo.txt',
+          },
+          { type: 'input_file', file_id: 'file_123' },
+        ],
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-4',
+      output: [
+        {
+          type: 'input_file',
+          file: 'data:text/plain;base64,Zm9v',
+          filename: 'foo.txt',
+        },
+        { type: 'input_file', file: { id: 'file_123' } },
+      ],
+    });
+  });
+
+  it('coerces non-array function_call_output outputs to empty strings', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-5',
+        call_id: 'call-5',
+        output: { foo: 'bar' },
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-5',
+      output: '',
+    });
+  });
+
+  it('converts shell and apply_patch tool items', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'shell_call',
+        id: 'sh1',
+        call_id: 's1',
+        status: 'completed',
+        action: { commands: ['echo hi'], timeout_ms: 15, max_output_length: 3 },
+      } as any,
+      {
+        type: 'shell_call_output',
+        id: 'sh2',
+        call_id: 's1',
+        status: 'incomplete',
+        output: [
+          {
+            stdout: 'hi',
+            stderr: '',
+            outcome: { type: 'exit', exit_code: 0 },
+          },
+        ],
+      } as any,
+      {
+        type: 'apply_patch_call',
+        id: 'ap1',
+        call_id: 'p1',
+        status: 'in_progress',
+        operation: { type: 'delete_file', path: 'tmp.txt' },
+      } as any,
+      {
+        type: 'apply_patch_call_output',
+        id: 'ap2',
+        call_id: 'p1',
+        status: 'failed',
+        output: 'conflict',
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'shell_call',
+      callId: 's1',
+      action: { commands: ['echo hi'], timeoutMs: 15, maxOutputLength: 3 },
+    });
+    expect(out[1]).toMatchObject({
+      type: 'shell_call_output',
+      callId: 's1',
+      status: 'incomplete',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    });
+    expect(out[2]).toMatchObject({
+      type: 'apply_patch_call',
+      callId: 'p1',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    });
+    expect(out[3]).toMatchObject({
+      type: 'apply_patch_call_output',
+      callId: 'p1',
+      status: 'failed',
+      output: 'conflict',
+    });
+  });
+
+  it('preserves apply_patch update move destinations from Responses output', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'apply_patch_call',
+        id: 'ap-move',
+        call_id: 'p-move',
+        status: 'in_progress',
+        operation: {
+          type: 'update_file',
+          path: 'old.txt',
+          diff: '@@\n-old\n+new\n',
+          move_to: 'renamed/new.txt',
+        },
+      } as any,
+    ]);
+
+    expect(output).toMatchObject({
+      type: 'apply_patch_call',
+      callId: 'p-move',
+      operation: {
+        type: 'update_file',
+        path: 'old.txt',
+        diff: '@@\n-old\n+new\n',
+        moveTo: 'renamed/new.txt',
+      },
+    });
+  });
+
+  it.each([undefined, null])(
+    'keeps apply_patch updates in place when move_to is %s',
+    (moveTo) => {
+      const operation = {
+        type: 'update_file',
+        path: 'keep.txt',
+        diff: '@@\n-old\n+new\n',
+        ...(moveTo !== undefined ? { move_to: moveTo } : {}),
+      };
+      const [output] = convertToOutputItem([
+        {
+          type: 'apply_patch_call',
+          id: 'ap-in-place',
+          call_id: 'p-in-place',
+          status: 'in_progress',
+          operation,
+        } as any,
+      ]);
+
+      expect((output as any).operation).toEqual({
+        type: 'update_file',
+        path: 'keep.txt',
+        diff: '@@\n-old\n+new\n',
+      });
+    },
+  );
+
+  it.each([5, ''])(
+    'rejects malformed apply_patch move destinations: %j',
+    (moveTo) => {
+      expect(() =>
+        convertToOutputItem([
+          {
+            type: 'apply_patch_call',
+            id: 'ap-invalid-move',
+            call_id: 'p-invalid-move',
+            status: 'in_progress',
+            operation: {
+              type: 'update_file',
+              path: 'old.txt',
+              diff: '@@\n-old\n+new\n',
+              move_to: moveTo,
+            },
+          } as any,
+        ]),
+      ).toThrowError(
+        'apply_patch_call update_file move_to must be a non-empty string',
+      );
+    },
+  );
+
+  it.each([
+    [
+      'camelCase moveTo on update_file',
+      {
+        type: 'update_file',
+        path: 'old.txt',
+        diff: '@@\n-old\n+new\n',
+        moveTo: 'unsupported.txt',
+      },
+      {
+        type: 'update_file',
+        path: 'old.txt',
+        diff: '@@\n-old\n+new\n',
+      },
+    ],
+    [
+      'move_to on create_file',
+      {
+        type: 'create_file',
+        path: 'created.txt',
+        diff: '+created\n',
+        move_to: 'unsupported.txt',
+      },
+      {
+        type: 'create_file',
+        path: 'created.txt',
+        diff: '+created\n',
+      },
+    ],
+    [
+      'move_to on delete_file',
+      {
+        type: 'delete_file',
+        path: 'deleted.txt',
+        move_to: 'unsupported.txt',
+      },
+      {
+        type: 'delete_file',
+        path: 'deleted.txt',
+      },
+    ],
+  ])(
+    'ignores unsupported apply_patch destinations: %s',
+    (_, operation, expected) => {
+      const [output] = convertToOutputItem([
+        {
+          type: 'apply_patch_call',
+          id: 'ap-unsupported-move',
+          call_id: 'p-unsupported-move',
+          status: 'in_progress',
+          operation,
+        } as any,
+      ]);
+
+      expect((output as any).operation).toEqual(expected);
+    },
+  );
+});

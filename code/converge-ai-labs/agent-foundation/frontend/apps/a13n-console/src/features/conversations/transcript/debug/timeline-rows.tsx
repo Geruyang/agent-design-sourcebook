@@ -1,0 +1,301 @@
+import type { TFunction } from "i18next";
+import { useState, type CSSProperties, type ReactNode } from "react";
+import { Link } from "react-router";
+import { useTranslation } from "react-i18next";
+import { CopyButton } from "../../../../shared/identity";
+import {
+  StoredContent,
+  LegacyTruncation,
+  useStoredReference,
+} from "../../stored-content";
+import { formatDuration, formatTokens } from "../../format";
+import type {
+  ActionEntry,
+  ContentEntry,
+  EventEntry,
+  ModelEntry,
+  TimelineEntry,
+} from "../../timeline";
+import { DiffBadges } from "../diff-badges";
+import {
+  asksAQuestion,
+  entryGlyph,
+  entryLabel,
+  entrySubject,
+  StateMark,
+  workState,
+  type WorkState,
+} from "../entry-language";
+import { GuidanceMessage } from "../user-message";
+import { EntryPane } from "./entry-pane";
+import { bar, type RunScope } from "./scope";
+import styles from "./debug.module.css";
+
+/** Model requests are the skeleton; what they emitted indents beneath them. */
+export function TimelineRows({
+  entries,
+  scope,
+  nested = false,
+}: {
+  entries: readonly TimelineEntry[];
+  scope: RunScope;
+  nested?: boolean;
+}) {
+  if (!entries.length) return null;
+  return (
+    <div className={nested ? styles.children : styles.timeline}>
+      {entries.map((entry) => (
+        <TimelineRow key={entry.id} entry={entry} scope={scope} />
+      ))}
+    </div>
+  );
+}
+
+function TimelineRow({
+  entry,
+  scope,
+}: {
+  entry: TimelineEntry;
+  scope: RunScope;
+}) {
+  if (entry.kind === "reply" && !entry.subagentRunId)
+    return <ReplyBlock entry={entry} />;
+  if (
+    entry.kind === "guidance" &&
+    !entry.steeringSource &&
+    !entry.subagentRunId
+  )
+    return (
+      <GuidanceMessage
+        text={entry.text}
+        itemId={entry.id}
+        sourceId={entry.sourceId}
+      />
+    );
+  if (entry.kind === "event") return <EventRow entry={entry} scope={scope} />;
+  return <ExpandableRow entry={entry} scope={scope} />;
+}
+
+function ExpandableRow({
+  entry,
+  scope,
+}: {
+  entry: TimelineEntry;
+  scope: RunScope;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const Glyph = entryGlyph(entry);
+  // Reasoning is something the agent said, not something it did: it carries no
+  // outcome, no duration and no place on the time bar.
+  const content = "text" in entry;
+  const children = "children" in entry ? entry.children : [];
+  // A reply is the answer, not a step: it leaves the indent and reads as prose.
+  const nested = children.filter(
+    (child) => child.kind !== "reply" || child.subagentRunId,
+  );
+  const replies = children.filter(
+    (child): child is ContentEntry =>
+      child.kind === "reply" && !child.subagentRunId,
+  );
+  const state = workState(entry.state, scope.run.status);
+  const childPath =
+    entry.kind === "subagent" ? (scope.child?.path ?? null) : null;
+  const text = rowText(entry, state, t, childPath);
+  const track = bar(scope, entry.startedAt, entry.durationMs);
+  return (
+    <div className={styles.entry} data-kind={entry.kind}>
+      <div className={styles.row} data-open={open || undefined}>
+        <button
+          type="button"
+          className={styles.rowTrigger}
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className={styles.marker} aria-hidden="true">
+            <Glyph size={13} />
+          </span>
+          <span className={styles.rowBody}>
+            <span className={styles.name} data-mono={text.mono || undefined}>
+              {text.name}
+            </span>
+            {text.subject && (
+              <span className={styles.subject} title={text.subject}>
+                {text.subject}
+              </span>
+            )}
+          </span>
+        </button>
+        <span className={styles.rowMeta}>
+          {childPath && (
+            <Link className={styles.rowLink} to={childPath}>
+              {t("Open child thread")}
+            </Link>
+          )}
+          {"edit" in entry && entry.edit && (
+            <DiffBadges diff={entry.edit.diff} />
+          )}
+          {text.tokens && <span className={styles.tokens}>{text.tokens}</span>}
+          {!content && (
+            <>
+              <span className={styles.duration}>
+                {entry.durationMs === null
+                  ? ""
+                  : formatDuration(entry.durationMs)}
+              </span>
+              <span
+                className={styles.bar}
+                aria-hidden="true"
+                style={
+                  track
+                    ? ({
+                        "--bar-left": `${track.left}%`,
+                        "--bar-width": `${track.width}%`,
+                      } as CSSProperties)
+                    : undefined
+                }
+                data-empty={track ? undefined : true}
+              />
+              <StateMark state={state} />
+            </>
+          )}
+        </span>
+      </div>
+      {open && <EntryPane entry={entry} scope={scope} />}
+      {!!nested.length && (
+        <TimelineRows entries={nested} scope={scope} nested />
+      )}
+      {replies.map((reply) => (
+        <ReplyBlock key={reply.id} entry={reply} />
+      ))}
+    </div>
+  );
+}
+
+interface RowText {
+  name: string;
+  mono: boolean;
+  subject?: string;
+  tokens?: string;
+}
+
+function rowText(
+  entry: TimelineEntry,
+  state: WorkState,
+  t: TFunction,
+  childPath: string | null,
+): RowText {
+  if (entry.kind === "model") return modelText(entry, t);
+  if ("arguments" in entry) return actionText(entry, state, t, childPath);
+  return { ...entryLabel(entry, t), subject: entrySubject(entry) };
+}
+
+function modelText(entry: ModelEntry, t: TFunction): RowText {
+  const actions = entry.children.filter(
+    (child): child is ActionEntry => "arguments" in child,
+  );
+  const asked = actions.find((child) => child.hitl);
+  const outcome = entry.errorCode
+    ? t("failed · {{code}}", { code: entry.errorCode })
+    : entry.state === "failed"
+      ? t("state.failed")
+      : asked
+        ? t(asksAQuestion(asked) ? "asked a question" : "asked for approval")
+        : actions.length
+          ? t("called {{count}} tools", { count: actions.length })
+          : entry.children.some((child) => child.kind === "reply")
+            ? t("wrote the reply")
+            : entry.endedAt
+              ? t("no output")
+              : t("thinking…");
+  const usage = entry.usage;
+  return {
+    ...entryLabel(entry, t),
+    subject: [entry.model, outcome].filter(Boolean).join(" · "),
+    // Tokens nobody reported are unknown: the pair is absent, not zeroed.
+    tokens:
+      usage && entry.reportedUsage
+        ? `${formatTokens(usage.inputTokens)} → ${formatTokens(usage.outputTokens)}`
+        : undefined,
+  };
+}
+
+function actionText(
+  entry: ActionEntry,
+  state: WorkState,
+  t: TFunction,
+  childPath: string | null,
+): RowText {
+  const notes = [
+    entrySubject(entry),
+    // Without a link to follow, the row still says where the work went.
+    entry.dispatchOnly && !childPath && t("child thread"),
+    state === "waiting" &&
+      t(
+        asksAQuestion(entry)
+          ? "waiting for your answer"
+          : "waiting for your approval",
+      ),
+  ].filter(Boolean) as string[];
+  return { ...entryLabel(entry, t), subject: notes.join(" · ") };
+}
+
+/** The Agent's answer is prose, not a row: it reads at full width. */
+function ReplyBlock({ entry }: { entry: ContentEntry }) {
+  const { t } = useTranslation();
+  const reference = useStoredReference(entry.id, "text");
+  return (
+    <div
+      className={styles.reply}
+      data-interrupted={entry.state === "interrupted" || undefined}
+    >
+      <div className={styles.replyLabel}>
+        <span>{t("Reply")}</span>
+        {entry.state === "interrupted" && <span>{t("interrupted")}</span>}
+        {!reference && (
+          <CopyButton value={entry.text} iconOnly copyLabel={t("Copy reply")} />
+        )}
+      </div>
+      <div className={styles.replyBody}>
+        <StoredContent itemId={entry.id} field="text" value={entry.text} />
+        <LegacyTruncation itemId={entry.id} />
+      </div>
+    </div>
+  );
+}
+
+/** Lifecycle facts stay legible without competing with the work they bracket. */
+export function EventRow({
+  entry,
+  scope,
+  action,
+}: {
+  entry: EventEntry;
+  scope: RunScope;
+  action?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const Glyph = entryGlyph(entry);
+  // A fact with no known time has no offset to show.
+  const offset = Math.max(0, Date.parse(entry.occurredAt ?? "") - scope.start);
+  return (
+    <div className={styles.entry} data-kind="event">
+      <div className={styles.eventRow} data-tone={entry.notice.tone}>
+        <span className={styles.marker} aria-hidden="true">
+          <Glyph size={13} />
+        </span>
+        <span className={styles.rowBody}>
+          <span className={styles.eventName}>{entryLabel(entry, t).name}</span>
+        </span>
+        <span className={styles.rowMeta}>
+          {action}
+          <span className={styles.duration}>
+            {Number.isFinite(offset) && offset > 0
+              ? `+${formatDuration(offset)}`
+              : ""}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}

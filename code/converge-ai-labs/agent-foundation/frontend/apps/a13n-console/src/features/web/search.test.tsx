@@ -1,0 +1,362 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "../../service-client";
+import { AddWebProvider, WebProviderEditor } from "./editor";
+
+const http = vi.hoisted(() => ({
+  GET: vi.fn(),
+  POST: vi.fn(),
+  PATCH: vi.fn(),
+}));
+vi.mock("../../auth/context", () => ({
+  useClient: () => ({ http, workspace: () => http }),
+}));
+vi.mock("../../layout/workspace", () => ({
+  useWorkspace: () => ({
+    organization: { id: "org_test" },
+    workspace: { id: "ws_test" },
+    can: () => true,
+  }),
+}));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
+const provider = {
+  id: "sp_test",
+  name: "Research",
+  type: "brave",
+  enabled: true,
+  workspace_id: "ws_test",
+  organization_id: "org_test",
+  credential_configured: true,
+  config: {},
+  version: 1,
+};
+const definition = {
+  type: "brave",
+  display_name: "Brave Search",
+  setup_url: "https://api-dashboard.search.brave.com/",
+  configuration_schema: {},
+  credential_schema: {
+    type: "object",
+    properties: {
+      api_key: { type: "string", title: "Api Key", writeOnly: true },
+    },
+    required: ["api_key"],
+    writeOnly: true,
+  },
+  authentication: { mode: "required" },
+};
+const response = (data: unknown, status = 200, etag = '"v1"') => ({
+  data,
+  response: new Response(null, { status, headers: { ETag: etag } }),
+});
+function setup(child: React.ReactNode) {
+  const cache = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  render(<QueryClientProvider client={cache}>{child}</QueryClientProvider>);
+  return cache;
+}
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  HTMLElement.prototype.hasPointerCapture = () => false;
+  HTMLElement.prototype.setPointerCapture = () => {};
+  HTMLElement.prototype.releasePointerCapture = () => {};
+  HTMLElement.prototype.scrollIntoView = () => {};
+  http.GET.mockImplementation(async (path: string) =>
+    response(
+      path === "/api/v1/provider-types/{kind}"
+        ? { items: [definition] }
+        : path.endsWith("{provider_id}")
+          ? provider
+          : { items: [provider], next_cursor: null },
+    ),
+  );
+  http.POST.mockResolvedValue(response(provider, 201));
+  http.PATCH.mockResolvedValue(response(provider));
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+it("creates a saved provider independently and clears its credential on close without caching mutation input", async () => {
+  const user = userEvent.setup(),
+    saved = vi.fn(),
+    cache = setup(<AddWebProvider onSaved={saved} />);
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await user.click(await screen.findByRole("button", { name: /Brave Search/ }));
+  const name = await screen.findByRole("textbox", { name: "Name" });
+  await user.clear(name);
+  await user.type(name, "Research");
+  await user.type(screen.getByLabelText("API key"), "test-secret");
+  expect(http.POST).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+  expect(http.POST).toHaveBeenCalledOnce();
+  expect(http.POST.mock.calls[0][1].body.credential).toEqual({
+    api_key: "test-secret",
+  });
+  expect(
+    JSON.stringify(
+      cache
+        .getMutationCache()
+        .getAll()
+        .map((item) => item.state),
+    ),
+  ).not.toContain("test-secret");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await user.click(await screen.findByRole("button", { name: /Brave Search/ }));
+  expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
+});
+
+it("creates a credential-free DuckDuckGo provider without an API key", async () => {
+  const keylessDefinition = {
+    ...definition,
+    type: "duckduckgo",
+    display_name: "DuckDuckGo",
+    authentication: { mode: "forbidden" },
+    credential_schema: { type: "object", properties: {} },
+  };
+  http.GET.mockImplementation(async (path: string) =>
+    response(
+      path === "/api/v1/provider-types/{kind}"
+        ? { items: [definition, keylessDefinition] }
+        : { items: [], next_cursor: null },
+    ),
+  );
+  const user = userEvent.setup();
+  setup(<AddWebProvider />);
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await user.click(await screen.findByRole("button", { name: /DuckDuckGo/ }));
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await waitFor(() => expect(http.POST).toHaveBeenCalledOnce());
+  expect(http.POST.mock.calls[0][1]).toMatchObject({
+    body: { type: "duckduckgo", name: "DuckDuckGo" },
+  });
+  expect(http.POST.mock.calls[0][1].body).not.toHaveProperty("credential");
+});
+
+it("keeps the existing credential write-only and sends If-Match for edits", async () => {
+  const user = userEvent.setup();
+  setup(
+    <WebProviderEditor
+      providerId={provider.id}
+      controlledOpen
+      onClose={() => {}}
+    />,
+  );
+  await screen.findByRole("textbox", { name: "Name" });
+  // The saved secret stays stated until you ask to replace it.
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  await user.type(screen.getByRole("textbox", { name: "Name" }), " renamed");
+  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(http.PATCH).toHaveBeenCalledOnce());
+  expect(http.PATCH.mock.calls[0][1].body).not.toHaveProperty("credential");
+  expect(http.PATCH.mock.calls[0][1].body.enabled).toBe(false);
+  expect(http.PATCH.mock.calls[0][1].headers).toEqual({
+    "If-Match": '"v1"',
+  });
+});
+
+it("reconciles an uncertain create before allowing another attempt", async () => {
+  const user = userEvent.setup();
+  setup(<AddWebProvider />);
+  http.POST.mockRejectedValue(new TypeError("Network unavailable"));
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await user.click(await screen.findByRole("button", { name: /Brave Search/ }));
+  const name = await screen.findByRole("textbox", { name: "Name" });
+  await user.clear(name);
+  await user.type(name, "Research");
+  await user.type(screen.getByLabelText("API key"), "test-secret");
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await screen.findByRole("button", { name: "Use this provider" });
+  expect(
+    http.GET.mock.calls.some(([path]) => path.endsWith("web-providers")),
+  ).toBe(true);
+  expect(http.POST).toHaveBeenCalledOnce();
+});
+
+it("retains the provider draft across a stale ETag and requires loading the current version before resubmitting", async () => {
+  const user = userEvent.setup();
+  setup(
+    <WebProviderEditor
+      providerId={provider.id}
+      controlledOpen
+      onClose={() => {}}
+    />,
+  );
+  http.PATCH.mockRejectedValueOnce(
+    new ApiError(412, "precondition_failed", "Changed", {}, "req_test"),
+  );
+  await user.type(
+    await screen.findByRole("textbox", { name: "Name" }),
+    " draft",
+  );
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await user.type(screen.getByLabelText("API key"), "replacement-secret");
+  await user.click(screen.getByRole("button", { name: "Save changes" }));
+  const reload = await screen.findByRole("button", {
+    name: "Load current version and keep my draft",
+  });
+  expect(screen.getByRole("textbox", { name: "Name" })).toHaveProperty(
+    "value",
+    "Research draft",
+  );
+  http.GET.mockImplementationOnce(async () =>
+    response({ ...provider, name: "Concurrent name" }, 200, '\"v2\"'),
+  );
+  await user.click(reload);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", {
+        name: "Load current version and keep my draft",
+      }),
+    ).toBeNull(),
+  );
+  expect(screen.getByLabelText("API key")).toHaveProperty(
+    "value",
+    "replacement-secret",
+  );
+  await user.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(http.PATCH).toHaveBeenCalledTimes(2));
+  expect(http.PATCH.mock.calls[1][1].headers).toEqual({
+    "If-Match": '\"v2\"',
+  });
+  expect(http.PATCH.mock.calls[1][1].body).toMatchObject({
+    name: "Research draft",
+    credential: { api_key: "replacement-secret" },
+  });
+});
+
+it("submits an external provider's declared configuration and token", async () => {
+  http.GET.mockResolvedValue(
+    response({
+      items: [
+        {
+          ...definition,
+          type: "acme_web",
+          display_name: "Acme Web",
+          configuration_schema: {
+            type: "object",
+            properties: {
+              index: { type: "string", title: "Index", default: "docs" },
+              limit: {
+                type: "integer",
+                title: "Limit",
+                minimum: 1,
+                maximum: 10,
+                default: 3,
+              },
+              details: {
+                type: "object",
+                title: "Details",
+                properties: {
+                  enabled: {
+                    type: "boolean",
+                    title: "Include details",
+                    default: true,
+                  },
+                },
+              },
+            },
+          },
+          credential_schema: {
+            type: "object",
+            required: ["token"],
+            properties: {
+              token: { type: "string", title: "Token", format: "password" },
+            },
+          },
+        },
+      ],
+    }),
+  );
+  const user = userEvent.setup();
+  setup(<AddWebProvider />);
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await user.click(await screen.findByRole("button", { name: /Acme Web/ }));
+  const acmeName = await screen.findByRole("textbox", { name: "Name" });
+  await user.clear(acmeName);
+  await user.type(acmeName, "External");
+  // Everything the definition defaults starts folded away.
+  await user.click(screen.getByRole("button", { name: /Advanced settings/ }));
+  await user.clear(screen.getByLabelText("Index"));
+  await user.type(screen.getByLabelText("Index"), "guides");
+  await user.clear(screen.getByLabelText("Limit"));
+  await user.type(screen.getByLabelText("Limit"), "7");
+  await user.type(screen.getByLabelText("Token"), "external-secret");
+  await user.click(screen.getByRole("button", { name: "Add provider" }));
+  await waitFor(() => expect(http.POST).toHaveBeenCalledOnce());
+  expect(http.POST.mock.calls[0][1].body).toMatchObject({
+    type: "acme_web",
+    config: { index: "guides", limit: 7, details: { enabled: true } },
+    credential: { token: "external-secret" },
+  });
+});
+
+it("retains a saved nested credential when only ordinary fields change", async () => {
+  const nestedDefinition = {
+    ...definition,
+    credential_schema: {
+      type: "object",
+      required: ["account"],
+      properties: {
+        account: {
+          type: "object",
+          title: "Account",
+          required: ["token"],
+          properties: {
+            token: {
+              type: "string",
+              title: "Nested token",
+              format: "password",
+            },
+          },
+        },
+      },
+    },
+  };
+  http.GET.mockImplementation(async (path: string) =>
+    response(
+      path === "/api/v1/provider-types/{kind}"
+        ? { items: [nestedDefinition] }
+        : provider,
+    ),
+  );
+  const user = userEvent.setup();
+  setup(
+    <WebProviderEditor
+      providerId={provider.id}
+      controlledOpen
+      onClose={() => {}}
+    />,
+  );
+  await screen.findByRole("textbox", { name: "Name" });
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  expect(screen.getByLabelText("Nested token")).toHaveProperty(
+    "required",
+    false,
+  );
+  await user.type(screen.getByRole("textbox", { name: "Name" }), " changed");
+  await user.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(http.PATCH).toHaveBeenCalledOnce());
+  expect(http.PATCH.mock.calls[0][1].body).not.toHaveProperty("credential");
+});

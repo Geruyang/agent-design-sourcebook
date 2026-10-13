@@ -1,0 +1,473 @@
+"""Durable at-least-once delivery rows: enqueue with the owning state change, claim, settle.
+
+The outbox owns persistence, claiming, settlement and the retry policy. Owners register one handler per
+`kind`; a handler runs outside any database session for external I/O and settles its claim itself, so an
+internal delivery can settle in the same transaction that applies it. A handler that raises instead leaves
+the retry to the outbox: backoff, then dead once the row has used its attempts. Every claim uses an attempt,
+so a handler that keeps being cancelled, or whose process dies, also ends dead; a handler that settles its claim
+`deferred` (not deliverable yet, through no fault of the delivery) gives its attempt back. Each settled outcome is
+counted and logged once its transaction commits.
+"""
+
+import asyncio
+import json
+import random
+import secrets
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Literal
+
+from a13n_logging import exception_details, get_logger, log_context
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
+
+from a13n_service.infra.crypto import SecretLocation, secret_hash
+from a13n_service.infra.db import Base, Storage, after_commit, now, transaction
+from a13n_service.infra.ids import new_object_id
+from a13n_service.infra.telemetry import meter
+
+logger = get_logger(__name__)
+
+type OutboxKind = Literal["webhook", "child_result", "email", "memory_purge", "checkpoint_cleanup"]
+type Outcome = Literal["delivered", "retry", "deferred", "dead"]
+
+
+class Policy(BaseModel):
+    """One kind's resolved delivery and retention limits; startup merges partial overrides."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    delivered_retention_seconds: int = Field(default=86400, ge=1, le=31536000)
+    dead_retention_seconds: int = Field(default=1209600, ge=1, le=31536000)
+    max_attempts: int = Field(default=12, ge=1, le=100)
+    batch: int = Field(default=32, ge=1, le=1000)
+    parallel: int = Field(default=8, ge=1, le=128)
+    lease_seconds: float = Field(default=60, ge=10, le=600)
+    backlog_count: int = Field(default=10000, ge=1, le=1000000)
+    backlog_age_seconds: float = Field(default=300, gt=0, le=86400)
+    backlog_alert_seconds: float = Field(default=300, gt=0, le=86400)
+
+
+DELIVERIES = meter.create_counter(
+    "a13n.outbox.deliveries", unit="{delivery}", description="Settled outbox delivery attempts by kind and result"
+)
+
+
+class OutboxRow(Base):
+    __tablename__ = "outbox"
+    __table_args__ = (
+        UniqueConstraint("kind", "dedupe_key"),
+        CheckConstraint(
+            "kind IN ('webhook', 'child_result', 'email', 'memory_purge', 'checkpoint_cleanup')", name="kind"
+        ),
+        # Account mail (password reset, email change) belongs to no organization; every other delivery does.
+        CheckConstraint("organization_id IS NOT NULL OR kind = 'email'", name="tenant"),
+        ForeignKeyConstraint(["organization_id", "workspace_id"], ["workspaces.organization_id", "workspaces.id"]),
+        CheckConstraint("status IN ('pending', 'delivered', 'dead')", name="status"),
+        CheckConstraint("(status = 'delivered') = (delivered_at IS NOT NULL)", name="delivered"),
+        CheckConstraint("(status <> 'pending') = (settled_at IS NOT NULL)", name="settled"),
+        Index("ix_outbox_due", "kind", "available_at", postgresql_where=text("status = 'pending'")),
+        Index("ix_outbox_settled", "kind", "status", "settled_at", "id", postgresql_where=text("status <> 'pending'")),
+    )
+    id: Mapped[str] = mapped_column(String(72), primary_key=True)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"))
+    workspace_id: Mapped[str | None]
+    kind: Mapped[OutboxKind] = mapped_column(String)
+    dedupe_key: Mapped[str]
+    # Everything delivery needs is copied here; `subscription_id` is diagnostic provenance, not a foreign key.
+    target: Mapped[dict] = mapped_column(JSONB)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    subscription_id: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default="pending")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempts: Mapped[int] = mapped_column(server_default="0")
+    lease_owner: Mapped[str | None]
+    lease_token_hash: Mapped[str | None]
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+@dataclass(frozen=True, slots=True)
+class Claim:
+    id: str
+    kind: OutboxKind
+    organization_id: str | None
+    workspace_id: str | None
+    target: dict
+    payload: dict
+    attempts: int
+    token: str
+
+
+type Handler = Callable[[Claim], Awaitable[None]]
+
+
+class Undelivered(Exception):
+    """A failed attempt with a short, secret-free reason worth keeping as the row's error."""
+
+
+def secret_location(organization_id: str | None, row_id: str, column: Literal["target", "payload"]) -> SecretLocation:
+    """Where a secret staged in an outbox row's `target` or `payload` is bound, re-encrypted for that row."""
+    return SecretLocation(organization_id, "outbox", column, row_id)
+
+
+def prepare(
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+    kind: OutboxKind,
+    target: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+    dedupe_key: str | None = None,
+    subscription_id: str | None = None,
+    row_id: str | None = None,
+    dead: str | None = None,
+) -> OutboxRow:
+    """Build a delivery for enqueue or batch insertion; without a dedupe key the row ID is its own identity.
+
+    `dead` stages a delivery that can never be sent as already dead, with that reason as its error.
+    """
+    identity = row_id or new_object_id("obx")
+    return OutboxRow(
+        id=identity,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        kind=kind,
+        dedupe_key=dedupe_key or identity,
+        target=dict(target),
+        payload=dict(payload),
+        subscription_id=subscription_id,
+        status="pending" if dead is None else "dead",
+        last_error=dead,
+        settled_at=func.now() if dead is not None else None,
+    )
+
+
+def enqueue(
+    session: AsyncSession,
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+    kind: OutboxKind,
+    target: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+    dedupe_key: str | None = None,
+    subscription_id: str | None = None,
+    row_id: str | None = None,
+    dead: str | None = None,
+) -> str:
+    """Stage a delivery in the caller's transaction; without a dedupe key the row ID is its own identity.
+
+    `dead` stages a delivery that can never be sent as already dead, with that reason as its error.
+    """
+    row = prepare(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        kind=kind,
+        target=target,
+        payload=payload,
+        dedupe_key=dedupe_key,
+        subscription_id=subscription_id,
+        row_id=row_id,
+        dead=dead,
+    )
+    session.add(row)
+    return row.id
+
+
+# Bound SQL parameters and JSON bytes without rejecting an otherwise valid oversized delivery.
+_BATCH_ROWS = 256
+_BATCH_BYTES = 1024 * 1024
+
+
+async def enqueue_batch(session: AsyncSession, rows: Iterable[OutboxRow]) -> None:
+    """Insert prepared deliveries in bounded statements within the caller's transaction."""
+    chunk: list[dict] = []
+    size = 0
+    for row in rows:
+        row_size = len(json.dumps([row.target, row.payload], ensure_ascii=False).encode())
+        if chunk and (len(chunk) >= _BATCH_ROWS or size + row_size > _BATCH_BYTES):
+            await session.execute(insert(OutboxRow).values(chunk))
+            chunk, size = [], 0
+        chunk.append(
+            {
+                name: getattr(row, name)
+                for name in (
+                    "id",
+                    "organization_id",
+                    "workspace_id",
+                    "kind",
+                    "dedupe_key",
+                    "target",
+                    "payload",
+                    "subscription_id",
+                    "status",
+                    "last_error",
+                    "settled_at",
+                )
+            }
+        )
+        size += row_size
+    if chunk:
+        await session.execute(insert(OutboxRow).values(chunk))
+
+
+async def enqueue_once(
+    session: AsyncSession,
+    *,
+    organization_id: str,
+    workspace_id: str | None,
+    kind: OutboxKind,
+    dedupe_key: str,
+    target: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+) -> None:
+    """Idempotent staging for deliveries keyed by a durable fact, such as one sealed child run."""
+    await session.execute(
+        insert(OutboxRow)
+        .values(
+            id=new_object_id("obx"),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            kind=kind,
+            dedupe_key=dedupe_key,
+            target=dict(target),
+            payload=dict(payload),
+        )
+        .on_conflict_do_nothing(index_elements=["kind", "dedupe_key"])
+    )
+
+
+async def claim(
+    storage: Storage, kind: OutboxKind, *, owner: str, limit: int, lease_seconds: float, max_attempts: int
+) -> list[Claim]:
+    """Lease up to `limit` due rows, each using an attempt. A row that has already used `max_attempts` is dead
+    instead: its last claim lapsed without settling, since a settled failure there would have ended it."""
+    async with transaction(storage) as session:
+        current = await now(session)
+        rows = (
+            await session.scalars(
+                select(OutboxRow)
+                .where(
+                    OutboxRow.kind == kind,
+                    OutboxRow.status == "pending",
+                    OutboxRow.available_at <= current,
+                    or_(OutboxRow.lease_expires_at.is_(None), OutboxRow.lease_expires_at <= current),
+                )
+                .order_by(OutboxRow.available_at, OutboxRow.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        claims = []
+        for row in rows:
+            if row.attempts >= max_attempts:
+                row.status, row.last_error = "dead", "unsettled"
+                row.settled_at = current
+                row.lease_owner = row.lease_token_hash = row.lease_expires_at = None
+                _settled(session, row.id, row.kind, "dead", reason="unsettled")
+                continue
+            token = secrets.token_urlsafe(32)
+            row.attempts += 1
+            row.lease_owner = owner
+            row.lease_token_hash = secret_hash(token)
+            row.lease_expires_at = current + timedelta(seconds=lease_seconds)
+            claims.append(
+                Claim(
+                    id=row.id,
+                    kind=row.kind,
+                    organization_id=row.organization_id,
+                    workspace_id=row.workspace_id,
+                    target=row.target,
+                    payload=row.payload,
+                    attempts=row.attempts,
+                    token=token,
+                )
+            )
+        return claims
+
+
+async def settle(
+    session: AsyncSession, claimed: Claim, outcome: Outcome, *, error: str | None = None, retry_after: float = 0
+) -> bool:
+    """Apply an outcome only while this claim still holds the lease; a stale sender changes nothing.
+
+    `retry` and `deferred` both make the row due again after `retry_after`; `deferred` gives back the attempt the
+    claim used.
+    """
+    row = await session.get(OutboxRow, claimed.id, with_for_update=True)
+    if row is None or row.status != "pending" or row.lease_token_hash != secret_hash(claimed.token):
+        return False
+    current = await now(session)
+    row.lease_owner = row.lease_token_hash = row.lease_expires_at = None
+    row.last_error = error[:1024] if error else None
+    if outcome == "delivered":
+        row.status, row.delivered_at = "delivered", current
+        row.settled_at = current
+    elif outcome == "dead":
+        row.status = "dead"
+        row.settled_at = current
+    else:
+        row.available_at = current + timedelta(seconds=retry_after)
+        if outcome == "deferred":
+            row.attempts -= 1
+    _settled(session, claimed.id, claimed.kind, outcome, reason=error)
+    return True
+
+
+def _settled(session: AsyncSession, outbox_id: str, kind: str, outcome: Outcome, *, reason: str | None) -> None:
+    """Count and log a settled outcome once `session` commits it."""
+
+    async def record() -> None:
+        DELIVERIES.add(1, {"kind": kind, "result": outcome})
+        fields = {"outbox_id": outbox_id, "kind": kind, "reason": reason}
+        if outcome == "delivered":
+            logger.info("Outbox delivered", extra=fields)
+        elif outcome == "retry":
+            logger.warning("Outbox delivery failed", extra=fields)
+        elif outcome == "dead":
+            logger.warning("Outbox delivery dead", extra=fields)
+
+    after_commit(session, record)
+
+
+def backoff(attempts: int, *, base: float = 2, cap: float = 3600) -> float:
+    return min(cap, base ** min(attempts, 16)) * random.uniform(0.8, 1)
+
+
+@dataclass(frozen=True, slots=True)
+class Delivery:
+    """One bounded pass of up to `limit` claims per kind, as a sweep runs it.
+
+    Kinds are delivered side by side, so a slow kind never delays another. Within a kind, claims are taken
+    `parallel` at a time and handled together, so each starts when it is claimed and no claim waits out its lease
+    behind others. A handler that raises leaves its row for a retry with backoff, or dead after `max_attempts`.
+    """
+
+    storage: Storage
+    handlers: Mapping[OutboxKind, Handler]
+    owner: str
+    policies: Mapping[OutboxKind, Policy]
+
+    async def __call__(self) -> None:
+        # Like workers and sweeps, cancel once: database drivers await their own query cleanup.
+        async with asyncio.TaskGroup() as group:
+            for kind, handler in self.handlers.items():
+                group.create_task(self._deliver_kind(kind, handler))
+
+    async def _deliver_kind(self, kind: OutboxKind, handler: Handler) -> None:
+        # No batch starts after one lease has passed, so a pass ends within two leases, whatever the limit.
+        policy = self.policies[kind]
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + policy.lease_seconds
+        limit = policy.batch
+        while limit > 0 and loop.time() < deadline:
+            batch = min(policy.parallel, limit)
+            claims = await claim(
+                self.storage,
+                kind,
+                owner=self.owner,
+                limit=batch,
+                lease_seconds=policy.lease_seconds,
+                max_attempts=policy.max_attempts,
+            )
+            async with asyncio.TaskGroup() as group:
+                for claimed in claims:
+                    group.create_task(self._handle(handler, claimed))
+            if len(claims) < batch:
+                return
+            limit -= batch
+
+    async def _handle(self, handler: Handler, claimed: Claim) -> None:
+        """Never raises, so one delivery cannot cancel the others; an unsettled claim retries when its lease ends."""
+        with log_context(outbox_id=claimed.id, kind=claimed.kind):
+            try:
+                async with asyncio.timeout(self.policies[claimed.kind].lease_seconds / 2):
+                    await handler(claimed)
+            except Exception as error:
+                logger.warning("Outbox handler failed", extra={"exception_details": exception_details(error)})
+                await self._fail(claimed, str(error) if isinstance(error, Undelivered) else type(error).__name__)
+
+    async def _fail(self, claimed: Claim, reason: str) -> None:
+        dead = claimed.attempts >= self.policies[claimed.kind].max_attempts
+        try:
+            async with transaction(self.storage) as session:
+                outcome = "dead" if dead else "retry"
+                await settle(session, claimed, outcome, error=reason, retry_after=backoff(claimed.attempts))
+        except Exception as failure:
+            logger.warning(
+                "Outbox settlement failed",
+                extra={
+                    "outbox_id": claimed.id,
+                    "error_type": type(failure).__name__,
+                    "exception_details": exception_details(failure),
+                },
+            )
+
+
+async def purge_settled(
+    storage: Storage, *, policies: Mapping[OutboxKind, Policy], limit: int, budget_seconds: float
+) -> int:
+    """Repeat short, bounded delete transactions within one shared wall-clock budget."""
+    total = 0
+    budget = asyncio.timeout(budget_seconds)
+    try:
+        async with budget:
+            while True:
+                count = 0
+                for kind, policy in policies.items():
+                    for status, seconds in (
+                        ("delivered", policy.delivered_retention_seconds),
+                        ("dead", policy.dead_retention_seconds),
+                    ):
+                        deleted = await _purge_batch(storage, kind, status, seconds, limit)
+                        count += deleted
+                        total += deleted
+                if count == 0:
+                    break
+    except TimeoutError:
+        if not budget.expired():
+            raise
+    return total
+
+
+async def _purge_batch(storage: Storage, kind: OutboxKind, status: str, retention_seconds: int, limit: int) -> int:
+    """An index-ordered page for one kind and outcome; pending rows never enter retention."""
+    async with transaction(storage) as session:
+        cutoff = await now(session) - timedelta(seconds=retention_seconds)
+        ids = (
+            await session.scalars(
+                select(OutboxRow.id)
+                .where(
+                    OutboxRow.kind == kind,
+                    OutboxRow.status == status,
+                    OutboxRow.status != "pending",
+                    OutboxRow.settled_at < cutoff,
+                )
+                .order_by(OutboxRow.settled_at, OutboxRow.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        if ids:
+            await session.execute(delete(OutboxRow).where(OutboxRow.id.in_(ids)))
+        return len(ids)

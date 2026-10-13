@@ -1,0 +1,46 @@
+import {
+  Agent,
+  codeInterpreterTool,
+  isOpenAIResponsesRawModelStreamEvent,
+  run,
+  withTrace,
+} from '@openai/agents';
+
+async function main() {
+  const agent = new Agent({
+    name: 'Agent Math Tutor',
+    instructions:
+      'You are a personal math tutor. When asked a math question, write and run code to answer the question.',
+    tools: [codeInterpreterTool({ container: { type: 'auto' } })],
+  });
+
+  await withTrace('Code interpreter example', async () => {
+    console.log('Solving math problem...');
+    const result = await run(
+      agent,
+      'I need to solve the equation 3x + 11 = 14. Can you help me?',
+      { stream: true },
+    );
+    let sawCodeInterpreterCall = false;
+    for await (const event of result) {
+      if (
+        isOpenAIResponsesRawModelStreamEvent(event) &&
+        event.data.event.type === 'response.output_item.done' &&
+        event.data.event.item.type === 'code_interpreter_call'
+      ) {
+        sawCodeInterpreterCall = true;
+        const code = event.data.event.item.code;
+        console.log(`Code interpreter code:\n\`\`\`\n${code}\n\`\`\``);
+      }
+    }
+    if (!sawCodeInterpreterCall) {
+      throw new Error('Expected the agent to call the code interpreter.');
+    }
+    console.log(`Final output: ${result.finalOutput}`);
+  });
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

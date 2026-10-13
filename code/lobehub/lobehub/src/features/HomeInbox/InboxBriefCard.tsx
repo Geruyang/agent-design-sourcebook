@@ -1,0 +1,178 @@
+import { DEFAULT_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
+import { agentDisplayName } from '@lobechat/types';
+import { Block, Flexbox, Icon } from '@lobehub/ui';
+import { Avatar, Text } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar, cx } from 'antd-style';
+import { Target } from 'lucide-react';
+import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import { DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { taskDetailPath } from '@/features/AgentTasks/shared/taskDetailPath';
+import BriefCardActions from '@/features/DailyBrief/BriefCardActions';
+import BriefCardArtifacts from '@/features/DailyBrief/BriefCardArtifacts';
+import BriefCardSummary from '@/features/DailyBrief/BriefCardSummary';
+import { styles as briefStyles } from '@/features/DailyBrief/style';
+import { type BriefItem } from '@/features/DailyBrief/types';
+import { homeType } from '@/features/Home/components/homeType';
+import Time from '@/features/Home/components/Time';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+
+import StatusGlyph from './StatusGlyph';
+
+const styles = createStaticStyles(({ css, cssVar }) => ({
+  meta: css`
+    cursor: pointer;
+  `,
+  taskName: css`
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
+  taskRef: css`
+    flex: none;
+    font-family: ${cssVar.fontFamilyCode};
+  `,
+}));
+
+interface InboxBriefCardProps {
+  /** Rendered inside a rail card, which already draws the shell. */
+  bare?: boolean;
+  brief: BriefItem;
+}
+
+/**
+ * One row of "Needs you". The meta line (what state, which task, when) sits on
+ * top spanning the full width; the agent avatar sits next to the *content* it
+ * produced, not next to the metadata.
+ */
+const InboxBriefCard = memo<InboxBriefCardProps>(({ bare, brief }) => {
+  const { t } = useTranslation('common');
+  const navigate = useWorkspaceAwareNavigate();
+
+  const agent = brief.agent;
+  const isInbox = agent?.id === INBOX_SESSION_ID;
+  const canNavigate = Boolean(brief.taskId);
+
+  // Error briefs carry their title + human, localized summary from the server
+  // (taskLifecycle / verify / watchdog / agent-signal each own their copy), so
+  // the card renders them verbatim — no client-side title override or string
+  // munging. `isError` only drives the severity glyph below.
+  const isError = brief.type === 'error';
+
+  const hasTaskMeta = Boolean(brief.taskStatus || brief.taskIdentifier || brief.taskName);
+  // A goal brief has no task of its own; the goal it speaks for takes the
+  // meta row, and a click there lands on the goal.
+  const goal = brief.metadata?.goal;
+  const openGoal = () => {
+    if (!goal) return;
+    navigate(
+      brief.agentId ? `/agent/${brief.agentId}/goal/${goal.goalId}` : `/goal/${goal.goalId}`,
+    );
+  };
+
+  const openTask = () => {
+    if (!brief.taskId) return;
+    navigate(taskDetailPath(brief.taskId, brief.agentId ?? undefined, brief.taskName));
+  };
+
+  const content = (
+    <>
+      {/* A brief raised outside a task has no status / ref / name to show, which
+          left the meta row as an empty band with a lone timestamp. Drop the row
+          entirely in that case and let the title line carry the time. */}
+      {!hasTaskMeta && goal && (
+        <Flexbox horizontal align={'center'} className={styles.meta} gap={7} onClick={openGoal}>
+          <Icon color={cssVar.colorTextTertiary} icon={Target} size={14} />
+          <span className={cx(homeType.meta, styles.taskName)}>{goal.goalTitle}</span>
+          <Flexbox flex={1} />
+          <Time date={brief.createdAt} />
+        </Flexbox>
+      )}
+      {hasTaskMeta && (
+        <Flexbox
+          horizontal
+          align={'center'}
+          className={canNavigate ? styles.meta : undefined}
+          gap={7}
+          onClick={canNavigate ? openTask : undefined}
+        >
+          {/* On error the task glyph would render its paused/scheduled state
+              (the neutral "waiting for human" hand), which reads as pending, not
+              failed. Show the topic-failed alert (red TriangleAlert) so the row
+              reads as an error at a glance — the one true failure glyph, no extra
+              icon on the headline. */}
+          {isError ? (
+            <StatusGlyph status={'failed'} variant={'topic'} />
+          ) : (
+            brief.taskStatus && <StatusGlyph status={brief.taskStatus} variant={'task'} />
+          )}
+          {brief.taskIdentifier && (
+            <span className={cx(homeType.meta, styles.taskRef)}>{brief.taskIdentifier}</span>
+          )}
+          {brief.taskName && (
+            <span className={cx(homeType.meta, styles.taskName)}>{brief.taskName}</span>
+          )}
+          <Flexbox flex={1} />
+          <Time date={brief.createdAt} />
+        </Flexbox>
+      )}
+
+      <Flexbox horizontal align={'flex-start'} gap={10}>
+        {agent && (
+          <Avatar
+            avatar={agent.avatar || (isInbox ? DEFAULT_INBOX_AVATAR : DEFAULT_AVATAR)}
+            background={agent.backgroundColor || cssVar.colorBgContainer}
+            shape={'circle'}
+            size={28}
+            style={{ flex: 'none' }}
+            title={agentDisplayName(
+              agent,
+              isInbox ? t('inbox.title', { ns: 'chat' }) : t('defaultSession'),
+            )}
+          />
+        )}
+        <Flexbox flex={1} gap={6} style={{ minWidth: 0 }}>
+          <Flexbox horizontal align={'center'} gap={8}>
+            <Text ellipsis className={homeType.itemTitle} style={{ flex: 1, minWidth: 0 }}>
+              {brief.title}
+            </Text>
+            {!hasTaskMeta && !goal && <Time date={brief.createdAt} />}
+          </Flexbox>
+          <BriefCardSummary summary={brief.summary} />
+          <BriefCardArtifacts artifacts={brief.artifacts} />
+        </Flexbox>
+      </Flexbox>
+
+      <BriefCardActions
+        actions={brief.actions}
+        agentId={brief.agentId ?? brief.agent?.id}
+        briefId={brief.id}
+        briefType={brief.type}
+        labelsLocalized={!!goal}
+        recommendedActionKey={goal?.recommendedAction}
+        resolvedAction={brief.resolvedAction}
+        taskId={brief.taskId}
+        taskStatus={brief.taskStatus}
+        topicId={brief.topicId}
+        topicTitle={brief.taskName}
+      />
+    </>
+  );
+
+  if (bare) return <Flexbox gap={10}>{content}</Flexbox>;
+
+  return (
+    <Block
+      className={briefStyles.card}
+      gap={10}
+      padding={12}
+      style={{ borderRadius: cssVar.borderRadiusLG }}
+      variant={'outlined'}
+    >
+      {content}
+    </Block>
+  );
+});
+
+export default InboxBriefCard;

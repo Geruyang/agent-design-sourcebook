@@ -1,0 +1,321 @@
+import { markOtlpTraceRelayProvider, OTLP_TRACE_RELAY_MARKER } from "@cline/shared"
+import { metrics, trace } from "@opentelemetry/api"
+import { logs } from "@opentelemetry/api-logs"
+import { Resource } from "@opentelemetry/resources"
+import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs"
+import { MeterProvider } from "@opentelemetry/sdk-metrics"
+import { BatchSpanProcessor, NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
+import { ExtensionRegistryInfo } from "@/registry"
+import { OpenTelemetryClientValidConfig } from "@/shared/services/config/otel-config"
+import { Logger } from "@/shared/services/Logger"
+import {
+	createConsoleLogExporter,
+	createConsoleMetricReader,
+	createOTLPLogExporter,
+	createOTLPMetricReader,
+	createOTLPTraceExporter,
+} from "./OpenTelemetryExporterFactory"
+
+/**
+ * OpenTelemetry client provider.
+ * Owns meter, logger and tracer providers for telemetry collection.
+ */
+export class OpenTelemetryClientProvider {
+	readonly meterProvider: MeterProvider | null = null
+	readonly loggerProvider: LoggerProvider | null = null
+	readonly tracerProvider: NodeTracerProvider | null = null
+	private readonly config: OpenTelemetryClientValidConfig | null
+	private disposal?: Promise<void>
+	private rejectedTracerShutdown?: Promise<void>
+
+	/**
+	 * Check if debug diagnostics are enabled.
+	 * Only log sensitive information (endpoints, headers) when in debug mode.
+	 */
+	private isDebugEnabled(): boolean {
+		return process.env.TEL_DEBUG_DIAGNOSTICS === "true" || process.env.IS_DEV === "true"
+	}
+
+	constructor(config: OpenTelemetryClientValidConfig) {
+		this.config = config
+		const isDebugMode = this.isDebugEnabled()
+
+		// Only log endpoint in debug mode (security: avoid exposing infrastructure details)
+		if (isDebugMode) {
+			Logger.log("[OTEL DEBUG] ========== OpenTelemetry Initialization ==========")
+			Logger.log(`[OTEL DEBUG] Configuration:`)
+			Logger.log(`[OTEL DEBUG]   - Metrics Exporter: ${this.config.metricsExporter || "none"}`)
+			Logger.log(`[OTEL DEBUG]   - Logs Exporter: ${this.config.logsExporter || "none"}`)
+			Logger.log(`[OTEL DEBUG]   - OTLP Protocol: ${this.config.otlpProtocol || "grpc (default)"}`)
+
+			Logger.log(`[OTEL DEBUG]   - OTLP Endpoint: ${this.config.otlpEndpoint || "not set"}`)
+			Logger.log(`[OTEL DEBUG]   - OTLP Insecure: ${this.config.otlpInsecure || false}`)
+			Logger.log(`[OTEL DEBUG]   - Metric Export Interval: ${this.config.metricExportInterval || 60000}ms`)
+		}
+
+		if (isDebugMode && config.otlpHeaders) {
+			const headerCount = Object.keys(config.otlpHeaders).length
+			// In debug mode, show that headers are configured and their total length
+			Logger.log(`[OTEL DEBUG]   - OTLP Headers: ${headerCount} headers configured`)
+			Logger.log("[OTEL DEBUG] ================================================")
+		}
+
+		// Create resource with service information
+		const resource = new Resource({
+			[ATTR_SERVICE_NAME]: "cline",
+			[ATTR_SERVICE_VERSION]: ExtensionRegistryInfo.version,
+		})
+
+		// Initialize metrics if configured
+		if (this.config.metricsExporter) {
+			this.meterProvider = this.createMeterProvider(resource)
+		}
+
+		// Initialize logs if configured
+		if (this.config.logsExporter) {
+			this.loggerProvider = this.createLoggerProvider(resource)
+		}
+
+		// Initialize traces if configured
+		if (this.config.tracesExporter) {
+			this.tracerProvider = this.createTracerProvider(resource)
+		}
+
+		Logger.log("[OTEL DEBUG] OpenTelemetry initialization complete")
+	}
+
+	private createMeterProvider(resource: Resource): MeterProvider {
+		const exporters = this.config!.metricsExporter!.split(",").map((type) => type.trim())
+		const readers: any[] = []
+		const interval = this.config!.metricExportInterval || 60000
+		const timeout = Math.min(Math.floor(interval * 0.8), 30000)
+
+		Logger.log(`[OTEL] Creating MeterProvider with exporters: ${exporters.join(", ")}`)
+
+		for (const exporterType of exporters) {
+			try {
+				switch (exporterType) {
+					case "console": {
+						const reader = createConsoleMetricReader(interval, timeout)
+						readers.push(reader)
+						Logger.log(`[OTEL] Console metrics reader created (interval: ${interval}ms)`)
+						break
+					}
+					case "otlp": {
+						const protocol = this.config!.otlpMetricsProtocol || this.config!.otlpProtocol || "grpc"
+						const endpoint = this.config!.otlpMetricsEndpoint || this.config!.otlpEndpoint
+						const insecure = this.config!.otlpInsecure || false
+						const headers = this.config!.otlpMetricsHeaders || this.config!.otlpHeaders
+
+						if (endpoint) {
+							const reader = createOTLPMetricReader(protocol, endpoint, insecure, interval, timeout, headers)
+							if (reader) {
+								readers.push(reader)
+								Logger.log(`[OTEL] OTLP metrics reader created (${protocol}, interval: ${interval}ms)`)
+							}
+						} else {
+							Logger.warn("[OTEL] OTLP metrics exporter requires an endpoint")
+						}
+						break
+					}
+					default:
+						Logger.warn(`[OTEL] Unknown metrics exporter type: ${exporterType}`)
+				}
+			} catch (error) {
+				Logger.error(`[OTEL] Failed to create metrics exporter '${exporterType}':`, error)
+			}
+		}
+
+		if (readers.length === 0) {
+			Logger.warn("[OTEL] No metric readers were successfully created")
+		}
+
+		const meterProvider = new MeterProvider({
+			resource,
+			readers,
+		})
+
+		// Set as global meter provider
+		metrics.setGlobalMeterProvider(meterProvider)
+		Logger.log(`[OTEL] MeterProvider initialized with ${readers.length} reader(s)`)
+
+		return meterProvider
+	}
+
+	private createLoggerProvider(resource: Resource): LoggerProvider {
+		const exporters = this.config!.logsExporter!.split(",").map((type) => type.trim())
+		const loggerProvider = new LoggerProvider({ resource })
+
+		Logger.log(`[OTEL] Creating LoggerProvider with exporters: ${exporters.join(", ")}`)
+
+		for (const exporterType of exporters) {
+			try {
+				let exporter = null
+
+				switch (exporterType) {
+					case "console":
+						exporter = createConsoleLogExporter()
+						Logger.log("[OTEL] Console logs exporter created")
+						break
+					case "otlp": {
+						const protocol = this.config!.otlpLogsProtocol || this.config!.otlpProtocol || "grpc"
+						const endpoint = this.config!.otlpLogsEndpoint || this.config!.otlpEndpoint
+						const insecure = this.config!.otlpInsecure || false
+						const headers = this.config!.otlpLogsHeaders || this.config!.otlpHeaders
+
+						if (endpoint) {
+							exporter = createOTLPLogExporter(protocol, endpoint, insecure, headers)
+							if (exporter) {
+								Logger.log(`[OTEL] OTLP logs exporter created (${protocol})`)
+							}
+						} else {
+							Logger.warn("[OTEL] OTLP logs exporter requires an endpoint")
+						}
+						break
+					}
+					default:
+						Logger.warn(`[OTEL] Unknown logs exporter type: ${exporterType}`)
+				}
+
+				if (exporter) {
+					const batchConfig = {
+						maxQueueSize: this.config!.logMaxQueueSize || 2048,
+						maxExportBatchSize: this.config!.logBatchSize || 512,
+						scheduledDelayMillis: this.config!.logBatchTimeout || 5000,
+					}
+
+					loggerProvider.addLogRecordProcessor(new BatchLogRecordProcessor(exporter, batchConfig))
+
+					Logger.log(
+						`[OTEL] Log batch processor configured: maxQueue=${batchConfig.maxQueueSize}, batchSize=${batchConfig.maxExportBatchSize}, timeout=${batchConfig.scheduledDelayMillis}ms`,
+					)
+				}
+			} catch (error) {
+				Logger.error(`[OTEL] Failed to create logs exporter '${exporterType}':`, error)
+			}
+		}
+
+		// Set as global logger provider
+		logs.setGlobalLoggerProvider(loggerProvider)
+		Logger.log("[OTEL] LoggerProvider initialized")
+
+		return loggerProvider
+	}
+
+	private createTracerProvider(resource: Resource): NodeTracerProvider | null {
+		const exporters = this.config!.tracesExporter!.split(",").map((type) => type.trim())
+		const processors: BatchSpanProcessor[] = []
+
+		Logger.log(`[OTEL] Creating TracerProvider with exporters: ${exporters.join(", ")}`)
+
+		for (const exporterType of exporters) {
+			try {
+				switch (exporterType) {
+					case "otlp": {
+						const protocol = this.config!.otlpProtocol || "grpc"
+						const endpoint = this.config!.otlpEndpoint
+						const insecure = this.config!.otlpInsecure || false
+						const headers = this.config!.otlpHeaders
+
+						if (endpoint) {
+							const exporter = createOTLPTraceExporter(protocol, endpoint, insecure, headers)
+							if (exporter) {
+								processors.push(new BatchSpanProcessor(exporter))
+								Logger.log(`[OTEL] OTLP trace exporter created (${protocol})`)
+							}
+						} else {
+							Logger.warn("[OTEL] OTLP traces exporter requires an endpoint")
+						}
+						break
+					}
+					default:
+						Logger.warn(`[OTEL] Unknown traces exporter type: ${exporterType}`)
+				}
+			} catch (error) {
+				Logger.error(`[OTEL] Failed to create traces exporter '${exporterType}':`, error)
+			}
+		}
+
+		if (processors.length === 0) {
+			Logger.warn("[OTEL] No trace exporters were successfully created")
+			return null
+		}
+
+		const tracerProvider = new NodeTracerProvider({ resource })
+		for (const processor of processors) {
+			tracerProvider.addSpanProcessor(processor)
+		}
+
+		// Every processor here wraps an OTLP exporter, so this provider IS the
+		// collector relay — downstream trace decisions key off this marker.
+		markOtlpTraceRelayProvider(tracerProvider)
+
+		// register() sets the global tracer provider plus the async context
+		// manager spans need for parent/child relationships.
+		tracerProvider.register()
+		if (!this.isGlobalTracerProvider(tracerProvider)) {
+			// OTel registration is first-wins. Never retain an orphaned exporter
+			// or displace a build/runtime/third-party provider with remote config.
+			Logger.warn("[OTEL] Global tracer already owned; discarding unregistered trace exporter")
+			this.rejectedTracerShutdown = tracerProvider.shutdown().catch((error) => {
+				Logger.error("Error shutting down unregistered tracer:", error)
+			})
+			return null
+		}
+		Logger.log(`[OTEL] TracerProvider initialized with ${processors.length} exporter(s)`)
+
+		return tracerProvider
+	}
+
+	private isGlobalTracerProvider(provider: NodeTracerProvider): boolean {
+		const globalProvider = trace.getTracerProvider() as { getDelegate?: () => unknown }
+		return globalProvider === provider || globalProvider.getDelegate?.() === provider
+	}
+
+	public dispose(): Promise<void> {
+		return (this.disposal ??= this.shutdown())
+	}
+
+	private async shutdown(): Promise<void> {
+		if (this.tracerProvider) {
+			// Stop new relay decisions and release only our own global slot before
+			// flushing. shutdown() alone leaves a dead delegate that rejects the
+			// next registration. Cached tracers stop exporting after shutdown.
+			delete (this.tracerProvider as unknown as Record<string, unknown>)[OTLP_TRACE_RELAY_MARKER]
+			if (this.isGlobalTracerProvider(this.tracerProvider)) {
+				trace.disable()
+			}
+		}
+		const promises: Promise<void>[] = []
+		if (this.rejectedTracerShutdown) {
+			promises.push(this.rejectedTracerShutdown)
+		}
+
+		if (this.meterProvider) {
+			promises.push(
+				this.meterProvider.shutdown().catch((error) => {
+					Logger.error("Error shutting down MeterProvider:", error)
+				}),
+			)
+		}
+
+		if (this.loggerProvider) {
+			promises.push(
+				this.loggerProvider.shutdown().catch((error) => {
+					Logger.error("Error shutting down LoggerProvider:", error)
+				}),
+			)
+		}
+
+		if (this.tracerProvider) {
+			promises.push(
+				this.tracerProvider.shutdown().catch((error) => {
+					Logger.error("Error shutting down TracerProvider:", error)
+				}),
+			)
+		}
+
+		await Promise.all(promises)
+	}
+}

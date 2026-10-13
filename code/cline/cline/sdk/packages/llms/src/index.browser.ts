@@ -1,0 +1,89 @@
+/** @deprecated Import from `@cline/shared`; kept for compatibility. */
+export {
+	CLINE_DEFAULT_MODEL_ID,
+	type ProviderLocalCli,
+	resolveProviderLocalCli,
+} from "@cline/shared";
+export type {
+	GetModelsForProviderOptions,
+	ModelCollection,
+	ModelIdAliasRule,
+	ModelInfo,
+	ModelInfo as CatalogModelInfo,
+	ProviderCapability as CatalogProviderCapability,
+	ProviderInfo,
+	ProviderModelFilter,
+} from "./models";
+export {
+	CODEX_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+	filterImageOutputModels,
+	filterOpenAICodexModels,
+	GENERATED_CLINE_RECOMMENDED_MODELS,
+	getAllProviders,
+	getGeneratedModelsForProvider,
+	getModelOverridesForProvider,
+	getModelsForProvider,
+	getProvider,
+	getProviderCollection,
+	getProviderCollectionSync,
+	getProviderIds,
+	hasProvider,
+	isCanonicalModelIdForAliasRules,
+	MODEL_COLLECTIONS_BY_PROVIDER_ID,
+	preferCanonicalModelIds,
+	registerModel,
+	registerProvider,
+	resetRegistry,
+	unregisterProvider,
+	VERCEL_OPENROUTER_MODEL_ID_ALIAS_RULES,
+} from "./models";
+export {
+	type ProviderUsageCostDisplay,
+	resolveProviderUsageCostDisplay,
+	shouldShowProviderUsageCost,
+} from "./providers/billing";
+export { buildClineClientHeaders } from "./providers/cline-client-headers";
+export { toGatewayModelCapabilities } from "./providers/model-capabilities";
+export {
+	BUILTIN_MODEL_OPERATION_CAPABILITIES,
+	builtinProviderSupportsModelOperation,
+	providerManifestSupportsModelOperation,
+	resolveModelOperation,
+} from "./providers/model-operations";
+export {
+	type ModelToolSupportInput,
+	providerManifestSupportsModelTool,
+	providerOffersModelTool,
+	supportsModelTool,
+} from "./providers/model-tools";
+export {
+	type OpenAICodexRequestHeaderContext,
+	type ProviderRequestHeaderClientContext,
+	type ProviderRequestHeaderLayers,
+	type ResolveProviderRequestHeadersInput,
+	resolveProviderRequestHeaders,
+} from "./providers/request-headers";
+export type {
+	ProviderCapability,
+	ProviderId,
+} from "./providers.browser";
+export {
+	ClineFreeModelLimitError,
+	ClineNotSubscribedError,
+	ClineOrgIndividualInferenceSubscriptionError,
+	ClinePassLimitError,
+	extractClineFreeModelLimitResetTime,
+	getClineNotSubscribedMessage,
+	getClineOrgIndividualInferenceSubscriptionMessage,
+	getClinePassSubscriptionUrl,
+	isClineFreeModelLimitError,
+	isClineFreeModelLimitMessage,
+	isClineModelNotFoundMessage,
+	isClineNotSubscribedError,
+	isClineNotSubscribedMessage,
+	isClineOrgIndividualInferenceSubscriptionError,
+	isClineOrgIndividualInferenceSubscriptionMessage,
+	isClinePassLimitError,
+	isClinePassLimitMessage,
+	normalizeProviderId,
+} from "./providers.browser";

@@ -1,0 +1,7150 @@
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import {
+  OpenAIResponsesModel,
+  OpenAIResponsesWSModel,
+} from '../src/openaiResponsesModel';
+import { HEADERS } from '../src/defaults';
+import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
+import OpenAI from 'openai';
+import { fileSearchTool, imageGenerationTool, webSearchTool } from '../src';
+import {
+  Agent,
+  retryPolicies,
+  Runner,
+  type AgentInputItem,
+  type ModelRequest,
+  type Session,
+  setDefaultModelProvider,
+  setTraceProcessors,
+  setTracingDisabled,
+  withTrace,
+  type ResponseStreamEvent,
+  Span,
+  ModelBehaviorError,
+} from '@openai/agents-core';
+import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
+import { FAKE_ID } from '../src/openaiItemIds';
+
+class TestableOpenAIResponsesModel extends OpenAIResponsesModel {
+  buildRequest(request: any, stream: boolean) {
+    return this._buildResponsesCreateRequest(request, stream);
+  }
+}
+
+function captureResponseSpans(): Span<any>[] {
+  const responseSpans: Span<any>[] = [];
+  setTracingDisabled(false);
+  setTraceProcessors([
+    {
+      async onTraceStart() {},
+      async onTraceEnd() {},
+      async onSpanStart() {},
+      async onSpanEnd(span: Span<any>) {
+        if (span.spanData.type === 'response') {
+          responseSpans.push(span);
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    },
+  ]);
+  return responseSpans;
+}
+
+function getSerializedResponseSpanData(span: Span<any>): Record<string, any> {
+  return (span.toJSON() as { span_data: Record<string, any> }).span_data;
+}
+
+function createResponsePromiseWithURL<T>(
+  data: T,
+  url: string,
+  beforeResolve?: () => void,
+): Promise<T> & {
+  withResponse: () => Promise<{
+    data: T;
+    response: Response;
+    request_id: null;
+  }>;
+} {
+  return Object.assign(Promise.resolve(data), {
+    withResponse: async () => {
+      beforeResolve?.();
+      return {
+        data,
+        response: { url } as Response,
+        request_id: null,
+      };
+    },
+  });
+}
+
+function createResponseStreamWithURL<T extends AsyncIterable<unknown>>(
+  data: T,
+  url: string,
+): T & {
+  withResponse: () => Promise<{
+    data: T;
+    response: Response;
+    request_id: null;
+  }>;
+} {
+  return Object.assign(data, {
+    withResponse: async () => ({
+      data,
+      response: { url } as Response,
+      request_id: null,
+    }),
+  });
+}
+
+const serializedFunctionTool = {
+  type: 'function',
+  name: 'lookup',
+  description: 'Look up a record.',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  strict: true,
+} as const;
+
+const serializedHandoff = {
+  toolName: 'transfer_to_specialist',
+  toolDescription: 'Transfer to a specialist.',
+  inputJsonSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false,
+  },
+  strictJsonSchema: true,
+} as const;
+
+describe('OpenAIResponsesModel', () => {
+  beforeAll(() => {
+    setTracingDisabled(true);
+    setDefaultModelProvider({
+      async getModel() {
+        throw new Error('not used');
+      },
+    });
+  });
+  afterEach(() => {
+    setTracingDisabled(true);
+    setTraceProcessors([]);
+  });
+
+  describe.each([false, true])(
+    'image generation requests (stream=%s)',
+    (stream) => {
+      it.each(['generate', 'edit', 'auto', undefined] as const)(
+        'serializes action %s without changing existing options',
+        async (action) => {
+          const bodies: Record<string, unknown>[] = [];
+          const response = {
+            id: 'resp_image_generation',
+            object: 'response',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          // Capture the real client's serialized payload without network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Create an image.',
+            modelSettings: {},
+            tools: [
+              imageGenerationTool(
+                action === undefined
+                  ? {}
+                  : {
+                      action,
+                      inputFidelity: 'high',
+                      inputImageMask: { file_id: 'file_mask' },
+                      outputCompression: 80,
+                      outputFormat: 'webp',
+                      partialImages: 1,
+                    },
+              ),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                expect(event.response.output).toEqual([]);
+              }
+            }
+          } else {
+            const result = await withTrace('image generation request', () =>
+              model.getResponse(request),
+            );
+            expect(result.output).toEqual([]);
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0].stream).toBe(stream);
+          expect(bodies[0].tools).toEqual([
+            action === undefined
+              ? { type: 'image_generation' }
+              : {
+                  type: 'image_generation',
+                  action,
+                  input_fidelity: 'high',
+                  input_image_mask: { file_id: 'file_mask' },
+                  output_compression: 80,
+                  output_format: 'webp',
+                  partial_images: 1,
+                },
+          ]);
+        },
+      );
+    },
+  );
+
+  describe.each([false, true])(
+    'web search image requests (stream=%s)',
+    (stream) => {
+      const cases: {
+        label: string;
+        options: NonNullable<Parameters<typeof webSearchTool>[0]>;
+        expectedFields: Record<string, unknown>;
+        expectedInclude: string[];
+      }[] = [
+        {
+          label: 'default',
+          options: {},
+          expectedFields: {},
+          expectedInclude: [],
+        },
+        {
+          label: 'text only',
+          options: { searchContentTypes: ['text'] },
+          expectedFields: { search_content_types: ['text'] },
+          expectedInclude: [],
+        },
+        {
+          label: 'image only with default settings',
+          options: { searchContentTypes: ['image'] },
+          expectedFields: { search_content_types: ['image'] },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'image and text with settings',
+          options: {
+            searchContentTypes: ['image', 'text'],
+            imageSettings: { maxResults: 3, caption: false },
+            externalWebAccess: false,
+          },
+          expectedFields: {
+            search_content_types: ['image', 'text'],
+            image_settings: { max_results: 3, caption: false },
+            external_web_access: false,
+          },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'settings without image selection',
+          options: { imageSettings: { caption: true } },
+          expectedFields: { image_settings: { caption: true } },
+          expectedInclude: [],
+        },
+      ];
+
+      it.each(cases)(
+        'serializes $label and preserves returned image metadata',
+        async ({ options, expectedFields, expectedInclude }) => {
+          const imageResults = [
+            {
+              type: 'image_result',
+              image_url: 'https://example.com/bridge.jpg',
+              source_website_url: 'https://example.com/bridge',
+              thumbnail_url: 'https://example.com/bridge-thumb.jpg',
+            },
+          ];
+          const response = {
+            id: 'resp_web_search',
+            object: 'response',
+            status: 'completed',
+            output: expectedInclude.length
+              ? [
+                  {
+                    id: 'ws_image',
+                    type: 'web_search_call',
+                    status: 'completed',
+                    action: { type: 'search', query: 'bridge' },
+                    results: imageResults,
+                  },
+                ]
+              : [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          const bodies: Record<string, unknown>[] = [];
+          // Capture the real client's serialized wire payload without making network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Find bridge images.',
+            modelSettings: {},
+            tools: [
+              webSearchTool(options),
+              fileSearchTool('vs_test', { includeSearchResults: true }),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          let output;
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                output = event.response.output;
+              }
+            }
+          } else {
+            output = (
+              await withTrace('web search image request', () =>
+                model.getResponse(request),
+              )
+            ).output;
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toMatchObject({
+            stream,
+            include: [...expectedInclude, 'file_search_call.results'],
+          });
+          expect((bodies[0].tools as unknown[])[0]).toEqual({
+            type: 'web_search',
+            search_context_size: 'medium',
+            ...expectedFields,
+          });
+          if (expectedInclude.length) {
+            expect(output).toMatchObject([
+              {
+                type: 'hosted_tool_call',
+                name: 'web_search_call',
+                providerData: { results: imageResults },
+              },
+            ]);
+          } else {
+            expect(output).toEqual([]);
+          }
+        },
+      );
+    },
+  );
+
+  it.each([
+    {
+      label: 'a local function tool',
+      tools: [serializedFunctionTool],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'a converted handoff tool',
+      tools: [],
+      handoffs: [serializedHandoff],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'no tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'explicitly empty tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: true,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'a stored prompt with implicit tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: false,
+      providerData: undefined,
+      expectedToolsLength: undefined,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'a stored prompt with explicitly empty tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: true,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'a stored prompt with undefined provider tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: false,
+      providerData: { tools: undefined },
+      expectedToolsLength: undefined,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'extra-body tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: {
+        extraBody: {
+          tools: [
+            {
+              type: 'function',
+              name: 'raw_lookup',
+              description: 'Look up a raw record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          ],
+        },
+      },
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'top-level provider tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: {
+        tools: [
+          {
+            type: 'function',
+            name: 'raw_lookup',
+            description: 'Look up a raw record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+      },
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+  ])(
+    'aligns parallel_tool_calls with effective tools for $label',
+    ({
+      tools,
+      handoffs,
+      prompt,
+      toolsExplicitlyProvided,
+      providerData,
+      expectedToolsLength,
+      expectsParallelToolCalls,
+    }) => {
+      const model = new TestableOpenAIResponsesModel(
+        { responses: { create: vi.fn() } } as unknown as OpenAI,
+        'gpt-test',
+      );
+
+      for (const stream of [false, true]) {
+        for (const parallelToolCalls of [true, false] as const) {
+          const { requestData } = model.buildRequest(
+            {
+              input: 'hello',
+              modelSettings: { parallelToolCalls, providerData },
+              tools,
+              handoffs,
+              prompt,
+              toolsExplicitlyProvided,
+              outputType: 'text',
+              tracing: false,
+            },
+            stream,
+          );
+
+          if (expectedToolsLength === undefined) {
+            expect(requestData.tools).toBeUndefined();
+          } else {
+            expect(requestData.tools).toHaveLength(expectedToolsLength);
+          }
+          if (expectsParallelToolCalls) {
+            expect(requestData.parallel_tool_calls).toBe(parallelToolCalls);
+          } else {
+            expect(requestData).not.toHaveProperty('parallel_tool_calls');
+          }
+        }
+      }
+    },
+  );
+
+  it('preserves explicit providerData parallel_tool_calls precedence without converted tools', () => {
+    const model = new TestableOpenAIResponsesModel(
+      { responses: { create: vi.fn() } } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const providerData = { parallel_tool_calls: true };
+
+    const { requestData } = model.buildRequest(
+      {
+        input: 'hello',
+        modelSettings: { parallelToolCalls: false, providerData },
+        tools: [],
+        handoffs: [],
+        outputType: 'text',
+        tracing: false,
+      },
+      false,
+    );
+
+    expect(requestData.parallel_tool_calls).toBe(true);
+    expect(providerData).toEqual({ parallel_tool_calls: true });
+  });
+
+  it.each([
+    { label: 'without providerData', stream: false, providerData: undefined },
+    {
+      label: 'with providerData',
+      stream: false,
+      providerData: { customMarker: 'keep' },
+    },
+    { label: 'without providerData', stream: true, providerData: undefined },
+    {
+      label: 'with providerData',
+      stream: true,
+      providerData: { customMarker: 'keep' },
+    },
+  ])(
+    'strips Chat Completions placeholder item IDs $label when stream=$stream',
+    ({ stream, providerData }) => {
+      const model = new TestableOpenAIResponsesModel(
+        { responses: { create: vi.fn() } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const providerMetadata = providerData ? { providerData } : {};
+      const history = [
+        {
+          id: FAKE_ID,
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello' }],
+          status: 'completed',
+          ...providerMetadata,
+        },
+        {
+          id: FAKE_ID,
+          type: 'function_call',
+          callId: 'call_1',
+          name: 'lookup',
+          arguments: '{}',
+          status: 'completed',
+          ...providerMetadata,
+        },
+      ];
+      const originalHistory = structuredClone(history);
+
+      const request = model.buildRequest(
+        {
+          input: history,
+          modelSettings: {},
+          tools: [],
+          handoffs: [],
+          outputType: 'text',
+          tracing: false,
+        },
+        stream,
+      );
+      const input = request.requestData.input as Array<Record<string, unknown>>;
+
+      expect(input[0]).not.toHaveProperty('id');
+      expect(input[1]).not.toHaveProperty('id');
+      expect(input[1]).toMatchObject({
+        type: 'function_call',
+        call_id: 'call_1',
+      });
+      if (providerData) {
+        expect(input[0]).toHaveProperty('custom_marker', 'keep');
+        expect(input[1]).toHaveProperty('custom_marker', 'keep');
+      }
+      expect(history).toEqual(originalHistory);
+    },
+  );
+
+  it('preserves provider item IDs and tool correlation IDs in Responses input', () => {
+    const model = new TestableOpenAIResponsesModel(
+      { responses: { create: vi.fn() } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const request = model.buildRequest(
+      {
+        input: [
+          {
+            id: 'msg_real',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'hello' }],
+            status: 'completed',
+          },
+          {
+            id: 'fc_real',
+            type: 'function_call',
+            callId: 'call_real',
+            name: 'lookup',
+            arguments: '{}',
+            status: 'completed',
+          },
+          {
+            id: 'fco_real',
+            type: 'function_call_result',
+            callId: 'call_real',
+            output: 'result',
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'reasoning',
+            content: [],
+          },
+          {
+            id: FAKE_ID,
+            type: 'program',
+            callId: 'program_call_real',
+            code: 'return 1;',
+            fingerprint: 'fingerprint_real',
+          },
+          {
+            id: FAKE_ID,
+            type: 'program_output',
+            callId: 'program_call_real',
+            output: '1',
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'computer_call',
+            callId: 'computer_call_real',
+            action: { type: 'wait' },
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'unknown',
+            providerData: {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'provider message' }],
+              status: 'completed',
+            },
+          },
+          {
+            id: `${FAKE_ID}-but-not-the-placeholder`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'near match' }],
+            status: 'completed',
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        handoffs: [],
+        outputType: 'text',
+        tracing: false,
+      },
+      false,
+    );
+    const input = request.requestData.input as Array<Record<string, unknown>>;
+
+    expect(input.map((item) => item.id)).toEqual([
+      'msg_real',
+      'fc_real',
+      'fco_real',
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      `${FAKE_ID}-but-not-the-placeholder`,
+    ]);
+    expect(input[1]).toHaveProperty('call_id', 'call_real');
+    expect(input[2]).toHaveProperty('call_id', 'call_real');
+    expect(input[4]).toHaveProperty('call_id', 'program_call_real');
+    expect(input[5]).toHaveProperty('call_id', 'program_call_real');
+    expect(input[6]).toHaveProperty('call_id', 'computer_call_real');
+    expect(input[7]).toHaveProperty('type', 'message');
+  });
+
+  it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res1',
+        usage: {
+          input_tokens: 3,
+          output_tokens: 4,
+          total_tokens: 7,
+        },
+        output: [
+          {
+            id: 'test_id',
+            type: 'message',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'hi' }],
+            role: 'assistant',
+          },
+        ],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: 'inst',
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const result = await model.getResponse(request as any);
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args, opts] = createMock.mock.calls[0];
+      expect(args.instructions).toBe('inst');
+      expect(args.model).toBe('gpt-test');
+      expect(args.input).toEqual([{ role: 'user', content: 'hello' }]);
+      expect(opts).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+
+      expect(result.usage.requests).toBe(1);
+      expect(result.usage.inputTokens).toBe(3);
+      expect(result.usage.outputTokens).toBe(4);
+      expect(result.usage.totalTokens).toBe(7);
+      expect(result.output).toEqual([
+        {
+          type: 'message',
+          id: 'test_id',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'hi' }],
+          providerData: {},
+        },
+      ]);
+      expect(result.responseId).toBe('res1');
+      expect(result.rawUsage).toBeUndefined();
+    });
+  });
+
+  it.each(['failed', 'incomplete'] as const)(
+    'getResponse rejects an unsuccessful %s response before output processing',
+    async (status) => {
+      const sensitiveDetail = 'sensitive-provider-detail';
+      const fakeResponse = {
+        id: 'resp_unsuccessful',
+        status,
+        usage: {
+          input_tokens: 3,
+          output_tokens: 4,
+          total_tokens: 7,
+        },
+        output: [{ type: 'unsupported_output', secret: sensitiveDetail }],
+        error: { message: sensitiveDetail },
+        incomplete_details: { reason: sensitiveDetail },
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any;
+
+      const error = await withTrace('test', () =>
+        model.getResponse(request),
+      ).catch((caught: unknown) => caught as any);
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(error.message).toBe(
+        `OpenAI Responses request ended with unsuccessful terminal state "response.${status}".`,
+      );
+      expect(error.message).not.toContain(sensitiveDetail);
+      expect(error.data).toBeUndefined();
+      expect(Object.keys(error)).not.toContain('unsafeToReplay');
+      expect(Object.keys(error)).not.toContain('responseStarted');
+      expect(
+        model.getRetryAdvice({ error, request, stream: false, attempt: 1 }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+    },
+  );
+
+  it('preserves incomplete response usage in Runner accounting', async () => {
+    setTracingDisabled(false);
+    let taskSpan: Span<any> | undefined;
+    let turnSpan: Span<any> | undefined;
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          if (span.spanData.type === 'task') {
+            taskSpan = span;
+          }
+          if (span.spanData.type === 'turn') {
+            turnSpan = span;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    const model = new OpenAIResponsesModel(
+      {
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_incomplete_usage',
+            status: 'incomplete',
+            usage: {
+              input_tokens: 3,
+              output_tokens: 4,
+              total_tokens: 7,
+              input_tokens_details: { cached_tokens: 1 },
+              output_tokens_details: { reasoning_tokens: 2 },
+            },
+            output: [],
+            incomplete_details: { reason: 'max_output_tokens' },
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const agent = new Agent({ name: 'IncompleteUsageAgent', model });
+
+    const error = await new Runner()
+      .run(agent, 'hello')
+      .catch((caught: unknown) => caught as any);
+
+    expect(error).toBeInstanceOf(ModelBehaviorError);
+    expect(taskSpan?.spanData.usage).toMatchObject({
+      requests: 1,
+      input_tokens: 3,
+      output_tokens: 4,
+      total_tokens: 7,
+    });
+    expect(turnSpan?.spanData.usage).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 4,
+      cached_input_tokens: 1,
+    });
+  });
+
+  it('getResponse accepts an explicitly completed response', async () => {
+    const model = new OpenAIResponsesModel(
+      {
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_completed',
+            status: 'completed',
+            usage: {},
+            output: [],
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_completed');
+    expect(result.output).toEqual([]);
+  });
+
+  describe.each([false, true])('sensitive tracing with stream=%s', (stream) => {
+    it.each([false, true])(
+      'honors traceIncludeSensitiveData=%s on successful runs',
+      async (traceIncludeSensitiveData) => {
+        const spans = captureResponseSpans();
+        const input = 'synthetic-private-input';
+        const output = 'synthetic-private-output';
+        const response = {
+          id: 'resp_sensitive_test',
+          status: 'completed',
+          usage: {},
+          output: [
+            {
+              id: 'msg_sensitive_test',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: output, annotations: [] }],
+            },
+          ],
+        };
+        async function* events() {
+          yield { type: 'response.completed', response, sequence_number: 0 };
+        }
+        const model = new OpenAIResponsesModel(
+          {
+            baseURL: 'https://api.openai.com/v1',
+            responses: {
+              create: vi
+                .fn()
+                .mockReturnValue(
+                  createResponsePromiseWithURL(
+                    stream ? events() : response,
+                    'https://api.openai.com/v1/responses',
+                  ),
+                ),
+            },
+          } as unknown as OpenAI,
+          'gpt-test',
+        );
+        const runner = new Runner({ traceIncludeSensitiveData });
+        const agent = new Agent({ name: 'TracingTest', model });
+        if (stream) {
+          const result = await runner.run(agent, input, { stream: true });
+          for await (const _event of result) {
+            /* consume */
+          }
+          await result.completed;
+          expect(result.finalOutput).toBe(output);
+        } else {
+          expect((await runner.run(agent, input)).finalOutput).toBe(output);
+        }
+        expect(spans).toHaveLength(1);
+        expect(spans[0].spanData.response_id).toBe(response.id);
+        if (traceIncludeSensitiveData) {
+          expect(JSON.stringify(spans[0].spanData._input)).toContain(input);
+          expect(JSON.stringify(spans[0].spanData._response)).toContain(output);
+        } else {
+          expect(spans[0].spanData._input).toBeUndefined();
+          expect(spans[0].spanData._response).toBeUndefined();
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(input);
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(output);
+        }
+      },
+    );
+
+    it.each([true, 'enabled_without_data'] as const)(
+      'preserves the caller error and honors tracing=%s on provider failure',
+      async (tracing) => {
+        const spans = captureResponseSpans();
+        const error = new Error('synthetic-private-provider-error');
+        async function* events() {
+          yield { type: 'response.created', response: { id: 'resp_error' } };
+          throw error;
+        }
+        const model = new OpenAIResponsesModel(
+          {
+            responses: {
+              create: stream
+                ? vi.fn().mockResolvedValue(events())
+                : vi.fn().mockRejectedValue(error),
+            },
+          } as unknown as OpenAI,
+          'gpt-test',
+        );
+        const request: ModelRequest = {
+          systemInstructions: undefined,
+          input: 'synthetic-private-input',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing,
+        };
+        await expect(
+          withTrace('test', async () => {
+            if (stream) {
+              for await (const _event of model.getStreamedResponse(request)) {
+                /* consume */
+              }
+            } else {
+              await model.getResponse(request);
+            }
+          }),
+        ).rejects.toBe(error);
+        expect(spans).toHaveLength(1);
+        expect(spans[0].error).not.toBeNull();
+        if (tracing === true) {
+          expect(JSON.stringify(spans[0].error)).toContain(error.message);
+        } else {
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(
+            error.message,
+          );
+          expect(spans[0].spanData._input).toBeUndefined();
+          expect(spans[0].spanData._response).toBeUndefined();
+        }
+      },
+    );
+  });
+
+  it('redacts an unsuccessful non-streaming response from no-data tracing', async () => {
+    setTracingDisabled(false);
+    let responseSpan: Span<any> | undefined;
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          if (span.spanData.type === 'response') {
+            responseSpan = span;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    const sensitiveDetail = 'sensitive-no-data-response';
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn().mockReturnValue(
+            createResponsePromiseWithURL(
+              {
+                id: 'resp_no_data_incomplete',
+                status: 'incomplete',
+                usage: {},
+                output: [],
+                incomplete_details: { reason: sensitiveDetail },
+              },
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await expect(
+      withTrace('test', () =>
+        model.getResponse({
+          systemInstructions: undefined,
+          input: sensitiveDetail,
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: 'enabled_without_data',
+          signal: undefined,
+        } as any),
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+
+    expect(responseSpan?.spanData.response_id).toBe('resp_no_data_incomplete');
+    expect(responseSpan?.spanData._input).toBeUndefined();
+    expect(responseSpan?.spanData._response).toBeUndefined();
+    expect(JSON.stringify(responseSpan?.error)).not.toContain(sensitiveDetail);
+  });
+
+  it.each([
+    {
+      label: 'official endpoint',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://api.openai.com/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: 'resp_redacted_endpoint',
+    },
+    {
+      label: 'custom endpoint',
+      before: 'https://provider.example.test/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://provider.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'custom endpoint changed to official',
+      before: 'https://provider.example.test/v1',
+      requestURL: 'https://api.openai.com/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'official endpoint changed to custom',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://provider.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'insecure official host',
+      before: 'http://api.openai.com/v1',
+      requestURL: 'http://api.openai.com/v1/responses',
+      after: 'http://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'lookalike host',
+      before: 'https://api.openai.com.example.test/v1',
+      requestURL: 'https://api.openai.com.example.test/v1/responses',
+      after: 'https://api.openai.com.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'nonstandard port',
+      before: 'https://api.openai.com:8443/v1',
+      requestURL: 'https://api.openai.com:8443/v1/responses',
+      after: 'https://api.openai.com:8443/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'official endpoint routed through custom endpoint and restored',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+  ])(
+    'gates redacted non-streaming response IDs for $label',
+    async ({ before, requestURL, after, expectedResponseId }) => {
+      const responseSpans = captureResponseSpans();
+      const response = {
+        id: 'resp_redacted_endpoint',
+        status: 'completed',
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+        output: [],
+        _request_id: 'req_redacted_endpoint',
+      };
+      const client = {
+        baseURL: before,
+        responses: {
+          create: vi.fn(() =>
+            createResponsePromiseWithURL(response, requestURL, () => {
+              client.baseURL = after;
+            }),
+          ),
+        },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      const result = await withTrace('test', () =>
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: 'enabled_without_data',
+          signal: undefined,
+        } as any),
+      );
+
+      expect(result.responseId).toBe('resp_redacted_endpoint');
+      expect(result.requestId).toBe('req_redacted_endpoint');
+      expect(result.usage).toMatchObject({
+        inputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 3,
+      });
+      expect(responseSpans).toHaveLength(1);
+      const spanData = getSerializedResponseSpanData(responseSpans[0]!);
+      expect(spanData.response_id).toBe(expectedResponseId);
+      expect(spanData).not.toHaveProperty('_input');
+      expect(spanData).not.toHaveProperty('_response');
+    },
+  );
+
+  it('preserves a custom endpoint response ID for full-data tracing', async () => {
+    const responseSpans = captureResponseSpans();
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://provider.example.test/v1',
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_full_data_custom',
+            status: 'completed',
+            usage: {},
+            output: [],
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_full_data_custom');
+    expect(responseSpans).toHaveLength(1);
+    expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+      'resp_full_data_custom',
+    );
+    expect(responseSpans[0]?.spanData._response).toBeDefined();
+  });
+
+  it('does not create a response span when tracing is disabled', async () => {
+    const responseSpans = captureResponseSpans();
+    setTracingDisabled(true);
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_tracing_disabled',
+            status: 'completed',
+            usage: {},
+            output: [],
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_tracing_disabled');
+    expect(responseSpans).toEqual([]);
+  });
+
+  it('does not persist an unsuccessful non-streaming response as a successful turn', async () => {
+    const fakeResponse = {
+      id: 'resp_incomplete_tool',
+      status: 'incomplete',
+      usage: {},
+      output: [
+        {
+          type: 'function_call',
+          id: 'fc_incomplete',
+          call_id: 'call_incomplete',
+          name: 'lookup',
+          arguments: '{}',
+        },
+      ],
+    };
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeResponse) },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+    const session: Session = {
+      getSessionId: vi.fn().mockResolvedValue('terminal-failure-session'),
+      getItems: vi.fn().mockResolvedValue([]),
+      addItems,
+      popItem: vi.fn().mockResolvedValue(undefined),
+      clearSession: vi.fn().mockResolvedValue(undefined),
+    };
+    const agent = new Agent({ name: 'TerminalFailureAgent', model });
+
+    await expect(
+      new Runner().run(agent, 'persist-me', { session }),
+    ).rejects.toThrow(ModelBehaviorError);
+    expect(addItems).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['omitted', {}, {}],
+    ['explicit zero', { cached_tokens: 0 }, { cached_tokens: 0 }],
+  ])(
+    'getResponse preserves %s cached token field presence when enabled',
+    async (_label, inputTokensDetails, expectedInputTokensDetails) => {
+      await withTrace('test', async () => {
+        const fakeResponse = {
+          id: 'res-raw-usage',
+          usage: {
+            input_tokens: 3,
+            output_tokens: 2,
+            total_tokens: 5,
+            input_tokens_details: inputTokensDetails,
+            output_tokens_details: { reasoning_tokens: 0 },
+            provider_metric: null,
+          },
+          output: [],
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        const model = new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        );
+
+        const result = await model.getResponse({
+          input: 'hello',
+          modelSettings: { preserveRawUsage: true },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any);
+
+        expect(result.rawUsage).toEqual({
+          input_tokens: 3,
+          output_tokens: 2,
+          total_tokens: 5,
+          input_tokens_details: expectedInputTokensDetails,
+          output_tokens_details: { reasoning_tokens: 0 },
+          provider_metric: null,
+        });
+      });
+    },
+  );
+
+  it('captures raw and normalized usage before tracing processors can mutate it', async () => {
+    const fakeResponse = {
+      id: 'res-traced-raw-usage',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5,
+      },
+      output: [],
+    };
+    const createMock = vi.fn().mockResolvedValue(fakeResponse);
+    setTracingDisabled(false);
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          const response = span.spanData._response as any;
+          if (response?.usage) {
+            response.usage.input_tokens = 99;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        input: 'hello',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      } as any),
+    );
+
+    expect(result.rawUsage).toEqual({
+      input_tokens: 3,
+      output_tokens: 2,
+      total_tokens: 5,
+    });
+    expect(result.usage.inputTokens).toBe(3);
+  });
+
+  it('getResponse exposes the OpenAI request ID on ModelResponse', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-request-id',
+        usage: {},
+        output: [],
+      };
+      Object.defineProperty(fakeResponse, '_request_id', {
+        value: 'req_nonstream_123',
+        enumerable: false,
+      });
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const result = await model.getResponse(request as any);
+
+      expect(result.responseId).toBe('res-request-id');
+      expect(result.requestId).toBe('req_nonstream_123');
+    });
+  });
+
+  it.each(['commentary', 'final_answer'] as const)(
+    'preserves assistant message phase "%s" in requests and responses',
+    async (phase) => {
+      const fakeResponse = {
+        id: 'res-phase',
+        usage: {},
+        output: [
+          {
+            id: 'assistant-output',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            phase,
+            content: [{ type: 'output_text', text: 'response' }],
+          },
+        ],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+
+      const result = await withTrace('assistant-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              id: 'assistant-input',
+              role: 'assistant',
+              status: 'completed',
+              phase,
+              content: [{ type: 'output_text', text: 'previous reply' }],
+              providerData: {
+                phase: phase === 'commentary' ? 'final_answer' : 'commentary',
+                customMetadata: 'keep',
+              },
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      );
+
+      expect(createMock.mock.calls[0][0].input[0]).toMatchObject({
+        role: 'assistant',
+        phase,
+        custom_metadata: 'keep',
+      });
+      expect(result.output[0]).toMatchObject({ phase });
+      expect(result.output[0]?.providerData).toMatchObject({ phase });
+    },
+  );
+
+  it('preserves assistant phases stored in legacy providerData', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-legacy-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('assistant-legacy-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'previous reply' }],
+            providerData: { phase: 'commentary' },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input[0]).toHaveProperty(
+      'phase',
+      'commentary',
+    );
+  });
+
+  it('does not send assistant-only phases on user or system messages', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-user-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('non-assistant-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'system',
+            content: 'instructions',
+            providerData: { phase: 'commentary', customFlag: true },
+          },
+          {
+            type: 'message',
+            role: 'user',
+            content: 'user input',
+            providerData: { phase: 'final_answer', customFlag: true },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input).toEqual([
+      expect.objectContaining({ role: 'system', custom_flag: true }),
+      expect.objectContaining({ role: 'user', custom_flag: true }),
+    ]);
+    expect(createMock.mock.calls[0][0].input[0]).not.toHaveProperty('phase');
+    expect(createMock.mock.calls[0][0].input[1]).not.toHaveProperty('phase');
+  });
+
+  it('rejects invalid assistant message phases before making a request', async () => {
+    const createMock = vi.fn();
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await expect(
+      withTrace('assistant-invalid-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'invalid',
+              content: [{ type: 'output_text', text: 'previous reply' }],
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'Invalid assistant message phase: "invalid". Expected "commentary" or "final_answer".',
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('getRetryAdvice does not suggest retries from transport heuristics alone', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = new Error('terminated');
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('preserves SDK retries for direct callers when no runner retry policy is configured', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-default-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('preserves SDK retries for direct callers when a retry policy is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-policy-no-runner-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            policy: () => true,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('preserves SDK retries for direct callers when maxRetries is configured', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-max-retries-no-policy',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            maxRetries: 2,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('disables SDK retries when runner retries are enabled', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-runner-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            maxRetries: 2,
+            policy: () => true,
+          },
+        },
+        _internal: {
+          runnerManagedRetry: true,
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        maxRetries: 0,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('getRetryAdvice honors x-should-retry=false', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('internal error'), {
+      headers: new Headers([['x-should-retry', 'false']]),
+      status: 500,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      reason: 'internal error',
+    });
+  });
+
+  it('getRetryAdvice honors x-should-retry=true', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('provider requested retry'), {
+      headers: new Headers([['x-should-retry', 'true']]),
+      status: 418,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'provider requested retry',
+    });
+  });
+
+  it('getRetryAdvice reads case-insensitive response header objects', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: {
+          responseHeaders: {
+            'X-Should-Retry': ' TRUE ',
+          },
+        },
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: undefined,
+    });
+  });
+
+  it('getRetryAdvice handles non-Error unsafe replay markers', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: { unsafeToReplay: true },
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason: undefined,
+    });
+  });
+
+  it('getRetryAdvice treats x-should-retry=true as safe replay advice for stateful requests', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('provider requested retry'), {
+      headers: new Headers([['x-should-retry', 'true']]),
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          previousResponseId: 'resp_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'provider requested retry',
+    });
+  });
+
+  it('getRetryAdvice falls back to OpenAI retryable statuses when header is absent', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('rate limited'), {
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      reason: 'rate limited',
+    });
+  });
+
+  it('getRetryAdvice supports statusCode errors and server failures', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('service unavailable'), {
+      statusCode: 503,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      reason: 'service unavailable',
+    });
+  });
+
+  it('getRetryAdvice does not treat generic retryable statuses as safe replay advice for stateful requests', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('rate limited'), {
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          conversationId: 'conv_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          previousResponseId: 'resp_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('retries end-to-end when provider advice opts in', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('provider requested retry'), {
+        headers: new Headers([
+          ['x-should-retry', 'true'],
+          ['retry-after-ms', '0'],
+        ]),
+        status: 429,
+      });
+      const fakeResponse = {
+        id: 'res-retried',
+        usage: {
+          input_tokens: 2,
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+        output: [
+          {
+            id: 'retry_msg',
+            type: 'message',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'retried ok' }],
+            role: 'assistant',
+          },
+        ],
+      };
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('retried ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('retries end-to-end when provider advice falls back to retryable status codes', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('rate limited'), {
+        status: 429,
+      });
+      const fakeResponse = {
+        id: 'res-retried-from-status',
+        usage: {
+          input_tokens: 2,
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+        output: [
+          {
+            id: 'retry_msg',
+            type: 'message',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'retried from status ok' }],
+            role: 'assistant',
+          },
+        ],
+      };
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceStatusAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('retried from status ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('retries streamed requests end-to-end when provider advice opts in before any events', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('provider requested retry'), {
+        headers: new Headers([
+          ['x-should-retry', 'true'],
+          ['retry-after-ms', '0'],
+        ]),
+        status: 429,
+      });
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-final',
+          output: [
+            {
+              id: 'stream_msg',
+              type: 'message',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'stream retried ok' }],
+              role: 'assistant',
+            },
+          ],
+          usage: {
+            input_tokens: 2,
+            output_tokens: 4,
+            total_tokens: 6,
+          },
+        } as any,
+        sequence_number: 1,
+      };
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceStreamingAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello', { stream: true });
+      for await (const _event of result) {
+        // Consume the stream to completion.
+      }
+
+      expect(result.finalOutput).toBe('stream retried ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('does not retry streamed websocket requests when provider advice marks replay as unsafe', async () => {
+    await withTrace('test', async () => {
+      class UnsafeStreamingWSModel extends OpenAIResponsesWSModel {
+        attempts = 0;
+
+        /* eslint-disable require-yield */
+        override async *getStreamedResponse(): AsyncIterable<ResponseStreamEvent> {
+          this.attempts += 1;
+          throw new Error(
+            'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+          );
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const fakeClient = {
+        responses: { create: vi.fn() },
+      } as unknown as OpenAI;
+      const model = new UnsafeStreamingWSModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'UnsafeStreamingProviderAdviceAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello', { stream: true });
+      const consume = async () => {
+        for await (const _event of result) {
+          // Consume until the stream throws.
+        }
+      };
+
+      await expect(consume()).rejects.toThrow(
+        'The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+      );
+      expect(model.attempts).toBe(1);
+    });
+  });
+
+  it('getRetryAdvice allows streamed websocket retries when the request never left the client', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_opening',
+          'Responses websocket connection closed before opening.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'Responses websocket connection closed before opening.',
+    });
+  });
+
+  it('getRetryAdvice marks ambiguous websocket replay cases as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+    const error = new Error(
+      'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+    );
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+    });
+  });
+
+  it('getRetryAdvice marks no-event websocket closes after send as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_terminal_response_event',
+          'Responses websocket connection closed before a terminal response event.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed before a terminal response event.',
+    });
+  });
+
+  it('getRetryAdvice marks websocket pong timeouts as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'pong_timeout',
+          'Responses websocket pong timeout.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason: 'Responses websocket pong timeout.',
+    });
+  });
+
+  it('getRetryAdvice allows non-streaming websocket retries when the request never left the client', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_opening',
+          'Responses websocket connection closed before opening.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'Responses websocket connection closed before opening.',
+    });
+  });
+
+  it('getRetryAdvice marks non-streaming websocket errors as unsafe when collapse consumed events', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+    const error = Object.assign(
+      new Error(
+        'Responses websocket connection closed before a terminal response event.',
+      ),
+      {
+        unsafeToReplay: true,
+        responseStarted: true,
+      },
+    );
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed before a terminal response event.',
+      responseStarted: true,
+    });
+  });
+
+  it('ignores providerData reserved fields when building replay input items', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-provider-data', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: [
+          {
+            type: 'message',
+            id: 'sys_1',
+            role: 'system',
+            content: 'keep-system',
+            providerData: {
+              role: 'user',
+              content: 'override',
+              customFlag: 'keep-system-metadata',
+            },
+          },
+          {
+            type: 'message',
+            id: 'user_1',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'keep-text',
+                providerData: {
+                  type: 'bad_text',
+                  text: 'override-text',
+                  customText: 'keep-text-metadata',
+                },
+              },
+              {
+                type: 'input_image',
+                image: 'https://example.com/image.png',
+                providerData: {
+                  type: 'bad_image',
+                  imageUrl: 'https://example.com/override.png',
+                  detail: 'low',
+                  customImage: 'keep-image-metadata',
+                },
+              },
+            ],
+          },
+          {
+            type: 'tool_search_call',
+            id: 'search_1',
+            status: 'completed',
+            arguments: {
+              paths: ['crm'],
+              query: 'profile',
+            },
+            providerData: {
+              type: 'function_call',
+              arguments: { paths: ['billing'] },
+              customSearch: 'keep-search-metadata',
+            },
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            callId: 'call_1',
+            name: 'lookup_account',
+            namespace: 'crm',
+            arguments: '{"accountId":"acct_1"}',
+            status: 'completed',
+            providerData: {
+              name: 'override_name',
+              namespace: 'override_namespace',
+              arguments: '{"accountId":"override"}',
+              customFunction: 'keep-function-metadata',
+            },
+          },
+          {
+            type: 'function_call_result',
+            id: 'fco_1',
+            callId: 'call_1',
+            output: 'tool output',
+            status: 'completed',
+            providerData: {
+              type: 'message',
+              output: 'override-output',
+              customResult: 'keep-result-metadata',
+            },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.input).toEqual([
+        {
+          id: 'sys_1',
+          role: 'system',
+          content: 'keep-system',
+          custom_flag: 'keep-system-metadata',
+        },
+        {
+          id: 'user_1',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'keep-text',
+              custom_text: 'keep-text-metadata',
+            },
+            {
+              type: 'input_image',
+              detail: 'auto',
+              image_url: 'https://example.com/image.png',
+              custom_image: 'keep-image-metadata',
+            },
+          ],
+        },
+        {
+          type: 'tool_search_call',
+          id: 'search_1',
+          status: 'completed',
+          arguments: {
+            paths: ['crm'],
+            query: 'profile',
+          },
+          custom_search: 'keep-search-metadata',
+        },
+        {
+          id: 'fc_1',
+          type: 'function_call',
+          name: 'lookup_account',
+          call_id: 'call_1',
+          arguments: '{"accountId":"acct_1"}',
+          status: 'completed',
+          namespace: 'crm',
+          custom_function: 'keep-function-metadata',
+        },
+        {
+          type: 'function_call_output',
+          id: 'fco_1',
+          call_id: 'call_1',
+          output: 'tool output',
+          status: 'completed',
+          custom_result: 'keep-result-metadata',
+        },
+      ]);
+    });
+  });
+
+  it('omits previous_response_id when conversation is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-conv', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+        conversationId: 'conv_123',
+        previousResponseId: 'resp_123',
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.conversation).toBe('conv_123');
+      expect(args.previous_response_id).toBeUndefined();
+    });
+  });
+
+  it('sends GPT-5.6 reasoning and prompt-cache controls to the Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-cache', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-cache');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          promptCacheRetention: 'in-memory',
+          promptCacheOptions: { mode: 'explicit', ttl: '30m' },
+          reasoning: { mode: 'pro', effort: 'max', context: 'all_turns' },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt_cache_retention).toBe('in_memory');
+      expect(args.prompt_cache_options).toEqual({
+        mode: 'explicit',
+        ttl: '30m',
+      });
+      expect(args.reasoning).toEqual({
+        mode: 'pro',
+        effort: 'max',
+        context: 'all_turns',
+      });
+    });
+  });
+
+  it('preserves prompt-cache breakpoints in Responses input content', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi
+        .fn()
+        .mockResolvedValue({ id: 'res-breakpoints', usage: {}, output: [] });
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.6');
+      const promptCacheBreakpoint = { mode: 'explicit' } as const;
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'one',
+                promptCacheBreakpoint,
+              },
+              {
+                type: 'input_image',
+                image: 'https://example.com/image.png',
+                promptCacheBreakpoint,
+              },
+              {
+                type: 'input_file',
+                file: 'data:text/plain;base64,SGVsbG8=',
+                filename: 'hello.txt',
+                promptCacheBreakpoint,
+              },
+            ],
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock.mock.calls[0]?.[0].input[0].content).toEqual([
+        {
+          type: 'input_text',
+          text: 'one',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+        {
+          type: 'input_image',
+          detail: 'auto',
+          image_url: 'https://example.com/image.png',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+        {
+          type: 'input_file',
+          file_data: 'data:text/plain;base64,SGVsbG8=',
+          filename: 'hello.txt',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+      ]);
+    });
+  });
+
+  it('sends context management settings to the Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-context', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-context');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          contextManagement: [{ type: 'compaction', compactThreshold: 200000 }],
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.context_management).toEqual([
+        {
+          type: 'compaction',
+          compact_threshold: 200000,
+        },
+      ]);
+    });
+  });
+
+  it('still sends an empty tools array when no prompt is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-no-prompt', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([]);
+      expect(args.prompt).toBeUndefined();
+    });
+  });
+
+  it('prevents extra_body from overriding non-streaming request mode', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-non-stream', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_body: {
+              stream: true,
+              metadata: { transport: 'http' },
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.stream).toBe(false);
+      expect(args.metadata).toEqual({ transport: 'http' });
+    });
+  });
+
+  it('preserves null extra_headers entries as SDK header unsets on HTTP requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-http-headers', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_headers: {
+              'User-Agent': null,
+              'X-Request-Header': 'present',
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [, opts] = createMock.mock.calls[0];
+      const headers = opts.headers as Record<string, string | null>;
+      expect(headers['X-Request-Header']).toBe('present');
+      expect(headers['user-agent']).toBeNull();
+      expect((headers as any).values).toBeUndefined();
+      expect((headers as any).nulls).toBeUndefined();
+
+      const sdkClient = new OpenAI({ apiKey: 'sk-test' });
+      const sdkHeaders = (await (sdkClient as any).buildHeaders({
+        options: { headers },
+        method: 'post',
+        bodyHeaders: undefined,
+        retryCount: 0,
+      })) as Headers;
+      expect(sdkHeaders.get('X-Request-Header')).toBe('present');
+      expect(sdkHeaders.get('User-Agent')).toBeNull();
+      expect(sdkHeaders.get('values')).toBeNull();
+      expect(sdkHeaders.get('nulls')).toBeNull();
+    });
+  });
+
+  it('includes handoff tools in the request', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-handoff', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-handoff');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [
+          {
+            toolName: 'handoff_tool',
+            toolDescription: 'handoff description',
+            inputJsonSchema: { type: 'object', properties: {} },
+            strictJsonSchema: true,
+          },
+        ],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'handoff_tool',
+          description: 'handoff description',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+        },
+      ]);
+    });
+  });
+
+  it('allows deferred namespace members in requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-tool-search', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42 and list their open orders',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'function',
+            name: 'list_open_orders',
+            description: 'List open orders for a customer.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for customer profile and order lookup.',
+          tools: [
+            {
+              type: 'function',
+              name: 'get_customer_profile',
+              description: 'Fetch customer profile data.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders for a customer.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+          ],
+        },
+        {
+          type: 'tool_search',
+          execution: undefined,
+          description: undefined,
+          parameters: undefined,
+        },
+      ]);
+    });
+  });
+
+  it('rejects namespaced tools without a namespace description', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-namespace-description',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'All tools in namespace "crm" must provide a non-empty description.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows namespace tools that mix immediate and deferred members', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-mixed-namespace-members',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'function',
+            name: 'list_recent_support_tickets',
+            description: 'List recent support tickets.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for customer profile and order lookup.',
+          tools: [
+            {
+              type: 'function',
+              name: 'get_customer_profile',
+              description: 'Fetch customer profile data.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+            {
+              type: 'function',
+              name: 'list_recent_support_tickets',
+              description: 'List recent support tickets.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+          ],
+        },
+        {
+          type: 'tool_search',
+          execution: undefined,
+          description: undefined,
+          parameters: undefined,
+        },
+      ]);
+    });
+  });
+
+  it('rejects duplicate function tool names within a namespace', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-duplicate-namespace-function',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up a premium account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Namespace "crm" cannot contain duplicate function tool name "lookup_account".',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps top-level deferred function tools flat in requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-top-level-deferred',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+          defer_loading: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('rejects deferLoading without toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('includes deferred hosted MCP tools when paired with toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-deferred-mcp',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'find the latest order',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'hosted_mcp',
+            providerData: {
+              type: 'mcp',
+              server_label: 'shopify',
+              server_url: 'https://mcp.example.com/shopify',
+              server_description: 'Orders and customer records.',
+              defer_loading: true,
+              require_approval: 'never',
+            },
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          server_description: 'Orders and customer records.',
+          defer_loading: true,
+          require_approval: 'never',
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('rejects deferred hosted MCP tools without toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-tool-search-mcp',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'find the latest order',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'hosted_mcp',
+            providerData: {
+              type: 'mcp',
+              server_label: 'shopify',
+              server_url: 'https://mcp.example.com/shopify',
+              defer_loading: true,
+              require_approval: 'never',
+            },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects deferred function tools when a prompt is present without explicit toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects deferred function tools from explicit prompt-backed tool config without explicit toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search-explicit-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows deferred function tools with explicit toolSearchTool when a prompt is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search-explicit-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt).toMatchObject({ id: 'pmpt_tool_search_support' });
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+          defer_loading: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it.each([false, true])(
+    'preserves explicit tool_search for prompt-backed requests when toolsExplicitlyProvided=%s',
+    async (toolsExplicitlyProvided) => {
+      await withTrace('test', async () => {
+        const fakeResponse = {
+          id: 'res-prompt-tool-search-helper',
+          usage: {},
+          output: [],
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        const fakeClient = {
+          responses: { create: createMock },
+        } as unknown as OpenAI;
+        const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+        const request = {
+          systemInstructions: undefined,
+          prompt: { promptId: 'pmpt_tool_search_support' },
+          input: 'look up the shipment eta',
+          modelSettings: {},
+          tools: [
+            {
+              type: 'hosted_tool',
+              name: 'tool_search',
+              providerData: { type: 'tool_search' },
+            },
+          ],
+          toolsExplicitlyProvided,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+
+        await model.getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect(args.tools).toEqual([
+          {
+            type: 'tool_search',
+          },
+        ]);
+      });
+    },
+  );
+
+  it('rejects deferred namespaced function tools before toolChoice validation', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-namespaced-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'crm.lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'modelSettings.toolChoice="crm.lookup_account" cannot force a deferred function tool in Responses. Use "auto" so tool_search can load it.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects forced toolChoice for top-level deferred function tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-top-level-deferred-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up shipment ZX-123',
+        modelSettings: { toolChoice: 'get_shipping_eta' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'modelSettings.toolChoice="get_shipping_eta" cannot force a deferred function tool in Responses. Use "auto" so tool_search can load it.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    {
+      name: 'forced PTC without the helper tool',
+      toolChoice: 'programmatic_tool_calling',
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+      ],
+      error: /requires programmaticToolCallingTool\(\)/,
+    },
+    {
+      name: 'programmatic-only tools without the helper tool',
+      toolChoice: undefined,
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+      ],
+      error:
+        /Tools restricted to programmatic callers require programmaticToolCallingTool\(\)/,
+    },
+    {
+      name: 'the PTC helper without an eligible tool',
+      toolChoice: undefined,
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+      error:
+        /requires at least one tool whose allowedCallers includes "programmatic"/,
+    },
+  ])('rejects $name before sending a Responses request', async (testCase) => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await expect(
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'look up an account',
+          modelSettings: { toolChoice: testCase.toolChoice },
+          tools: testCase.tools,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        } as any),
+      ).rejects.toThrow(testCase.error);
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects programmatic-only SDK tools without the helper when a prompt may supply tools', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-prompt-programmatic-only-tool',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await expect(
+        model.getResponse({
+          systemInstructions: undefined,
+          prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+          input: 'look up an account',
+          modelSettings: {},
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              parameters: { type: 'object', properties: {} },
+              strict: true,
+              allowedCallers: ['programmatic'],
+            },
+          ],
+          toolsExplicitlyProvided: false,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        } as any),
+      ).rejects.toThrow(
+        /Tools restricted to programmatic callers require programmaticToolCallingTool\(\)/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows a prompt to supply eligible tools for an SDK PTC helper', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-prompt-eligible-tool',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        input: 'look up an account',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'programmatic_tool_calling',
+            providerData: { type: 'programmatic_tool_calling' },
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it.each([
+    {
+      name: 'an explicitly eligible function',
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+    },
+    {
+      name: 'tool search that can load an eligible tool later',
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search' },
+        },
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+    },
+  ])('accepts a complete PTC configuration with $name', async (testCase) => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-programmatic-tool-calling',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'look up an account',
+        modelSettings: {},
+        tools: testCase.tools,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('allows namespaced function tool_choice values for immediate namespace tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-immediate-namespaced-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'crm.lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account in CRM.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  account_id: { type: 'string' },
+                },
+                required: ['account_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          ],
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'crm.lookup_account',
+      });
+    });
+  });
+
+  it('preserves explicit server toolSearchTool when no deferred function tools remain', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-orphan-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit toolSearchTool when a prompt is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-deferred-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_deferred_tool_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('supplies the built-in client search schema required by Responses', async () => {
+    await withTrace('test', async () => {
+      const create = vi.fn().mockResolvedValue({
+        id: 'client-search-defaults',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create } } as unknown as OpenAI,
+        'gpt-5.4',
+      );
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'Load syntax',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search', execution: 'client' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      });
+      expect(create.mock.calls[0][0].tools).toEqual([
+        {
+          type: 'tool_search',
+          execution: 'client',
+          description:
+            'Load tools by namespace or tool name before calling them.',
+          parameters: {
+            type: 'object',
+            properties: { paths: { type: 'array', items: { type: 'string' } } },
+            required: ['paths'],
+            additionalProperties: false,
+          },
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit client toolSearchTool even without deferred local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-client-tool-search-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'load deferred tools from the client runtime',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: {
+              type: 'tool_search',
+              execution: 'client',
+              description: 'Search local deferred tools.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  namespace: { type: 'string' },
+                },
+              },
+            },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+          execution: 'client',
+          description: 'Search local deferred tools.',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespace: { type: 'string' },
+            },
+          },
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit server toolSearchTool without deferred local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-server-tool-search-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { parallelToolCalls: true },
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+        },
+      ]);
+      expect(args.parallel_tool_calls).toBe(true);
+    });
+  });
+
+  it('treats tool_search toolChoice as a custom function name even when the hosted tool is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-function-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'tool_search',
+            description: 'Force a custom tool named tool_search.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'tool_search',
+      });
+    });
+  });
+
+  it('treats tool_search toolChoice as a custom function name when no hosted tool is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-function-tool-search-choice-no-hosted-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'tool_search',
+            description: 'Force a custom tool named tool_search.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'tool_search',
+      });
+    });
+  });
+
+  it('rejects tool_search toolChoice when only the built-in tool_search tool is available', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-hosted-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="tool_search" is only supported for a custom function named "tool_search"/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects tool_search toolChoice when only a prompt may supply the built-in tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-hosted-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="tool_search" is only supported for a custom function named "tool_search"/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects a named function tool choice when no matching tool remains', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-function-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="lookup_account" does not match any available tool/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects required tool choice when the outgoing tool list is empty', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-empty-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'required' },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="required" requires at least one available tool/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('accepts named tool choice when extra_body supplies the selected tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {
+          toolChoice: 'prompt_lookup',
+          providerData: {
+            extra_body: {
+              tools: [
+                {
+                  type: 'function',
+                  name: 'prompt_lookup',
+                  description:
+                    'Look up a customer from a prompt-supplied tool.',
+                  parameters: {
+                    type: 'object',
+                    properties: {},
+                    additionalProperties: false,
+                  },
+                  strict: true,
+                },
+              ],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'prompt_lookup',
+          description: 'Look up a customer from a prompt-supplied tool.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'prompt_lookup',
+      });
+    });
+  });
+
+  it('accepts required tool choice when extra_body supplies tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-required-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {
+          toolChoice: 'required',
+          providerData: {
+            extra_body: {
+              tools: [
+                {
+                  type: 'function',
+                  name: 'prompt_lookup',
+                  description:
+                    'Look up a customer from a prompt-supplied tool.',
+                  parameters: {
+                    type: 'object',
+                    properties: {},
+                    additionalProperties: false,
+                  },
+                  strict: true,
+                },
+              ],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'prompt_lookup',
+          description: 'Look up a customer from a prompt-supplied tool.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toBe('required');
+    });
+  });
+
+  it('omits model when a prompt is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_123' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_123' });
+    });
+  });
+
+  it('merges prompt variables using input content transforms', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt-vars', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-vars');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: {
+          promptId: 'pmpt_vars',
+          variables: {
+            name: 'Ada',
+            avatar: { type: 'input_image', image: 'https://example.com/a.png' },
+            document: { type: 'input_file', file: { id: 'file_doc' } },
+          },
+        },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt).toMatchObject({
+        id: 'pmpt_vars',
+        variables: {
+          name: 'Ada',
+          avatar: {
+            type: 'input_image',
+            detail: 'auto',
+            image_url: 'https://example.com/a.png',
+          },
+          document: {
+            type: 'input_file',
+            file_id: 'file_doc',
+          },
+        },
+      });
+    });
+  });
+
+  it('includes response format for non-text output types', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-format', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-format');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          text: { schema: { type: 'object' } },
+        },
+        tools: [],
+        outputType: 'json_object',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.text).toEqual({
+        schema: { type: 'object' },
+        format: 'json_object',
+      });
+    });
+  });
+
+  it('includes model when overridePromptModel is true', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt-override', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-override');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_456' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+        overridePromptModel: true,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.model).toBe('gpt-override');
+      expect(args.prompt).toMatchObject({ id: 'pmpt_456' });
+    });
+  });
+
+  it('omits tools when agent did not configure any and prompt should supply them', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-no-tools', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_789' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_789' });
+    });
+  });
+
+  it('keeps named tool_choice when a prompt may supply the selected tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-prompt-only',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_omit' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'web_search_preview' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toEqual({
+        type: 'web_search_preview',
+      });
+    });
+  });
+
+  it('defaults prompt-managed computer tools to the preview wire shape', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-preview-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_preview_default' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.tools).toEqual([
+        {
+          type: 'computer_use_preview',
+          environment: 'browser',
+          display_width: 1024,
+          display_height: 768,
+        },
+      ]);
+    });
+  });
+
+  it('uses the GA computer tool when the request model is explicit', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.model).toBe('gpt-5.4');
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+    });
+  });
+
+  it('rejects preview computer fallback without display metadata before sending the request', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_preview_missing_display' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Preview computer tools require environment and dimensions.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('lets prompt-managed requests opt into the GA computer tool via tool_choice', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_ga_opt_in' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer' },
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
+  it('keeps the built-in computer tool_choice when a prompt manages the computer tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-ga-computer-tool-no-local-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_ga_opt_in_no_local_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
+  it('keeps the built-in computer tool_choice when extraBody.tools provides the computer tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          toolChoice: 'computer',
+          providerData: {
+            extraBody: {
+              tools: [{ type: 'computer' }],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+    });
+  });
+
+  it('normalizes preview computer tool_choice aliases to the GA selector on GA models', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-ga-computer-tool-choice-alias',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer_use_preview' },
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
+  it('keeps named tool_choice when a prompt may supply the selected function alongside local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-prompt-plus-local-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_prompt_plus_local_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'prompt_lookup' },
+        tools: [
+          {
+            type: 'function',
+            name: 'local_lookup',
+            description: 'Available locally but not selected by toolChoice.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'local_lookup',
+          description: 'Available locally but not selected by toolChoice.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'prompt_lookup',
+      });
+    });
+  });
+
+  it('keeps named tool_choice when a prompt may supply the selected function alongside explicitly provided local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-explicit-prompt-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_explicit_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'missing_tool' },
+        tools: [
+          {
+            type: 'function',
+            name: 'available_tool',
+            description: 'Available locally.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'available_tool',
+          description: 'Available locally.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'missing_tool',
+      });
+    });
+  });
+
+  it('keeps tool_choice="none" when prompt omits outgoing tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'none' as const },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toBe('none');
+    });
+  });
+
+  it('keeps tool_choice="required" when a prompt may supply tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal-required',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'required' as const },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toBe('required');
+    });
+  });
+
+  it('rejects tool_choice="required" when prompt-backed tools were explicitly disabled', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal-required-disabled',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'required' as const },
+        tools: [],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="required" requires at least one available tool in the outgoing Responses request/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('sends an explicit empty tools array when the agent intentionally disabled tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-empty-tools', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_999' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([]);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_999' });
+    });
+  });
+
+  it('normalizes systemInstructions so empty strings are omitted', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-empty-instructions',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      for (const systemInstructions of ['', '   ']) {
+        const request = {
+          systemInstructions,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        await new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        ).getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect('instructions' in args).toBe(true);
+        expect(args.instructions).toBeUndefined();
+      }
+
+      for (const systemInstructions of [' a ', 'foo']) {
+        const request = {
+          systemInstructions,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        await new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        ).getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect('instructions' in args).toBe(true);
+        expect(args.instructions).toBe(systemInstructions);
+      }
+    });
+  });
+
+  it('merges top-level reasoning and text settings into provider data for Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-settings',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-settings');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hi',
+        modelSettings: {
+          reasoning: { effort: 'medium', summary: 'concise' },
+          text: { verbosity: 'low' },
+          providerData: {
+            reasoning: { summary: 'override', note: 'provider' },
+            text: { tone: 'playful' },
+            customFlag: true,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.reasoning).toEqual({
+        effort: 'medium',
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(args.text).toEqual({ verbosity: 'low', tone: 'playful' });
+      expect(args.customFlag).toBe(true);
+
+      // ensure original provider data object was not mutated
+      expect(request.modelSettings.providerData.reasoning).toEqual({
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(request.modelSettings.providerData.text).toEqual({
+        tone: 'playful',
+      });
+    });
+  });
+
+  it.each(['none', 'max'] as const)(
+    'passes %s reasoning effort to the Responses API payload',
+    async (effort) => {
+      await withTrace('test', async () => {
+        const fakeResponse = {
+          id: 'res-none',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+          },
+          output: [],
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        const fakeClient = {
+          responses: { create: createMock },
+        } as unknown as OpenAI;
+        const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.6');
+        const request = {
+          systemInstructions: undefined,
+          input: 'hi',
+          modelSettings: {
+            reasoning: { effort },
+          },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+
+        await model.getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect(args.reasoning).toEqual({ effort });
+      });
+    },
+  );
+
+  it('getStreamedResponse yields events and calls client with stream flag', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res2', usage: {}, output: [] };
+      const events: OpenAIResponseStreamEvent[] = [
+        {
+          type: 'response.created',
+          response: fakeResponse as any,
+          sequence_number: 0,
+        },
+        {
+          type: 'response.output_text.delta',
+          content_index: 0,
+          delta: 'delta',
+          item_id: 'item-1',
+          logprobs: [],
+          output_index: 0,
+          sequence_number: 1,
+        } as any,
+        {
+          type: 'response.completed',
+          response: {
+            id: 'res2',
+            output: [
+              {
+                id: 'item-1',
+                type: 'message',
+                status: 'completed',
+                content: [{ type: 'output_text', text: 'delta' }],
+                role: 'assistant',
+                phase: 'commentary',
+              },
+            ],
+            usage: {},
+          },
+          sequence_number: 2,
+        } as any,
+      ];
+      async function* fakeStream() {
+        yield* events;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model2');
+
+      const abort = new AbortController();
+      const request = {
+        systemInstructions: undefined,
+        input: 'data',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: abort.signal,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args, opts] = createMock.mock.calls[0];
+      expect(args.model).toBe('model2');
+      expect(opts).toEqual({
+        headers: HEADERS,
+        signal: abort.signal,
+      });
+      expect(received.slice(0, 4)).toEqual([
+        {
+          type: 'response_started',
+          providerData: events[0],
+        },
+        {
+          type: 'model',
+          event: events[0],
+          providerData: {
+            rawModelEventSource: 'openai-responses',
+          },
+        },
+        {
+          type: 'output_text_delta',
+          delta: 'delta',
+          itemId: 'item-1',
+          providerData: {
+            content_index: 0,
+            item_id: 'item-1',
+            logprobs: [],
+            output_index: 0,
+            sequence_number: 1,
+            type: 'response.output_text.delta',
+          },
+        },
+        {
+          type: 'model',
+          event: events[1],
+          providerData: {
+            rawModelEventSource: 'openai-responses',
+          },
+        },
+      ]);
+      const textDelta = received.find(
+        (event) => event.type === 'output_text_delta',
+      );
+      const completed = received.find(
+        (event) => event.type === 'response_done',
+      );
+
+      expect(textDelta).toMatchObject({ itemId: 'item-1' });
+      expect(completed).toMatchObject({
+        response: {
+          output: [
+            expect.objectContaining({
+              type: 'message',
+              id: 'item-1',
+              phase: 'commentary',
+            }),
+          ],
+        },
+      });
+    });
+  });
+
+  it('emits response.completed once as a raw model event', async () => {
+    const completedEvent: OpenAIResponseStreamEvent = {
+      type: 'response.completed',
+      response: {
+        id: 'res-completed-once',
+        output: [],
+        usage: {},
+      } as any,
+      sequence_number: 0,
+    };
+    async function* fakeStream() {
+      yield completedEvent;
+    }
+    const fakeClient = {
+      responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'model-stream');
+    const received: ResponseStreamEvent[] = [];
+
+    for await (const event of model.getStreamedResponse({
+      systemInstructions: undefined,
+      input: 'data',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    } as any)) {
+      received.push(event);
+    }
+
+    expect(
+      received.filter(
+        (event) =>
+          event.type === 'model' && event.event.type === 'response.completed',
+      ),
+    ).toHaveLength(1);
+    expect(
+      received.filter((event) => event.type === 'response_done'),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ['response.incomplete', 'incomplete'],
+    ['response.failed', 'failed'],
+    ['error', undefined],
+  ] as const)(
+    'rejects terminal stream event %s after preserving the raw event and cleanup',
+    async (terminalEventType, status) => {
+      let cleanedUp = false;
+      const sensitiveDetail = 'sensitive-stream-detail';
+      const terminalEvent =
+        terminalEventType === 'error'
+          ? ({
+              type: 'error',
+              code: 'server_error',
+              message: sensitiveDetail,
+              param: null,
+              sequence_number: 0,
+            } satisfies OpenAIResponseStreamEvent)
+          : {
+              type: terminalEventType,
+              response: {
+                id: 'resp_stream_unsuccessful',
+                status,
+                output: [],
+                usage: {},
+                error: { message: sensitiveDetail },
+                incomplete_details: { reason: sensitiveDetail },
+              },
+              sequence_number: 0,
+            };
+      async function* fakeStream() {
+        try {
+          yield terminalEvent;
+        } finally {
+          cleanedUp = true;
+        }
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const request = {
+        systemInstructions: undefined,
+        input: 'data',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any;
+      const received: ResponseStreamEvent[] = [];
+
+      const error = await (async () => {
+        try {
+          for await (const event of model.getStreamedResponse(request)) {
+            received.push(event);
+          }
+        } catch (caught) {
+          return caught;
+        }
+      })();
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect((error as Error).message).toBe(
+        `OpenAI Responses request ended with unsuccessful terminal state "${terminalEventType}".`,
+      );
+      expect((error as Error).message).not.toContain(sensitiveDetail);
+      expect(cleanedUp).toBe(true);
+      expect(
+        received.filter((event) => event.type === 'response_done'),
+      ).toEqual([]);
+      expect(
+        received.filter(
+          (event) =>
+            event.type === 'model' && event.event.type === terminalEventType,
+        ),
+      ).toHaveLength(1);
+      expect(
+        model.getRetryAdvice({ error, request, stream: true, attempt: 1 }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+    },
+  );
+
+  it.each([undefined, null])(
+    'rejects a completed stream event with response=%s',
+    async (response) => {
+      setTracingDisabled(false);
+      let responseSpan: Span<any> | undefined;
+      setTraceProcessors([
+        {
+          async onTraceStart() {},
+          async onTraceEnd() {},
+          async onSpanStart(span: Span<any>) {
+            if (span.spanData.type === 'response') {
+              responseSpan = span;
+            }
+          },
+          async onSpanEnd() {},
+          async shutdown() {},
+          async forceFlush() {},
+        },
+      ]);
+      const terminalEvent = {
+        type: 'response.completed',
+        ...(response === undefined ? {} : { response }),
+        sequence_number: 0,
+      };
+      let cleanedUp = false;
+      let readPastTerminal = false;
+      async function* fakeStream() {
+        try {
+          yield terminalEvent;
+          readPastTerminal = true;
+        } finally {
+          cleanedUp = true;
+        }
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const request = {
+        systemInstructions: undefined,
+        input: 'sensitive malformed response input',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: 'enabled_without_data',
+      } as ModelRequest;
+      const message =
+        'OpenAI Responses terminal event "response.completed" is missing its required response payload.';
+      const error = await withTrace('test', async () => {
+        const iterator = model
+          .getStreamedResponse(request)
+          [Symbol.asyncIterator]();
+        expect((await iterator.next()).value).toMatchObject({
+          type: 'model',
+          event: terminalEvent,
+        });
+        expect(responseSpan?.error).toEqual({ message });
+        return iterator.next().catch((caught: unknown) => caught);
+      });
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect((error as Error).message).toBe(message);
+      expect(JSON.stringify(responseSpan?.spanData)).not.toContain(
+        request.input,
+      );
+      expect(cleanedUp).toBe(true);
+      expect(readPastTerminal).toBe(false);
+      expect(
+        model.getRetryAdvice({ error, request, stream: true, attempt: 1 }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+    },
+  );
+
+  it('closes the stream after the first unsuccessful terminal', async () => {
+    setTracingDisabled(false);
+    let responseSpan: Span<any> | undefined;
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          if (span.spanData.type === 'response') {
+            responseSpan = span;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    let cleanedUp = false;
+    const unsuccessfulEvent = {
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_first_incomplete',
+        status: 'incomplete',
+        output: [],
+        usage: {
+          input_tokens: 3,
+          output_tokens: 4,
+          total_tokens: 7,
+          input_tokens_details: { cached_tokens: 1 },
+          output_tokens_details: { reasoning_tokens: 2 },
+        },
+        incomplete_details: { reason: 'max_output_tokens' },
+      },
+      sequence_number: 0,
+    } as const;
+    const laterCompletedEvent: OpenAIResponseStreamEvent = {
+      type: 'response.completed',
+      response: {
+        id: 'resp_later_completed',
+        status: 'completed',
+        output: [],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 20,
+          total_tokens: 30,
+        },
+      } as any,
+      sequence_number: 1,
+    };
+    async function* fakeStream() {
+      try {
+        yield unsuccessfulEvent;
+        yield laterCompletedEvent;
+      } finally {
+        cleanedUp = true;
+      }
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn(() =>
+            createResponseStreamWithURL(
+              fakeStream(),
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
+        },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+    const request = {
+      systemInstructions: undefined,
+      input: 'data',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: 'enabled_without_data',
+      signal: undefined,
+    } as any;
+    const received: ResponseStreamEvent[] = [];
+
+    const error = await withTrace('test', async () => {
+      return await (async () => {
+        try {
+          for await (const event of model.getStreamedResponse(request)) {
+            received.push(event);
+          }
+        } catch (caught) {
+          return caught;
+        }
+      })();
+    });
+
+    expect(error).toBeInstanceOf(ModelBehaviorError);
+    expect((error as Error).message).toContain('response.incomplete');
+    expect(cleanedUp).toBe(true);
+    expect(received.filter((event) => event.type === 'response_done')).toEqual(
+      [],
+    );
+    expect(
+      received
+        .filter((event) => event.type === 'model')
+        .map((event) => event.event.type),
+    ).toEqual(['response.incomplete']);
+    expect(responseSpan?.spanData.response_id).toBe('resp_first_incomplete');
+    expect(responseSpan?.spanData._response).toBeUndefined();
+
+    setTracingDisabled(true);
+    const agent = new Agent({
+      name: 'TerminalFailureAgent',
+      model,
+      modelSettings: { timeoutMs: 25 },
+    });
+    const result = await new Runner().run(agent, 'hello', { stream: true });
+
+    await expect(result.completed).rejects.toThrow('response.incomplete');
+    expect(result.state.usage.requests).toBe(1);
+    expect(result.state.usage.inputTokens).toBe(3);
+    expect(result.state.usage.outputTokens).toBe(4);
+    expect(result.state.usage.totalTokens).toBe(7);
+    expect(result.state.usage.requestUsageEntries?.[0]).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 4,
+      totalTokens: 7,
+      endpoint: 'responses.create',
+    });
+    expect(result.state._modelResponses).toEqual([]);
+  });
+
+  it('preserves terminal usage when cancellation precedes raw-event forwarding', async () => {
+    const controller = new AbortController();
+    let cleanedUp = false;
+    async function* fakeStream() {
+      try {
+        queueMicrotask(() => controller.abort());
+        yield {
+          type: 'response.incomplete',
+          response: {
+            id: 'resp_cancel_before_forwarding',
+            status: 'incomplete',
+            output: [],
+            usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+          },
+          sequence_number: 0,
+        } as const;
+      } finally {
+        cleanedUp = true;
+      }
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+    const result = await new Runner().run(
+      new Agent({
+        name: 'EarlyCancellationAgent',
+        model,
+        modelSettings: { timeoutMs: 10_000 },
+      }),
+      'hello',
+      { stream: true, signal: controller.signal },
+    );
+
+    await expect(result.completed).resolves.toBeUndefined();
+    expect(result.state.usage).toMatchObject({ requests: 1, totalTokens: 7 });
+    expect(result.state.usage.requestUsageEntries).toHaveLength(1);
+    expect(result.rawResponses).toEqual([]);
+    expect(cleanedUp).toBe(true);
+  });
+
+  it('preserves terminal usage when an input guardrail closes the stream', async () => {
+    let releaseGuardrail!: () => void;
+    const guardrailGate = new Promise<void>((resolve) => {
+      releaseGuardrail = resolve;
+    });
+    let cleanedUp = false;
+    async function* fakeStream() {
+      try {
+        yield {
+          type: 'response.incomplete',
+          response: {
+            id: 'resp_guardrail_before_forwarding',
+            status: 'incomplete',
+            output: [],
+            usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+          },
+          sequence_number: 0,
+        } as const;
+      } finally {
+        cleanedUp = true;
+      }
+    }
+    // Pause the real adapter's terminal event until the parallel guardrail settles.
+    class PausedTerminalModel extends OpenAIResponsesModel {
+      override async *getStreamedResponse(request: ModelRequest) {
+        for await (const event of super.getStreamedResponse(request)) {
+          releaseGuardrail();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          yield event;
+        }
+      }
+    }
+    const model = new PausedTerminalModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+    const result = await new Runner().run(
+      new Agent({
+        name: 'TerminalGuardrailAgent',
+        model,
+        inputGuardrails: [
+          {
+            name: 'parallel guardrail',
+            execute: async () => {
+              await guardrailGate;
+              return { outputInfo: null, tripwireTriggered: true };
+            },
+          },
+        ],
+      }),
+      'hello',
+      { stream: true },
+    );
+
+    await expect(result.completed).rejects.toMatchObject({
+      name: 'InputGuardrailTripwireTriggered',
+    });
+    expect(result.state.usage).toMatchObject({ requests: 1, totalTokens: 7 });
+    expect(result.state.usage.requestUsageEntries).toHaveLength(1);
+    expect(result.rawResponses).toEqual([]);
+    expect(cleanedUp).toBe(true);
+  });
+
+  it.each(['default', 'custom'] as const)(
+    'preserves terminal usage when %s cancellation replaces the streamed failure',
+    async (reasonType) => {
+      setTracingDisabled(false);
+      const usageSpans: Span<any>[] = [];
+      setTraceProcessors([
+        {
+          async onTraceStart() {},
+          async onTraceEnd() {},
+          async onSpanStart() {},
+          async onSpanEnd(span: Span<any>) {
+            if (
+              span.spanData.type === 'task' ||
+              span.spanData.type === 'turn'
+            ) {
+              usageSpans.push(span);
+            }
+          },
+          async shutdown() {},
+          async forceFlush() {},
+        },
+      ]);
+      const controller = new AbortController();
+      const cancellationError =
+        reasonType === 'custom'
+          ? new Error('cancelled after terminal event')
+          : undefined;
+      let cleanedUp = false;
+      async function* fakeStream() {
+        try {
+          yield {
+            type: 'response.incomplete',
+            response: {
+              id: 'resp_incomplete_before_cancel',
+              status: 'incomplete',
+              output: [],
+              usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+            },
+            sequence_number: 0,
+          } as const;
+        } finally {
+          cleanedUp = true;
+        }
+      }
+      // Control the cancellation boundary after the real adapter emits its raw event.
+      class CancelAfterTerminalModel extends OpenAIResponsesModel {
+        override async *getStreamedResponse(request: ModelRequest) {
+          for await (const event of super.getStreamedResponse(request)) {
+            yield event;
+            if (
+              event.type === 'model' &&
+              event.event.type === 'response.incomplete'
+            ) {
+              controller.abort(cancellationError);
+            }
+          }
+        }
+      }
+      const model = new CancelAfterTerminalModel(
+        {
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const agent = new Agent({
+        name: 'TerminalCancellationAgent',
+        model,
+        modelSettings: { timeoutMs: 10_000 },
+      });
+      const result = await new Runner().run(agent, 'hello', {
+        stream: true,
+        signal: controller.signal,
+      });
+
+      if (cancellationError) {
+        await expect(result.completed).rejects.toBe(cancellationError);
+      } else {
+        await expect(result.completed).resolves.toBeUndefined();
+      }
+      expect(result.state.usage).toMatchObject({
+        requests: 1,
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+      });
+      expect(result.state.usage.requestUsageEntries).toHaveLength(1);
+      expect(result.state._modelResponses).toEqual([]);
+      expect(usageSpans).toHaveLength(2);
+      for (const span of usageSpans) {
+        expect(span.spanData.usage).toMatchObject({
+          input_tokens: 3,
+          output_tokens: 4,
+        });
+      }
+      expect(cleanedUp).toBe(true);
+    },
+  );
+
+  it('closes a stalled terminal stream before runner timeout can replace the failure', async () => {
+    let cleanedUp = false;
+    async function* fakeStream() {
+      try {
+        yield {
+          type: 'response.incomplete',
+          response: {
+            id: 'resp_incomplete_before_timeout',
+            status: 'incomplete',
+            output: [],
+            usage: {},
+          },
+          sequence_number: 0,
+        } as const;
+        await new Promise<void>(() => {});
+      } finally {
+        cleanedUp = true;
+      }
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+    const agent = new Agent({
+      name: 'TerminalTimeoutAgent',
+      model,
+      modelSettings: { timeoutMs: 25 },
+    });
+    const result = await new Runner().run(agent, 'hello', { stream: true });
+
+    await expect(result.completed).rejects.toThrow(ModelBehaviorError);
+    expect(result.error).toBeInstanceOf(ModelBehaviorError);
+    expect((result.error as Error).message).toContain('response.incomplete');
+    expect(cleanedUp).toBe(true);
+    expect(result.state.usage.requests).toBe(1);
+  });
+
+  it.each(['response.incomplete', 'error'] as const)(
+    'records a redacted span error before yielding terminal event %s',
+    async (terminalEventType) => {
+      setTracingDisabled(false);
+      const sensitiveDetail = 'sensitive-span-detail';
+      const terminalEvent =
+        terminalEventType === 'error'
+          ? ({
+              type: 'error',
+              code: 'server_error',
+              message: sensitiveDetail,
+              param: null,
+              sequence_number: 0,
+            } satisfies OpenAIResponseStreamEvent)
+          : ({
+              type: 'response.incomplete',
+              response: {
+                id: 'resp_traced_incomplete',
+                status: 'incomplete',
+                output: [],
+                usage: {},
+                incomplete_details: { reason: sensitiveDetail },
+              },
+              sequence_number: 0,
+            } as any);
+      async function* fakeStream() {
+        yield terminalEvent;
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const setErrorSpy = vi.spyOn(Span.prototype, 'setError');
+
+      await withTrace('test', async () => {
+        const iterator = model
+          .getStreamedResponse({
+            systemInstructions: undefined,
+            input: 'data',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: true,
+            signal: undefined,
+          } as any)
+          [Symbol.asyncIterator]();
+        const first = await iterator.next();
+
+        expect(first.value).toMatchObject({
+          type: 'model',
+          event: { type: terminalEventType },
+        });
+        expect(setErrorSpy).toHaveBeenCalledWith({
+          message: `OpenAI Responses request ended with unsuccessful terminal state "${terminalEventType}".`,
+        });
+        expect(JSON.stringify(setErrorSpy.mock.calls)).not.toContain(
+          sensitiveDetail,
+        );
+        await iterator.return?.();
+      });
+
+      setErrorSpy.mockRestore();
+      setTracingDisabled(true);
+    },
+  );
+
+  it('redacts an unsuccessful terminal response when a no-data tracing consumer stops early', async () => {
+    setTracingDisabled(false);
+    let responseSpan: Span<any> | undefined;
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          if (span.spanData.type === 'response') {
+            responseSpan = span;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    const sensitiveDetail = 'sensitive-no-data-stream';
+    async function* fakeStream() {
+      yield {
+        type: 'response.incomplete',
+        response: {
+          id: 'resp_no_data_stream',
+          status: 'incomplete',
+          output: [],
+          usage: {},
+          incomplete_details: { reason: sensitiveDetail },
+        },
+        sequence_number: 0,
+      } as any;
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn(() =>
+            createResponseStreamWithURL(
+              fakeStream(),
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
+        },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+
+    await withTrace('test', async () => {
+      const iterator = model
+        .getStreamedResponse({
+          systemInstructions: undefined,
+          input: sensitiveDetail,
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: 'enabled_without_data',
+          signal: undefined,
+        } as any)
+        [Symbol.asyncIterator]();
+
+      expect(await iterator.next()).toMatchObject({
+        value: {
+          type: 'model',
+          event: { type: 'response.incomplete' },
+        },
+      });
+      await iterator.return?.();
+    });
+
+    expect(responseSpan?.spanData.response_id).toBe('resp_no_data_stream');
+    expect(responseSpan?.spanData._input).toBeUndefined();
+    expect(responseSpan?.spanData._response).toBeUndefined();
+    expect(JSON.stringify(responseSpan?.error)).not.toContain(sensitiveDetail);
+  });
+
+  it.each([
+    ['response.incomplete', 'incomplete'],
+    ['response.failed', 'failed'],
+  ] as const)(
+    'omits a custom endpoint response ID for redacted terminal event %s',
+    async (eventType, status) => {
+      const responseSpans = captureResponseSpans();
+      async function* fakeStream() {
+        yield {
+          type: eventType,
+          response: {
+            id: 'tenant-customer-response-id',
+            status,
+            output: [],
+            usage: {},
+          },
+          sequence_number: 0,
+        } as unknown as OpenAIResponseStreamEvent;
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          baseURL: 'https://provider.example.test/v1',
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const received: ResponseStreamEvent[] = [];
+
+      const error = await withTrace('test', async () => {
+        try {
+          for await (const event of model.getStreamedResponse({
+            systemInstructions: undefined,
+            input: 'data',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: 'enabled_without_data',
+            signal: undefined,
+          } as any)) {
+            received.push(event);
+          }
+        } catch (caught) {
+          return caught;
+        }
+      });
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(
+        received.some(
+          (event) => event.type === 'model' && event.event.type === eventType,
+        ),
+      ).toBe(true);
+      expect(responseSpans).toHaveLength(1);
+      expect(
+        getSerializedResponseSpanData(responseSpans[0]!).response_id,
+      ).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['https://api.openai.com/v1', 'resp_redacted_stream'],
+    ['https://provider.example.test/v1', undefined],
+  ] as const)(
+    'records a redacted streamed response ID only for a trusted endpoint (%s)',
+    async (baseURL, expectedResponseId) => {
+      const responseSpans = captureResponseSpans();
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'resp_redacted_stream',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+          _request_id: 'req_redacted_stream',
+        } as any,
+        sequence_number: 0,
+      };
+      async function* fakeStream() {
+        yield completedEvent;
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          baseURL,
+          responses: {
+            create: vi.fn(() =>
+              createResponseStreamWithURL(fakeStream(), `${baseURL}/responses`),
+            ),
+          },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      await withTrace('test', async () => {
+        const iterator = model
+          .getStreamedResponse({
+            systemInstructions: undefined,
+            input: 'data',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: 'enabled_without_data',
+            signal: undefined,
+          } as any)
+          [Symbol.asyncIterator]();
+
+        const first = await iterator.next();
+        expect(first).toMatchObject({
+          done: false,
+          value: {
+            type: 'response_done',
+            response: {
+              id: 'resp_redacted_stream',
+              requestId: 'req_redacted_stream',
+              usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+            },
+          },
+        });
+        await iterator.return?.();
+      });
+
+      expect(responseSpans).toHaveLength(1);
+      expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+        expectedResponseId,
+      );
+    },
+  );
+
+  it('records full tracing data before a response_done consumer closes the stream', async () => {
+    const responseSpans = captureResponseSpans();
+    const input = 'full tracing stream input';
+    const terminalResponse = {
+      id: 'resp_full_data_stream',
+      status: 'completed',
+      output: [],
+      usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+    };
+    async function* fakeStream() {
+      yield {
+        type: 'response.completed',
+        response: terminalResponse,
+        sequence_number: 0,
+      } as unknown as OpenAIResponseStreamEvent;
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+
+    await withTrace('test', async () => {
+      const iterator = model
+        .getStreamedResponse({
+          systemInstructions: undefined,
+          input,
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: true,
+          signal: undefined,
+        } as any)
+        [Symbol.asyncIterator]();
+
+      expect(await iterator.next()).toMatchObject({
+        done: false,
+        value: {
+          type: 'response_done',
+          response: { id: 'resp_full_data_stream' },
+        },
+      });
+      await iterator.return?.();
+    });
+
+    expect(responseSpans).toHaveLength(1);
+    expect(responseSpans[0]?.endedAt).not.toBeNull();
+    expect(responseSpans[0]?.spanData._input).toBe(input);
+    expect(responseSpans[0]?.spanData._response).toBe(terminalResponse);
+    expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+      'resp_full_data_stream',
+    );
+  });
+
+  it('prevents extra_body from overriding streamed request mode', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream',
+          output: [],
+          usage: {},
+        } as any,
+        sequence_number: 1,
+      };
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model-stream');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'data',
+        modelSettings: {
+          providerData: {
+            extra_body: {
+              stream: false,
+              metadata: { transport: 'http' },
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      for await (const _event of model.getStreamedResponse(request as any)) {
+        // Consume the stream to exercise the public path.
+      }
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.stream).toBe(true);
+      expect(args.metadata).toEqual({ transport: 'http' });
+    });
+  });
+
+  it('rejects non-plain transport override mappings', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_query: new URLSearchParams({ tenant: 'acme' }),
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Responses websocket extra query must be a mapping.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('getStreamedResponse maps streamed usage data onto response_done events', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream',
+          output: [],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 5,
+            total_tokens: 16,
+            input_tokens_details: { cached_tokens: 2 },
+            output_tokens_details: { reasoning_tokens: 3 },
+            provider_metric: null,
+          },
+        },
+        sequence_number: 1,
+      } as any;
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model-usage');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'payload',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      const responseDone = received.find((ev) => ev.type === 'response_done');
+      expect(responseDone).toBeDefined();
+      expect((responseDone as any).response.id).toBe('res-stream');
+      expect((responseDone as any).response.usage).toMatchObject({
+        inputTokens: 11,
+        outputTokens: 5,
+        totalTokens: 16,
+        inputTokensDetails: { cached_tokens: 2 },
+        outputTokensDetails: { reasoning_tokens: 3 },
+        requestUsageEntries: [
+          {
+            inputTokens: 11,
+            outputTokens: 5,
+            totalTokens: 16,
+            inputTokensDetails: { cached_tokens: 2 },
+            outputTokensDetails: { reasoning_tokens: 3 },
+            endpoint: 'responses.create',
+          },
+        ],
+      });
+      expect((responseDone as any).response.rawUsage).toEqual({
+        input_tokens: 11,
+        output_tokens: 5,
+        total_tokens: 16,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 3 },
+        provider_metric: null,
+      });
+    });
+  });
+
+  it('getStreamedResponse preserves request IDs from HTTP streaming responses', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-request-id',
+          output: [],
+          usage: {},
+        },
+        sequence_number: 1,
+      } as any;
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+
+      const withResponse = vi.fn().mockResolvedValue({
+        data: fakeStream(),
+        request_id: 'req_stream_123',
+      });
+      const createMock = vi.fn().mockReturnValue({
+        withResponse,
+      });
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      expect(withResponse).toHaveBeenCalledTimes(1);
+      const responseDone = received.find((ev) => ev.type === 'response_done');
+      expect(responseDone).toBeDefined();
+      expect((responseDone as any).response.id).toBe('res-stream-request-id');
+      expect((responseDone as any).response.requestId).toBe('req_stream_123');
+    });
+  });
+
+  describe('compaction items', () => {
+    function fakeClientWithResponse(response: unknown) {
+      const createMock = vi.fn().mockResolvedValue(response);
+      return {
+        createMock,
+        client: {
+          responses: { create: createMock },
+        } as unknown as OpenAI,
+      };
+    }
+
+    const baseRequest = {
+      systemInstructions: undefined,
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    it('rejects a compaction input item without ciphertext before calling the client', async () => {
+      const { client, createMock } = fakeClientWithResponse({
+        id: 'unused',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({
+            ...baseRequest,
+            input: [
+              {
+                type: 'compaction',
+                providerData: { provider: 'example' },
+              },
+            ],
+          } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed provider compaction output item', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed',
+        usage: {},
+        output: [{ type: 'compaction', id: 'cmp_bad' }],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('rejects a provider compaction output item with a malformed id', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed-id',
+        usage: {},
+        output: [
+          { type: 'compaction', id: 7, encrypted_content: 'ciphertext' },
+        ],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('does not persist session input when streamed provider compaction is malformed', async () => {
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-compaction-malformed',
+          output: [{ type: 'compaction', id: 'cmp_bad' }],
+          usage: {},
+        } as any,
+        sequence_number: 0,
+      };
+      async function* fakeStream() {
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+      const clearSession = vi.fn(async () => {});
+      const replaceHistoryWithCompaction = vi.fn(
+        async (_items: AgentInputItem[]) => {},
+      );
+      const session: Session = {
+        getSessionId: vi.fn().mockResolvedValue('provider-stream-session'),
+        getItems: vi.fn().mockResolvedValue([]),
+        addItems,
+        popItem: vi.fn().mockResolvedValue(undefined),
+        clearSession,
+        replaceHistoryWithCompaction,
+      };
+      const agent = new Agent({
+        name: 'MalformedProviderStreamingCompactionAgent',
+        model,
+      });
+
+      const result = await new Runner().run(agent, 'persist-me', {
+        stream: true,
+        session,
+      });
+
+      await expect(result.completed).rejects.toThrow(
+        'Compaction item missing encrypted_content',
+      );
+      expect(addItems).not.toHaveBeenCalled();
+      expect(clearSession).not.toHaveBeenCalled();
+      expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
+    });
+  });
+
+  it('getStreamedResponse records span errors and rethrows when streaming fails', async () => {
+    setTracingDisabled(false);
+    const createdEvent: OpenAIResponseStreamEvent = {
+      type: 'response.created',
+      response: { id: 'res-error-init' } as any,
+      sequence_number: 0,
+    };
+    async function* failingStream() {
+      yield createdEvent;
+      throw new Error('stream failed');
+    }
+    const createMock = vi.fn().mockResolvedValue(failingStream());
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'model-error');
+    const request = {
+      systemInstructions: undefined,
+      input: 'payload',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+      signal: undefined,
+    };
+
+    const setErrorSpy = vi.spyOn(Span.prototype, 'setError');
+    await withTrace('test', async () => {
+      const consume = async () => {
+        for await (const _event of model.getStreamedResponse(request as any)) {
+          /* consume */
+        }
+      };
+      await expect(consume()).rejects.toThrow('stream failed');
+    });
+    expect(setErrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Error streaming response',
+        data: { error: expect.stringContaining('stream failed') },
+      }),
+    );
+    setErrorSpy.mockRestore();
+    setTracingDisabled(true);
+  });
+});

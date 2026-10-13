@@ -1,0 +1,1284 @@
+# @openai/agents-openai
+
+## 0.20.0
+
+### Patch Changes
+
+- Updated dependencies [40f7de2]
+- Updated dependencies [836cb50]
+- Updated dependencies [05241c7]
+- Updated dependencies [4137680]
+- Updated dependencies [8ee5055]
+- Updated dependencies [b89905c]
+- Updated dependencies [d8fa6c3]
+- Updated dependencies [9e32e88]
+- Updated dependencies [2f3591b]
+- Updated dependencies [8567e09]
+  - @openai/agents-core@0.20.0
+
+## 0.19.0
+
+### Patch Changes
+
+- c55d64d: fix: add an optional rollback item budget for Responses session compaction.
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 194fea9: fix: omit supported generation reasoning from default OpenAI trace exports while preserving original spans and custom destinations
+- ec8bb33: fix: Preserve post-construction agent storage settings through model requests and cloning.
+- d0e5d43: fix: Keep parent transport overrides out of agent tool runs with an explicit Model while preserving common settings and explicit child overrides.
+- 3626398: fix: Honor sensitive-data tracing opt-out for Responses payloads and provider errors.
+- 24946f3: fix: omit tool content from strict Chat Completions mixed-output diagnostics.
+- 2127475: fix: preserve stored history excluded from the latest successful model exchange during automatic compaction.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 00eef0c: fix: Reject selected handoff input filters with server-managed conversationId or previousResponseId before handoff side effects; use client-managed history or a Session without continuation options instead.
+- 7efc536: fix: update compatible workspace dependencies while preserving supported provider and Expo versions.
+- 58b08f8: fix: Bound repeated trace truncation work and fall back to a preview for expensive fields.
+- 202563c: fix: Retry transient trace export failures with bounded server-directed delays and honor explicit retry advice.
+- a01f687: fix: remove unused dependency declarations while retaining shared logging through agents-core.
+- 06bbcc0: chore: migrate tracing test mocks to Vitest 5.
+- Updated dependencies [39d5e9e]
+- Updated dependencies [c55d64d]
+- Updated dependencies [c345409]
+- Updated dependencies [a0b1c6f]
+- Updated dependencies [9c94138]
+- Updated dependencies [f0f3066]
+- Updated dependencies [c3e02d2]
+- Updated dependencies [f80c91c]
+- Updated dependencies [3949bb1]
+- Updated dependencies [186f6ec]
+- Updated dependencies [fdaf0a6]
+- Updated dependencies [aeef9e1]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [39decd7]
+- Updated dependencies [ec8bb33]
+- Updated dependencies [9623a22]
+- Updated dependencies [58844c7]
+- Updated dependencies [d0e5d43]
+- Updated dependencies [2127475]
+- Updated dependencies [3515c29]
+- Updated dependencies [b9a4fb8]
+- Updated dependencies [7f135af]
+- Updated dependencies [ee65014]
+- Updated dependencies [00eef0c]
+- Updated dependencies [218a2b8]
+- Updated dependencies [8ac97df]
+- Updated dependencies [96aa754]
+- Updated dependencies [7efc536]
+- Updated dependencies [8a26e30]
+- Updated dependencies [4ef9008]
+- Updated dependencies [f507590]
+- Updated dependencies [d187747]
+- Updated dependencies [fc2d2a4]
+- Updated dependencies [0bdea85]
+- Updated dependencies [a9b543b]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+
+## 0.18.0
+
+### Patch Changes
+
+- b665b0e: fix: recover unloaded deferred calls through opt-in model-visible errors and built-in client search, with required Responses wire defaults, live source-Agent ownership, and server-side search preserved for deferred hosted MCP tools (#1855).
+- a3a9215: feat: support the image generation tool action option
+- Updated dependencies [b665b0e]
+- Updated dependencies [19d0b5f]
+- Updated dependencies [064fcb2]
+  - @openai/agents-core@0.18.0
+
+## 0.17.2
+
+### Patch Changes
+
+- 8d1f019: fix: preserve explicit settings for GPT-5-and-newer models and concrete model instances, default gpt-6-astra reasoning to low, and use adapter-declared prompt model selection when applying implicit defaults (#1849).
+- Updated dependencies [8d1f019]
+  - @openai/agents-core@0.17.2
+
+## 0.17.1
+
+### Patch Changes
+
+- 4351bd1: fix: honor OpenAIProvider client options over the default client
+- c25fede: fix: keep Conversations session history limits local
+- b1a41cf: fix: preserve concurrent wrapper writes by skipping automatic session compaction when the run no longer owns its history snapshot.
+- 02720cd: fix: preserve empty hosted MCP tool outputs during Responses conversion
+- 5e999b5: refactor: separate Responses item conversion from model transport execution without changing behavior.
+- eb690a4: fix: recover failed resumed Session writes before continuing runs
+- a8422bf: fix: restrict redacted trace response IDs to official OpenAI endpoints
+- c242bfb: fix: reject truncated empty Chat Completions
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+- 8a98743: fix(openai): reset compaction response state after clearing a session (#1821)
+- 82d6b59: fix(openai): reset compaction response state after popping local history (#1823)
+- 6b555c8: fix: merge streamed Chat Completions tool-call turns
+- 4b539bb: fix: preserve full tracing data when streamed response consumers stop at completion
+- 0035d33: fix: strip output-only created_by metadata at replay boundaries
+- 92d1d9c: fix: Preserve tool-search Agent attribution across handoffs and history replay; persisted discovery requires a unique logical Agent name, and unattributed or ambiguous history requires a new search.
+- ffaaba6: feat: support image results in web search tools
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [c15c3ac]
+- Updated dependencies [3261264]
+- Updated dependencies [9be3e39]
+- Updated dependencies [b4fa898]
+- Updated dependencies [8e862b3]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [c0a6718]
+- Updated dependencies [b1a41cf]
+- Updated dependencies [5c3c3b4]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [e668ea1]
+- Updated dependencies [eb690a4]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [d364ef2]
+- Updated dependencies [0035d33]
+- Updated dependencies [d19101e]
+- Updated dependencies [a9e3214]
+- Updated dependencies [92d1d9c]
+- Updated dependencies [2dc21b6]
+  - @openai/agents-core@0.17.1
+
+## 0.17.0
+
+### Patch Changes
+
+- d80736a: fix: reject organization and project with explicit OpenAIProvider clients
+- Updated dependencies [33fe55c]
+  - @openai/agents-core@0.17.0
+
+## 0.16.1
+
+### Patch Changes
+
+- 51fb859: feat: add provider-neutral model call timeouts (#894)
+- Updated dependencies [2896600]
+- Updated dependencies [acedac3]
+- Updated dependencies [b93163b]
+- Updated dependencies [8ece061]
+- Updated dependencies [937fb98]
+- Updated dependencies [861ba39]
+- Updated dependencies [f4bd821]
+- Updated dependencies [51fb859]
+- Updated dependencies [e3aaeea]
+  - @openai/agents-core@0.16.1
+
+## 0.16.0
+
+### Minor Changes
+
+- b727790: feat: add scripted model, sandbox session, and Realtime testing utilities
+
+### Patch Changes
+
+- 70a766e: fix: keep Chat Completions reasoning on the assistant message it belongs to
+- aa6dd2d: feat: support Standard Schema tool inputs and structured agent outputs
+- 95f19d6: fix: align Responses parallel tool calls with converted tools
+- Updated dependencies [bedb045]
+- Updated dependencies [442cedb]
+- Updated dependencies [ede1fb9]
+- Updated dependencies [f639953]
+- Updated dependencies [e2cbca8]
+- Updated dependencies [c5eda7e]
+- Updated dependencies [d4ef614]
+- Updated dependencies [77343dd]
+- Updated dependencies [b727790]
+- Updated dependencies [200c20e]
+- Updated dependencies [85a5ddb]
+- Updated dependencies [d385c10]
+- Updated dependencies [aa6dd2d]
+- Updated dependencies [d7fd0cf]
+- Updated dependencies [26bc638]
+  - @openai/agents-core@0.16.0
+
+## 0.15.0
+
+### Minor Changes
+
+- 442cfe3: feat: require OpenAI Node SDK v7.2 or later
+- 41f5011: feat: switch the default OpenAI model to gpt-5.6-luna when no model is explicitly configured
+
+### Patch Changes
+
+- 00def07: feat: allow applications to explicitly approve unsafe model request replays
+- 1d454ba: fix(openai): preserve streamed Chat Completions citations
+- 8554f7f: fix: propagate Chat Completions request IDs
+- fb73edd: fix(openai): preserve streamed Chat Completions audio
+- 7f8140d: fix: count completed Chat Completions requests when providers omit usage
+- 3743a7d: fix(openai): preserve apply_patch move destinations
+- 460c892: fix: preserve program item IDs in OpenAI Conversations
+- e57768b: fix(openai): omit parallel_tool_calls when Chat Completions has no tools
+- f7aca85: fix: serialize OpenAI Responses compaction session mutations
+- 055de13: fix(openai): strip placeholder item IDs from Responses input
+- c7a91e6: feat: preserve raw provider usage payloads on request
+- Updated dependencies [00def07]
+- Updated dependencies [d1c585d]
+- Updated dependencies [ba85cda]
+- Updated dependencies [daefc63]
+- Updated dependencies [2ce5c25]
+- Updated dependencies [398a592]
+- Updated dependencies [75af3ee]
+- Updated dependencies [1f617f9]
+- Updated dependencies [442cfe3]
+- Updated dependencies [d308e1d]
+- Updated dependencies [09d5065]
+- Updated dependencies [41f5011]
+- Updated dependencies [81e0066]
+- Updated dependencies [c122399]
+- Updated dependencies [5b5a7cb]
+- Updated dependencies [9b97dd2]
+- Updated dependencies [8249c45]
+- Updated dependencies [e006790]
+- Updated dependencies [512f340]
+- Updated dependencies [066a03c]
+- Updated dependencies [b7cb351]
+- Updated dependencies [d48b2b0]
+- Updated dependencies [96201ba]
+- Updated dependencies [c7a91e6]
+  - @openai/agents-core@0.15.0
+
+## 0.14.3
+
+### Patch Changes
+
+- 78f8581: fix: preserve inline compaction items across turns
+- c727ef3: fix: serialize OpenAI conversation session ID lifecycle operations
+- eb59cd6: fix: surface empty content-filter responses as refusals in streaming and non-streaming runs
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-core@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- f7771c1: feat: add default task and turn tracing with a per-run opt-out
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- b45fd21: fix: preserve assistant message phases across Responses history and replay
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [b907917]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [e4f3293]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+- Updated dependencies [4461a35]
+- Updated dependencies [84aed6e]
+  - @openai/agents-core@0.14.0
+
+## 0.13.5
+
+### Patch Changes
+
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- db1fe16: fix: preserve token usage reported on earlier Chat Completions stream chunks
+
+  When streaming Chat Completions, usage was overwritten on every chunk, so a trailing chunk without usage reset the previously reported totals to zero. Some OpenAI-compatible providers or gateways may emit a later chunk without usage after reporting usage on an earlier chunk, which caused `response_done` to report `inputTokens`/`outputTokens`/`totalTokens` as 0. Usage is now retained when a later chunk omits it, while the normal OpenAI path (usage on the final chunk) is unchanged.
+
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- a1ea36f: test: improve retry, MCP approval, and Realtime sequencing coverage
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- e5b75e1: feat: support GPT-5.6 reasoning and prompt-cache request controls
+- 48cdb52: feat: add experimental hosted Multi-agent Responses support
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- 532ab2b: fix: support openai-node v6.46.0 usage types
+- ec48462: feat: add GPT-5.6 model defaults, reasoning, and sandbox compaction support
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+
+## 0.13.0
+
+### Patch Changes
+
+- @openai/agents-core@0.13.0
+
+## 0.12.1
+
+### Patch Changes
+
+- 75bf1df: fix(memory): restore persisted `input_text` system messages in conversation history
+- dc7864a: refactor: consolidate internal runtime helpers and adapter normalization
+- 28edf80: fix: accept ESM and CommonJS OpenAI clients in public APIs (#1432)
+- Updated dependencies [f064c56]
+- Updated dependencies [b65face]
+- Updated dependencies [59a67c4]
+- Updated dependencies [81d654f]
+- Updated dependencies [5f57fe1]
+- Updated dependencies [dc7864a]
+  - @openai/agents-core@0.12.1
+
+## 0.12.0
+
+### Patch Changes
+
+- 395699e: chore: upgrade openai package to the latest version
+- Updated dependencies [e044d14]
+- Updated dependencies [a8f81cd]
+- Updated dependencies [c450c2b]
+- Updated dependencies [5350aad]
+- Updated dependencies [395699e]
+- Updated dependencies [f990172]
+  - @openai/agents-core@0.12.0
+
+## 0.11.8
+
+### Patch Changes
+
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+
+## 0.11.7
+
+### Patch Changes
+
+- 9b54b79: fix(openai): honor top-level `input_image.detail` in the Chat Completions converter
+
+  The Chat Completions converter only read `detail` from `providerData.image_url.detail` and silently dropped the top-level `detail` field, even though the protocol defines it as a top-level field and both the Responses path and the Python SDK honor it. Top-level `detail` is now forwarded (with `providerData.image_url.detail` still taking precedence).
+
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+
+## 0.11.6
+
+### Patch Changes
+
+- f76fc19: fix: populate model and model_config on generation span in streaming mode
+
+  `getStreamedResponse()` in `OpenAIChatCompletionsModel` was not setting `span.spanData.model` or `span.spanData.model_config` on the generation span, causing downstream tracing exporters to report the model as "unknown". The non-streaming `getResponse()` path already set these fields correctly.
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 087ce4b: fix: preserve Conversations reasoning identities without replaying omitted IDs
+- 5dd3b2f: fix: handle unsupported chat completions tool outputs safely
+- Updated dependencies [087ce4b]
+- Updated dependencies [2c993cf]
+- Updated dependencies [f36e7b2]
+  - @openai/agents-core@0.11.4
+
+## 0.11.3
+
+### Patch Changes
+
+- 2d39801: fix: make tracing shutdown best-effort on process exit
+- Updated dependencies [2d39801]
+  - @openai/agents-core@0.11.3
+
+## 0.11.2
+
+### Patch Changes
+
+- 22461f2: fix: align Chat Completions strict validation for unsupported stream outputs
+- aee260e: fix: add opt-in strict feature validation for Chat Completions models
+- Updated dependencies [3f855d4]
+- Updated dependencies [077876e]
+- Updated dependencies [9e6d1e3]
+- Updated dependencies [2b5c8d2]
+- Updated dependencies [398b21f]
+- Updated dependencies [8e59259]
+- Updated dependencies [c5731d1]
+- Updated dependencies [81508e8]
+- Updated dependencies [8d2f707]
+- Updated dependencies [6883833]
+- Updated dependencies [b0d2a68]
+  - @openai/agents-core@0.11.2
+
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [e4a7557]
+- Updated dependencies [1a61a5c]
+  - @openai/agents-core@0.11.1
+
+## 0.11.0
+
+### Minor Changes
+
+- 295229c: fix: upgrade realtime defaults and model support for gpt-realtime-2
+
+### Patch Changes
+
+- Updated dependencies [eb81397]
+- Updated dependencies [295229c]
+  - @openai/agents-core@0.11.0
+
+## 0.10.1
+
+### Patch Changes
+
+- 4dc2614: fix: restore session history when responses compaction replacement fails
+- 0cd060f: fix: validate hosted MCP approval policies
+- Updated dependencies [0cd060f]
+  - @openai/agents-core@0.10.1
+
+## 0.10.0
+
+### Minor Changes
+
+- 2e7e48a: feat: switch the default model to gpt-5.4-mini
+
+### Patch Changes
+
+- Updated dependencies [3546add]
+- Updated dependencies [0e7cbf0]
+- Updated dependencies [2e7e48a]
+- Updated dependencies [d31526b]
+- Updated dependencies [0630108]
+  - @openai/agents-core@0.10.0
+
+## 0.9.1
+
+### Patch Changes
+
+- 06f425a: fix: avoid replaying assistant conversation item IDs from OpenAI Conversations history
+- Updated dependencies [06f425a]
+- Updated dependencies [dde1037]
+- Updated dependencies [a081190]
+  - @openai/agents-core@0.9.1
+
+## 0.9.0
+
+### Patch Changes
+
+- 6148ed2: feat: expose Responses WebSocket keepalive options
+- a34f506: feat: add model settings support for context management
+- 5eddaaa: fix: #1212 add code interpreter output include option
+- Updated dependencies [00b4032]
+- Updated dependencies [2e1d626]
+- Updated dependencies [16c26e7]
+- Updated dependencies [2d2501a]
+- Updated dependencies [6e50eca]
+- Updated dependencies [a34f506]
+- Updated dependencies [30681be]
+- Updated dependencies [4a879bb]
+  - @openai/agents-core@0.9.0
+
+## 0.8.5
+
+### Patch Changes
+
+- @openai/agents-core@0.8.5
+
+## 0.8.4
+
+### Patch Changes
+
+- 3a56cf8: fix: #1176 normalize compacted Responses user messages before storing them
+- Updated dependencies [34c07ef]
+- Updated dependencies [4b13496]
+- Updated dependencies [7929f7a]
+  - @openai/agents-core@0.8.4
+
+## 0.8.3
+
+### Patch Changes
+
+- Updated dependencies [850c91c]
+  - @openai/agents-core@0.8.3
+
+## 0.8.2
+
+### Patch Changes
+
+- 9014295: feat: add external web access control for web search tools
+- Updated dependencies [4b99d53]
+- Updated dependencies [fe67fb3]
+- Updated dependencies [8424092]
+- Updated dependencies [88d2539]
+- Updated dependencies [50edd08]
+- Updated dependencies [1531038]
+  - @openai/agents-core@0.8.2
+
+## 0.8.1
+
+### Patch Changes
+
+- 4e00b3c: fix: omit empty computer safety check fields when replaying tool items
+- Updated dependencies [1227865]
+- Updated dependencies [6f49230]
+- Updated dependencies [4470af6]
+  - @openai/agents-core@0.8.1
+
+## 0.8.0
+
+### Patch Changes
+
+- Updated dependencies [e2e434a]
+- Updated dependencies [4f1824f]
+- Updated dependencies [0ff9a25]
+- Updated dependencies [05dd513]
+  - @openai/agents-core@0.8.0
+
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [5f86461]
+- Updated dependencies [dc97919]
+  - @openai/agents-core@0.7.2
+
+## 0.7.1
+
+### Patch Changes
+
+- 7fc871a: feat: #279 add OpenAI raw model stream event narrowing helpers
+- Updated dependencies [7fc871a]
+  - @openai/agents-core@0.7.1
+
+## 0.7.0
+
+### Minor Changes
+
+- 9bcc3f3: feat: #855 add opt-in model retry policies across models
+
+### Patch Changes
+
+- Updated dependencies [9bcc3f3]
+  - @openai/agents-core@0.7.0
+
+## 0.6.0
+
+### Patch Changes
+
+- a5bce45: fix: preserve canonical chat completions providerData fields
+- 8a5135a: fix: #1070 preserve MCP image mimeType in tool outputs
+- 98a62a2: test: add coverage for helper edge cases and conversation session branches
+- 559f3d8: fix: allow GA computer tools without display metadata
+- 4e6b3fb: fix: migrate ComputerTool to the GA computer tool
+- ddd97d5: feat: add Responses tool search support
+- Updated dependencies [8a5135a]
+- Updated dependencies [b2e5236]
+- Updated dependencies [94c18cd]
+- Updated dependencies [98a62a2]
+- Updated dependencies [559f3d8]
+- Updated dependencies [4e6b3fb]
+- Updated dependencies [ddd97d5]
+  - @openai/agents-core@0.6.0
+
+## 0.5.4
+
+### Patch Changes
+
+- Updated dependencies [7ff108b]
+  - @openai/agents-core@0.5.4
+
+## 0.5.3
+
+### Patch Changes
+
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+  - @openai/agents-core@0.5.3
+
+## 0.5.2
+
+### Patch Changes
+
+- 85cdea4: fix: preserve OpenAI Responses request IDs in raw responses
+- c0c5d43: fix: sanitize oversized tracing span payloads
+- Updated dependencies [85cdea4]
+- Updated dependencies [3da9364]
+  - @openai/agents-core@0.5.2
+
+## 0.5.1
+
+### Patch Changes
+
+- @openai/agents-core@0.5.1
+
+## 0.5.0
+
+### Minor Changes
+
+- c590057: feat: add responses websocket transport and scoped websocket session helper
+
+### Patch Changes
+
+- Updated dependencies [c590057]
+  - @openai/agents-core@0.5.0
+
+## 0.4.15
+
+### Patch Changes
+
+- Updated dependencies [40c1709]
+  - @openai/agents-core@0.4.15
+
+## 0.4.14
+
+### Patch Changes
+
+- Updated dependencies [76a695e]
+  - @openai/agents-core@0.4.14
+
+## 0.4.13
+
+### Patch Changes
+
+- Updated dependencies [cbadc0f]
+- Updated dependencies [5dfe016]
+- Updated dependencies [6698105]
+  - @openai/agents-core@0.4.13
+
+## 0.4.12
+
+### Patch Changes
+
+- 3f8ecf1: fix: #257 move non-standard response message content metadata under providerData
+- acc6ed8: fix: #579 use streamed chunk IDs in Chat Completions traces and output items
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [afed6f7]
+  - @openai/agents-core@0.4.11
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies [de6a5f3]
+  - @openai/agents-core@0.4.10
+
+## 0.4.9
+
+### Patch Changes
+
+- 0b1ebea: fix(tracing): avoid internal dist type imports in OpenAI tracing exporter
+- Updated dependencies [0ca2612]
+  - @openai/agents-core@0.4.9
+
+## 0.4.8
+
+### Patch Changes
+
+- 4bb2dde: fix(tracing): #955 preserve generation usage metadata via usage.details
+- Updated dependencies [4bb2dde]
+  - @openai/agents-core@0.4.8
+
+## 0.4.7
+
+### Patch Changes
+
+- d3aa44f: feat: support shell tool environment selection for local and container runtimes
+- 59fa0a8: fix: omit named tool_choice when prompt-managed tools are used without local tools.
+- Updated dependencies [219a361]
+- Updated dependencies [d3aa44f]
+  - @openai/agents-core@0.4.7
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [8a7b58a]
+  - @openai/agents-core@0.4.6
+
+## 0.4.5
+
+### Patch Changes
+
+- b3dc382: fix: populate streamed chat completion choices in generation traces
+- Updated dependencies [239bc4f]
+- Updated dependencies [085eebb]
+- Updated dependencies [752d36f]
+- Updated dependencies [bf9a5b4]
+- Updated dependencies [c1fbe95]
+- Updated dependencies [35ab4bd]
+- Updated dependencies [3e20bbd]
+- Updated dependencies [75c92eb]
+  - @openai/agents-core@0.4.5
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [14315e3]
+  - @openai/agents-core@0.4.4
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [657cda6]
+- Updated dependencies [e28d181]
+- Updated dependencies [709fa6f]
+  - @openai/agents-core@0.4.3
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [d76dcfd]
+- Updated dependencies [605670e]
+- Updated dependencies [f1b6f7f]
+- Updated dependencies [7a1fc88]
+- Updated dependencies [3a2bd9e]
+- Updated dependencies [9d10652]
+  - @openai/agents-core@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- 60a48d7: Default compaction mode to auto and switch to input when store is false.
+- 648a461: fix: handle legacy fileId fallback and expand coverage
+- Updated dependencies [60a48d7]
+- Updated dependencies [648a461]
+- Updated dependencies [6cc01be]
+  - @openai/agents-core@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+
+### Patch Changes
+
+- Updated dependencies [2bce164]
+- Updated dependencies [4feaaae]
+  - @openai/agents-core@0.4.0
+
+## 0.3.9
+
+### Patch Changes
+
+- Updated dependencies [f0ad706]
+  - @openai/agents-core@0.3.9
+
+## 0.3.8
+
+### Patch Changes
+
+- 303e95e: feat: Add per-run tracing API key support
+- d18eb0b: Add regression tests covering agent scenarios
+- fa69dc7: fix: Skip response_format when "text" in Chat Completions calls
+- da82f9c: fix: sanitize conversation items for non-OpenAI models in HITL flow
+- 4f20c16: fix: Fix chat completions tool calls when content is present
+- 7c05117: fix: Add content: null when having tool calls for Chat Completions
+- ddccc9d: refactor: #275 simplify streaming state by removing unused index tracking
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [af1c6c9]
+  - @openai/agents-core@0.3.7
+
+## 0.3.6
+
+### Patch Changes
+
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+- 893b6f4: fix(agents-openai): add gpt-image-1-mini and gpt-image-1.5 support to imageGenerationTool
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+
+## 0.3.5
+
+### Patch Changes
+
+- 820fbce: feat: track token usage while streaming responses for openai models
+- ef324c4: fix: #745 Export OpenAIConversationsSessionOptions
+- 6aa0550: fix: support input_file for chat completions when possible
+- 5750d8a: fix: propagate providerData for function_calls in chat completions converter
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+
+## 0.3.4
+
+### Patch Changes
+
+- d552b50: Fix streaming tool call arguments when providers like Bedrock return an initial empty `{}` followed by actual arguments, resulting in malformed `{}{...}` JSON.
+- Updated dependencies [2e09baf]
+- Updated dependencies [d1d7842]
+- Updated dependencies [c252cb5]
+- Updated dependencies [0345a4c]
+  - @openai/agents-core@0.3.4
+
+## 0.3.3
+
+### Patch Changes
+
+- ef0a6d8: feat: Add prompt_cache_retention option to ModelSettings
+- 22865ae: feat: #678 Add a list of per-request usage data to Usage
+- Updated dependencies [18fec56]
+- Updated dependencies [b94432b]
+- Updated dependencies [0404173]
+- Updated dependencies [ef0a6d8]
+- Updated dependencies [22865ae]
+  - @openai/agents-core@0.3.3
+
+## 0.3.2
+
+### Patch Changes
+
+- 184e5d0: feat: Add reasoning.effort: none parameter for gpt-5.1
+- 0a808d2: fix: Omit tools parameter when prompt ID is set but tools in the agent is absent
+- 4734e27: Export usage data from Chat Completions response for trace
+- Updated dependencies [184e5d0]
+- Updated dependencies [0a808d2]
+  - @openai/agents-core@0.3.2
+
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+- Updated dependencies [2b57c4e]
+  - @openai/agents-core@0.3.1
+
+## 0.3.0
+
+### Minor Changes
+
+- 1a5326f: feat: fix #272 add memory feature
+
+### Patch Changes
+
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [3417f25]
+  - @openai/agents-core@0.1.11
+
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- b07a588: fix: #562 invalid model settings when prompt is set in Agent
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
+## 0.1.9
+
+### Patch Changes
+
+- 4f27ed5: fix: #558 prompt parameter does not work when being passed via an Agent
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [f3d1ff8]
+  - @openai/agents-core@0.1.8
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [becabb9]
+- Updated dependencies [0fd8b6e]
+- Updated dependencies [be686e9]
+- Updated dependencies [74a6ca3]
+  - @openai/agents-core@0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-core@0.1.6
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-core@0.1.4
+
+## 0.1.3
+
+### Patch Changes
+
+- 74dd52e: fix: #473 upgrade openai package to the latest and fix breaking errors
+- Updated dependencies [74dd52e]
+  - @openai/agents-core@0.1.3
+
+## 0.1.2
+
+### Patch Changes
+
+- 7fa0434: Refactor audio extraction logic in converter
+- Updated dependencies [01fad84]
+- Updated dependencies [3d652e8]
+  - @openai/agents-core@0.1.2
+
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [b4d315b]
+- Updated dependencies [a1c43dd]
+- Updated dependencies [2c43bcc]
+  - @openai/agents-core@0.1.1
+
+## 0.1.0
+
+### Patch Changes
+
+- 2260e21: Upgrade openai package to the latest version
+- 47a28ad: Fix a bug where responses api does not accept both outputType and verbosity parameter for gpt-5
+- 42702c0: #366 Add conversations API support
+- ecea142: Fix #374 add connector support
+- 2b10adc: Fix #393 add domain filtering and sources to web search tool & upgrade openai package to the latest version
+- 8fc01fc: Add a quick opt-in option to switch to gpt-5
+- Updated dependencies [2260e21]
+- Updated dependencies [94f606c]
+- Updated dependencies [79a1999]
+- Updated dependencies [42702c0]
+- Updated dependencies [ecea142]
+- Updated dependencies [2b10adc]
+- Updated dependencies [f1e2f60]
+- Updated dependencies [8fc01fc]
+- Updated dependencies [6f1677c]
+  - @openai/agents-core@0.1.0
+
+## 0.0.17
+
+### Patch Changes
+
+- f825f71: Fix #187 Agent outputType type error with zod@3.25.68+
+- 5d247a5: Fix #245 CJS resolution failure
+- Updated dependencies [1cd3266]
+- Updated dependencies [f825f71]
+- Updated dependencies [5d247a5]
+  - @openai/agents-core@0.0.17
+
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- a51105b: Pass through strict flag for function tools when using completion
+- 4818d5e: fix: support snake_case usage fields from OpenAI responses
+- Updated dependencies [1bb4d86]
+- Updated dependencies [4818d5e]
+- Updated dependencies [0858c98]
+- Updated dependencies [4bfd911]
+- Updated dependencies [c42a0a9]
+  - @openai/agents-core@0.0.16
+
+## 0.0.15
+
+### Patch Changes
+
+- 7b437d9: feat: add reasoning handling in chat completions
+- Updated dependencies [5f7d0d6]
+- Updated dependencies [7b437d9]
+- Updated dependencies [b65315f]
+- Updated dependencies [0fe38c0]
+  - @openai/agents-core@0.0.15
+
+## 0.0.14
+
+### Patch Changes
+
+- b6c7e9d: Fix codeInterpreterTool run replay by correctly using container_id from providerData (fixes #253)
+- Updated dependencies [08dd469]
+- Updated dependencies [d9c4ddf]
+- Updated dependencies [fba44d9]
+  - @openai/agents-core@0.0.14
+
+## 0.0.13
+
+### Patch Changes
+
+- Updated dependencies [bd463ef]
+  - @openai/agents-core@0.0.13
+
+## 0.0.12
+
+### Patch Changes
+
+- fe5fb97: Handle function call messages with empty content in Chat Completions
+- ad05c65: fix: if prompt is not specified return undefined - fixes #159
+- 886e25a: Add input_fidelity parameter support to image generation tool
+- 046f8cc: Fix typos across repo
+- 40dc0be: Fix #216 Publicly accessible PDF file URL is not yet supported in the input_file content data
+- Updated dependencies [af73bfb]
+- Updated dependencies [046f8cc]
+- Updated dependencies [ed66acf]
+- Updated dependencies [40dc0be]
+  - @openai/agents-core@0.0.12
+
+## 0.0.11
+
+### Patch Changes
+
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
+## 0.0.10
+
+### Patch Changes
+
+- 4adbcb5: Fix #140 by resolving built-in tool call item compatibility
+- Updated dependencies [c248a7d]
+- Updated dependencies [ff63127]
+- Updated dependencies [9c60282]
+- Updated dependencies [f61fd18]
+- Updated dependencies [c248a7d]
+  - @openai/agents-core@0.0.10
+
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [9028df4]
+- Updated dependencies [ce62f7c]
+  - @openai/agents-core@0.0.9
+
+## 0.0.8
+
+### Patch Changes
+
+- 6e1d67d: Add OpenAI Response object on ResponseSpanData for other exporters.
+- 9e6db14: Adding support for prompt configuration to agents
+- 0565bf1: Add details to output guardrail execution
+- fc99390: Fix Azure streaming annotation handling
+- Updated dependencies [6e1d67d]
+- Updated dependencies [52eb3f9]
+- Updated dependencies [9e6db14]
+- Updated dependencies [0565bf1]
+- Updated dependencies [52eb3f9]
+  - @openai/agents-core@0.0.8
+
+## 0.0.7
+
+### Patch Changes
+
+- 77c603a: Add allowed_tools and headers to hosted mcp server factory method
+- 2fae25c: Add hosted MCP server support
+- Updated dependencies [0580b9b]
+- Updated dependencies [77c603a]
+- Updated dependencies [1fccdca]
+- Updated dependencies [2fae25c]
+  - @openai/agents-core@0.0.7
+
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [2c6cfb1]
+- Updated dependencies [36a401e]
+  - @openai/agents-core@0.0.6
+
+## 0.0.5
+
+### Patch Changes
+
+- adeb218: Ignore empty tool list when calling LLM
+- cbd4deb: feat: handle unknown hosted tools in responses model
+- Updated dependencies [544ed4b]
+  - @openai/agents-core@0.0.5
+
+## 0.0.4
+
+### Patch Changes
+
+- ded675a: chore(openai): add more accurate debug logging
+- Updated dependencies [25165df]
+- Updated dependencies [6683db0]
+- Updated dependencies [78811c6]
+- Updated dependencies [426ad73]
+  - @openai/agents-core@0.0.4
+
+## 0.0.3
+
+### Patch Changes
+
+- 0474de9: Fix incorrect handling of chat completions mode for handoff
+- Updated dependencies [d7fd8dc]
+- Updated dependencies [284d0ab]
+  - @openai/agents-core@0.0.3
+
+## 0.0.2
+
+### Patch Changes
+
+- b4942fa: Fix #5 setDefaultOpenAIClient issue in agents-openai package
+- Updated dependencies [a2979b6]
+  - @openai/agents-core@0.0.2
+
+## 0.0.1
+
+### Patch Changes
+
+- aaa6d08: Initial release
+- Updated dependencies [aaa6d08]
+  - @openai/agents-core@0.0.1
+
+## 0.0.1-next.0
+
+### Patch Changes
+
+- Initial release
+- Updated dependencies
+  - @openai/agents-core@0.0.1-next.0

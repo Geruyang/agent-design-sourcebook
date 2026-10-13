@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Four complete before-and-after prompts for long-running autonomous agent work." />
+  <meta name="theme-color" content="#f5f3ee" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <link rel="canonical" href="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/lab.html" />
+  <meta property="og:title" content="Prompt Lab — Long-Horizon Prompting" />
+  <meta property="og:site_name" content="Long-Horizon Prompting" />
+  <meta property="og:description" content="Compare and copy four complete original and optimized prompts." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/lab.html" />
+  <meta property="og:image" content="https://muratcankoylan.github.io/Agent-Skills-for-Context-Engineering/social-card.png" />
+  <meta property="og:image:alt" content="Long-Horizon Prompting Prompt Lab" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <title>Prompt Lab — Long-Horizon Prompting</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#pair">Skip to selected prompt</a>
+  <header class="site-header">
+    <a class="site-brand" href="index.html">Long-Horizon Prompting</a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="index.html">Overview</a>
+      <a href="guide.html">Guide</a>
+      <a href="lab.html" aria-current="page">Prompt Lab</a>
+      <a href="references.html">References</a>
+    </nav>
+    <a class="site-github" href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+       target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <div class="wrap">
+    <header id="hero" class="hero">
+      <div class="hero-top">
+        <span class="skill-chip">Prompt Lab / four domains</span>
+        <span class="exemplar-chip" id="exemplar-chip"></span>
+      </div>
+      <h1 id="hero-title">Prompts for work that does not end in one turn.</h1>
+      <p id="hero-subtitle" class="subtitle"></p>
+
+      <div class="hero-stats">
+        <div class="stat stat-before">
+          <div class="stat-label">Conventional prompt</div>
+          <div class="stat-value" id="agg-before"></div>
+          <div class="stat-sub">average structural self-audit score</div>
+        </div>
+        <div class="stat-arrow" aria-hidden="true">&rarr;</div>
+        <div class="stat stat-after">
+          <div class="stat-label">Optimized prompt</div>
+          <div class="stat-value" id="agg-after"></div>
+          <div class="stat-sub">average structural self-audit score</div>
+        </div>
+        <div class="stat stat-gain">
+          <div class="stat-label">Structural gain</div>
+          <div class="stat-value" id="agg-gain"></div>
+          <div class="stat-sub">percentage points, <span id="agg-pairs"></span> use cases</div>
+        </div>
+      </div>
+      <p class="install-note">
+        These scores apply the skill's own pre-launch rubric. They measure prompt structure,
+        not whether a model will solve the task.
+      </p>
+
+      <div class="release-actions" aria-label="Prompt Lab actions">
+        <a class="action action-primary" href="guide.html">Read the method</a>
+        <button class="action" type="button" data-copy-install aria-describedby="lab-install-status">Copy Cursor install</button>
+        <a class="action" href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+           target="_blank" rel="noreferrer">Get the skill on GitHub ↗</a>
+        <span class="copy-status" id="lab-install-status" aria-live="polite"></span>
+      </div>
+    </header>
+
+    <nav id="tabs" class="tabs" aria-label="Prompt use cases" role="tablist"></nav>
+
+    <p class="visually-hidden" id="case-status" aria-live="polite"></p>
+    <main id="pair" class="pair"></main>
+    <noscript>
+      <section class="noscript-note">
+        <h2>JavaScript is required for the interactive comparison.</h2>
+        <p>The complete prompts are still available as text files:</p>
+        <ul>
+          <li>ML model improvement: <a href="prompts/ml-optimization-original.txt">original</a> / <a href="prompts/ml-optimization-optimized.txt">optimized</a></li>
+          <li>Metric-TSP proof search: <a href="prompts/approx-proof-original.txt">original</a> / <a href="prompts/approx-proof-optimized.txt">optimized</a></li>
+          <li>Distributed-systems RCA: <a href="prompts/systems-debug-original.txt">original</a> / <a href="prompts/systems-debug-optimized.txt">optimized</a></li>
+          <li>Security assessment: <a href="prompts/security-audit-original.txt">original</a> / <a href="prompts/security-audit-optimized.txt">optimized</a></li>
+        </ul>
+      </section>
+    </noscript>
+
+    <footer class="foot">
+      <p id="honesty-note" class="honesty"></p>
+      <p class="meta-line">
+        By
+        <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Muratcan Koylan</a>
+        &middot;
+        <a href="https://muratcankoylan.com/" target="_blank" rel="noreferrer">Website ↗</a>
+        &middot;
+        <a href="https://x.com/muratcan" target="_blank" rel="noreferrer">X ↗</a>
+        &middot;
+        <a href="guide.html#checklist">Pre-launch rubric</a>
+        &middot;
+        <a href="references.html">Evidence and source notes</a>
+        &middot;
+        <a href="https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/skills/long-horizon-prompting"
+           target="_blank" rel="noreferrer">Skill source ↗</a>
+      </p>
+    </footer>
+  </div>
+
+  <script src="site.js"></script>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

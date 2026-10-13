@@ -1,0 +1,920 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  EnvValueReference,
+  Manifest,
+  dir,
+  file,
+  mount,
+  registerEnvValueReference,
+} from '../src/sandbox';
+import {
+  deserializeManifest,
+  deserializePersistedEnvironmentForRuntime,
+  imageOutputFromBytes,
+  materializeEnvironment,
+  materializeStaticEnvironment,
+  MAX_VIEW_IMAGE_BYTES,
+  mergeManifestDelta,
+  mergeManifestEntryDelta,
+  mergeMaterializedEnvironment,
+  mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
+  serializeManifestEnvironment,
+  serializeManifestRecord,
+  serializeRuntimeEnvironmentForPersistence,
+  sniffImageMediaType,
+  truncateOutput,
+} from '../src/sandbox/internal';
+import {
+  stableJsonPrettyStringify,
+  stableJsonStringify,
+} from '../src/sandbox/shared/stableJson';
+import { jsonEqual } from '../src/sandbox/shared/compare';
+import {
+  hasEscapingParentPathSegment,
+  hasParentPathSegment,
+  isUnderPosixPath,
+  normalizePosixPath,
+  posixDirname,
+  relativePosixPathWithinRoot,
+} from '../src/sandbox/shared/posixPath';
+
+const processPlatformDescriptor = Object.getOwnPropertyDescriptor(
+  process,
+  'platform',
+);
+
+const VALID_PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
+const VALID_JPEG_BYTES = Uint8Array.from(
+  Buffer.from(
+    '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKpAB//Z',
+    'base64',
+  ),
+);
+const VALID_GIF_BYTES = Uint8Array.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+  0x01, 0x00, 0x3b,
+]);
+const VALID_GIF87A_BYTES = Uint8Array.from(VALID_GIF_BYTES);
+VALID_GIF87A_BYTES[4] = 0x37;
+const VALID_WEBP_BYTES = Uint8Array.from(
+  Buffer.from('UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=', 'base64'),
+);
+
+function makeBmpBytes(): Uint8Array {
+  const bytes = new Uint8Array(58);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x42, 0x4d]);
+  view.setUint32(2, bytes.byteLength, true);
+  view.setUint32(10, 54, true);
+  view.setUint32(14, 40, true);
+  view.setInt32(18, 1, true);
+  view.setInt32(22, 1, true);
+  view.setUint16(26, 1, true);
+  view.setUint16(28, 24, true);
+  view.setUint32(34, 4, true);
+  bytes.set([0xff, 0xff, 0xff, 0x00], 54);
+  return bytes;
+}
+
+function makeTiffBytes(littleEndian: boolean, bigTiff: boolean): Uint8Array {
+  const ifdOffset = bigTiff ? 16 : 8;
+  const countSize = bigTiff ? 8 : 2;
+  const entrySize = bigTiff ? 20 : 12;
+  const nextIfdSize = bigTiff ? 8 : 4;
+  const pixelOffset = ifdOffset + countSize + entrySize + nextIfdSize;
+  const bytes = new Uint8Array(pixelOffset + 1);
+  const view = new DataView(bytes.buffer);
+  bytes.set(littleEndian ? [0x49, 0x49] : [0x4d, 0x4d]);
+  view.setUint16(2, bigTiff ? 43 : 42, littleEndian);
+  if (bigTiff) {
+    view.setUint16(4, 8, littleEndian);
+    view.setBigUint64(8, BigInt(ifdOffset), littleEndian);
+    view.setBigUint64(ifdOffset, 1n, littleEndian);
+  } else {
+    view.setUint32(4, ifdOffset, littleEndian);
+    view.setUint16(ifdOffset, 1, littleEndian);
+  }
+  const entryOffset = ifdOffset + countSize;
+  view.setUint16(entryOffset, 273, littleEndian);
+  view.setUint16(entryOffset + 2, bigTiff ? 16 : 4, littleEndian);
+  if (bigTiff) {
+    view.setBigUint64(entryOffset + 4, 1n, littleEndian);
+    view.setBigUint64(entryOffset + 12, BigInt(pixelOffset), littleEndian);
+  } else {
+    view.setUint32(entryOffset + 4, 1, littleEndian);
+    view.setUint32(entryOffset + 8, pixelOffset, littleEndian);
+  }
+  bytes[pixelOffset] = 0xff;
+  return bytes;
+}
+
+afterEach(() => {
+  vi.doUnmock('node:os');
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.resetModules();
+  if (processPlatformDescriptor) {
+    Object.defineProperty(process, 'platform', processPlatformDescriptor);
+  }
+});
+
+async function loadDefaultLocalSnapshotBaseDir(args: {
+  platform: NodeJS.Platform;
+  home: string;
+  temp: string;
+}): Promise<() => string> {
+  vi.resetModules();
+  vi.doMock('node:os', () => ({
+    homedir: () => args.home,
+    tmpdir: () => args.temp,
+  }));
+  Object.defineProperty(process, 'platform', {
+    value: args.platform,
+    configurable: true,
+  });
+
+  return (await import('../src/sandbox/sandboxes/shared/localSnapshotPaths'))
+    .defaultLocalSnapshotBaseDir;
+}
+
+describe('sandbox shared helpers', () => {
+  it('includes truncation metadata within the output byte budget', () => {
+    const result = truncateOutput('0123456789abcdef', 2);
+
+    expect(result).toEqual({
+      text: '...4 tok',
+      originalTokenCount: 4,
+    });
+    expect(new TextEncoder().encode(result.text)).toHaveLength(8);
+  });
+
+  it.each([
+    { maxOutputTokens: 0, expected: '' },
+    { maxOutputTokens: 1, expected: '...4' },
+  ])(
+    'does not exceed a $maxOutputTokens-token tiny output budget',
+    ({ maxOutputTokens, expected }) => {
+      const result = truncateOutput('0123456789abcdef', maxOutputTokens);
+
+      expect(result).toEqual({
+        text: expected,
+        originalTokenCount: 4,
+      });
+      expect(
+        new TextEncoder().encode(result.text).byteLength,
+      ).toBeLessThanOrEqual(maxOutputTokens * 4);
+    },
+  );
+
+  it('keeps line metadata plus head and tail context when space permits', () => {
+    const output = '0123456789'.repeat(20);
+    const result = truncateOutput(output, 32);
+
+    expect(result.text).toMatch(/^Total output lines: 1\n\n012345/u);
+    expect(result.text).toContain('tokens truncated');
+    expect(result.text).toMatch(/456789$/u);
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
+  });
+
+  it('keeps multibyte output valid and within the byte budget', () => {
+    const result = truncateOutput('🙂漢字'.repeat(20), 32);
+
+    expect(result.text).not.toContain('\uFFFD');
+    expect(result.text).toContain('tokens truncated');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
+  });
+
+  it('preserves active process truncation notices when applying output budgets', () => {
+    const result = truncateOutput(
+      `[...1200 characters truncated from process output...]\n${'0123456789'.repeat(1000)}`,
+      20,
+    );
+
+    expect(result.text).toContain('characters truncated from process output');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(80);
+  });
+
+  it('leaves unlimited and already-fitting output unchanged', () => {
+    expect(truncateOutput('short\noutput')).toEqual({
+      text: 'short\noutput',
+    });
+    expect(truncateOutput('short\noutput', 4)).toEqual({
+      text: 'short\noutput',
+    });
+  });
+
+  it.each([
+    ['image/png', VALID_PNG_BYTES],
+    ['image/jpeg', VALID_JPEG_BYTES],
+    ['image/gif', VALID_GIF_BYTES],
+    ['image/gif', VALID_GIF87A_BYTES],
+    ['image/webp', VALID_WEBP_BYTES],
+    ['image/bmp', makeBmpBytes()],
+    ['image/tiff', makeTiffBytes(true, false)],
+    ['image/tiff', makeTiffBytes(false, false)],
+    ['image/tiff', makeTiffBytes(true, true)],
+    ['image/tiff', makeTiffBytes(false, true)],
+  ])('sniffs %s from bytes without relying on the path', (mediaType, bytes) => {
+    expect(sniffImageMediaType(bytes, 'payload.bin')).toBe(mediaType);
+  });
+
+  it.each([
+    'fake.png',
+    'fake.jpg',
+    'fake.jpeg',
+    'fake.gif',
+    'fake.webp',
+    'fake.bmp',
+    'fake.tif',
+    'fake.tiff',
+  ])('does not infer raster media types from the path %s', (path) => {
+    expect(sniffImageMediaType(Uint8Array.from([0]), path)).toBeNull();
+  });
+
+  it.each([
+    ['PNG', [0x89, 0x50, 0x4e, 0x47]],
+    ['GIF', [0x47, 0x49, 0x46, 0x38]],
+    ['WebP', [0x52, 0x49, 0x46, 0x46]],
+    ['TIFF', [0x49, 0x49]],
+  ])('rejects an incomplete %s signature', (_name, bytes) => {
+    expect(sniffImageMediaType(Uint8Array.from(bytes))).toBeNull();
+  });
+
+  it('classifies canonical signatures without decoding pixel data', () => {
+    expect(
+      sniffImageMediaType(
+        Uint8Array.from([
+          0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+        ]),
+      ),
+    ).toBe('image/webp');
+  });
+
+  it.each([
+    ['diagram.svg', new TextEncoder().encode('\ufeff<svg></svg>')],
+    [
+      'diagram.svg',
+      new TextEncoder().encode('<!-- generated -->\n<svg></svg>'),
+    ],
+    ['diagram.svg', new TextEncoder().encode('<!DOCTYPE svg>\n<svg></svg>')],
+    ['diagram.svg', new TextEncoder().encode('<svg></svg>\n')],
+    ['diagram.svgz', Uint8Array.from([0x1f, 0x8b, 0x08, 0x00])],
+  ])('preserves SVG filename compatibility for %s', (path, bytes) => {
+    expect(sniffImageMediaType(bytes, path)).toBe('image/svg+xml');
+  });
+
+  it('returns null for unsupported bytes without an SVG filename', () => {
+    expect(sniffImageMediaType(Uint8Array.from([0]))).toBeNull();
+  });
+
+  it('builds image tool output from bytes with shared validation', () => {
+    const bytes = VALID_PNG_BYTES;
+
+    expect(imageOutputFromBytes('diagram.png', bytes)).toEqual({
+      type: 'image',
+      image: {
+        data: bytes,
+        mediaType: 'image/png',
+      },
+    });
+    expect(() =>
+      imageOutputFromBytes(
+        'large.png',
+        new Uint8Array(MAX_VIEW_IMAGE_BYTES + 1),
+      ),
+    ).toThrow('Image file exceeds the 10 MB limit: large.png');
+    expect(() =>
+      imageOutputFromBytes('notes.txt', Uint8Array.from([0])),
+    ).toThrow('Unsupported image format for view_image: notes.txt');
+    expect(() =>
+      imageOutputFromBytes(
+        'fake.png',
+        new TextEncoder().encode('not an image'),
+      ),
+    ).toThrow('Unsupported image format for view_image: fake.png');
+  });
+
+  it('stable-stringifies JSON-like values with sorted object keys', () => {
+    expect(
+      stableJsonStringify({
+        b: 2,
+        a: {
+          d: 4,
+          c: Uint8Array.from([1, 2]),
+        },
+      }),
+    ).toBe('{"a":{"c":{"type":"Uint8Array","data":[1,2]},"d":4},"b":2}');
+    expect(
+      stableJsonPrettyStringify({
+        b: 2,
+        a: 1,
+      }),
+    ).toBe('{\n  "a":1,\n  "b":2\n}');
+    expect(jsonEqual({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
+  });
+
+  it('resolves default local snapshot directories by platform and environment', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  /custom/snapshots  ');
+    let defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe('/custom/snapshots');
+
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'darwin',
+      home: '/Users/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/Users/tester/Library/Application Support/openai-agents-js/sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '  C:\\Users\\tester\\AppData\\Local  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'win32',
+      home: 'C:\\Users\\tester',
+      temp: 'C:\\Temp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '');
+    vi.stubEnv('XDG_STATE_HOME', '  /state  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it('preserves explicit relative local snapshot directory overrides', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  relative/snapshots  ');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe('relative/snapshots');
+  });
+
+  it('ignores relative XDG state directories', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/home/tester/.local/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it.each(['relative-local', '/tmp/localappdata'])(
+    'ignores invalid Windows app-data directories: %s',
+    async (localAppData) => {
+      vi.stubEnv('LOCALAPPDATA', localAppData);
+      const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir(
+        {
+          platform: 'win32',
+          home: 'C:\\Users\\tester',
+          temp: 'C:\\Temp',
+        },
+      );
+
+      expect(defaultLocalSnapshotBaseDir()).toBe(
+        'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
+      );
+    },
+  );
+
+  it('falls back to the temporary directory without a home directory', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/tmp/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it('normalizes POSIX sandbox paths and compares roots', () => {
+    expect(normalizePosixPath('/workspace//src/../README.md')).toBe(
+      '/workspace/README.md',
+    );
+    expect(normalizePosixPath('src/../README.md')).toBe('README.md');
+    expect(hasParentPathSegment('src/../README.md')).toBe(true);
+    expect(hasEscapingParentPathSegment('src/../README.md')).toBe(false);
+    expect(hasEscapingParentPathSegment('../secret.txt')).toBe(true);
+    expect(isUnderPosixPath('/workspace/app.ts', '/workspace')).toBe(true);
+    expect(isUnderPosixPath('/workspace-other/app.ts', '/workspace')).toBe(
+      false,
+    );
+    expect(
+      relativePosixPathWithinRoot('/workspace', '/workspace/src/app.ts'),
+    ).toBe('src/app.ts');
+    expect(relativePosixPathWithinRoot('/workspace', '/tmp/app.ts')).toBeNull();
+    expect(posixDirname('/workspace/src/app.ts')).toBe('/workspace/src');
+    expect(posixDirname('/workspace/src/')).toBe('/workspace');
+    expect(posixDirname('/')).toBe('/');
+    expect(posixDirname('README.md')).toBe('.');
+  });
+
+  it.each([
+    ['', '.'],
+    ['/', '/'],
+    ['///', '.'],
+    ['/README.md', '/'],
+    ['README.md///', '.'],
+    ['/workspace/src///', '/workspace'],
+    ['src//nested/file.txt', 'src//nested'],
+    ['src//nested/file.txt///', 'src//nested'],
+    ['src/../file.txt', 'src/..'],
+    ['src/file.txt\n', 'src'],
+  ])('preserves the POSIX parent directory for %j', (path, expected) => {
+    expect(posixDirname(path)).toBe(expected);
+  });
+
+  it('serializes manifests without ephemeral entries or environment values', () => {
+    const manifest = new Manifest({
+      entries: {
+        'kept.txt': file({ content: 'ok' }),
+        'tmp.txt': file({ content: 'skip', ephemeral: true }),
+        mounted: mount({
+          source: 's3://bucket/data',
+        }),
+        ephemeral: dir({
+          ephemeral: true,
+          children: {
+            'skip.txt': file({ content: 'skip' }),
+            mounted: mount({
+              source: 's3://bucket/nested',
+            }),
+          },
+        }),
+        dir: dir({
+          children: {
+            'nested.txt': file({ content: 'ok' }),
+            'nested.tmp': file({ content: 'skip', ephemeral: true }),
+          },
+        }),
+      },
+      environment: {
+        KEPT: { value: 'ok' },
+        SKIPPED: {
+          value: 'secret',
+          ephemeral: true,
+        },
+      },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/shared-data',
+          readOnly: true,
+        },
+      ],
+    });
+
+    const serialized = serializeManifestRecord(manifest);
+
+    expect(serialized).toMatchObject({
+      entries: {
+        'kept.txt': { content: 'ok' },
+        mounted: {
+          type: 'mount',
+          source: 's3://bucket/data',
+          ephemeral: true,
+          readOnly: true,
+        },
+        ephemeral: {
+          children: {
+            mounted: {
+              type: 'mount',
+              source: 's3://bucket/nested',
+              ephemeral: true,
+              readOnly: true,
+            },
+          },
+        },
+        dir: {
+          children: {
+            'nested.txt': { content: 'ok' },
+          },
+        },
+      },
+      environment: {
+        KEPT: { value: 'ok' },
+      },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
+    });
+    expect(serialized.entries).not.toHaveProperty('tmp.txt');
+    expect(serialized.entries).not.toHaveProperty([
+      'ephemeral',
+      'children',
+      'skip.txt',
+    ]);
+    expect(serialized.entries).not.toHaveProperty([
+      'dir',
+      'children',
+      'nested.tmp',
+    ]);
+    expect(serialized.extraPathGrants).not.toHaveProperty([0, 'hostPath']);
+  });
+
+  it('does not restore host path grants from persisted manifests', () => {
+    const restored = deserializeManifest({
+      version: 1,
+      root: '/workspace',
+      entries: {},
+      environment: {},
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/untrusted-data',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(restored.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
+    ]);
+  });
+
+  it('encodes binary manifest files for JSON persistence', () => {
+    const bytes = Uint8Array.from([0, 255, 34, 17, 128, 64]);
+    const manifest = new Manifest({
+      entries: {
+        'image.bin': file({ content: bytes }),
+        nested: dir({
+          children: {
+            'payload.bin': file({ content: bytes }),
+          },
+        }),
+      },
+    });
+
+    const serialized = serializeManifestRecord(manifest);
+    const jsonRoundTrip = JSON.parse(JSON.stringify(serialized));
+    const restored = deserializeManifest(jsonRoundTrip);
+
+    expect((serialized.entries as any)['image.bin'].content).toEqual({
+      type: 'base64',
+      data: 'AP8iEYBA',
+    });
+    expect((restored.entries['image.bin'] as any).content).toEqual(bytes);
+    expect(
+      (restored.entries.nested as any).children['payload.bin'].content,
+    ).toEqual(bytes);
+  });
+
+  it('restores binary manifest files without host base64 globals', () => {
+    const bytes = Uint8Array.from([0, 255, 34, 17, 128]);
+    const serialized = serializeManifestRecord(
+      new Manifest({
+        entries: {
+          'payload.bin': file({ content: bytes }),
+        },
+      }),
+    );
+    vi.stubGlobal('Buffer', undefined);
+    vi.stubGlobal('atob', undefined);
+
+    const restored = deserializeManifest(serialized);
+
+    expect((restored.entries['payload.bin'] as any).content).toEqual(bytes);
+  });
+
+  it('materializes manifest environment values and preserves runtime overrides', async () => {
+    const previous = new Manifest({
+      environment: {
+        KEEP: 'previous',
+        OVERRIDE: 'old',
+      },
+    });
+    const next = new Manifest({
+      environment: {
+        KEEP: 'next',
+        OVERRIDE: 'next-manifest',
+        NEW_VALUE: 'new',
+      },
+    });
+
+    await expect(
+      materializeEnvironment(previous, {
+        OVERRIDE: 'runtime',
+        TOKEN: 'client',
+      }),
+    ).resolves.toEqual({
+      KEEP: 'previous',
+      OVERRIDE: 'old',
+      TOKEN: 'client',
+    });
+    await expect(
+      mergeMaterializedEnvironment(previous, next, {
+        KEEP: 'previous',
+        OVERRIDE: 'runtime',
+        TOKEN: 'client',
+      }),
+    ).resolves.toEqual({
+      KEEP: 'next',
+      OVERRIDE: 'next-manifest',
+      NEW_VALUE: 'new',
+      TOKEN: 'client',
+    });
+  });
+
+  it('serializes and restores manifest-bound runtime environment values', async () => {
+    const manifest = new Manifest({
+      environment: {
+        KEEP: {
+          value: 'manifest',
+          description: 'stored',
+        },
+        TOKEN: {
+          value: 'placeholder',
+          resolve: async () => 'resolved-token',
+        },
+        SECRET: {
+          value: 'secret',
+          ephemeral: true,
+        },
+      },
+    });
+
+    expect(serializeManifestEnvironment(manifest)).toEqual({
+      KEEP: {
+        value: 'manifest',
+        description: 'stored',
+      },
+      TOKEN: {
+        value: 'placeholder',
+      },
+      SECRET: {
+        value: 'secret',
+        ephemeral: true,
+      },
+    });
+    await expect(materializeEnvironment(manifest)).resolves.toMatchObject({
+      TOKEN: 'resolved-token',
+    });
+    expect(
+      serializeRuntimeEnvironmentForPersistence(manifest, {
+        KEEP: 'runtime-keep',
+        TOKEN: 'resolved-token',
+        SECRET: 'runtime-secret',
+        CLIENT_ONLY: 'skip',
+      }),
+    ).toEqual({
+      KEEP: 'manifest',
+      TOKEN: 'resolved-token',
+    });
+    expect(
+      deserializePersistedEnvironmentForRuntime(
+        manifest,
+        {
+          KEEP: 'persisted',
+          TOKEN: 'persisted-token',
+          SECRET: 'persisted-secret',
+          CLIENT_ONLY: 'persisted-client',
+        },
+        {
+          CLIENT_ONLY: 'client',
+        },
+      ),
+    ).toEqual({
+      CLIENT_ONLY: 'client',
+      KEEP: 'persisted',
+      TOKEN: 'persisted-token',
+    });
+  });
+
+  it('persists environment references without their resolved runtime values', async () => {
+    let currentSecret = 'first-secret';
+    class SessionSecretReference extends EnvValueReference {
+      static readonly type = 'test.session_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      SessionSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Session secret reference key must be a string.');
+        }
+        return new SessionSecretReference(payload.key);
+      },
+    );
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new SessionSecretReference('openai-key'),
+          STATIC: 'enabled',
+        },
+      });
+
+      expect(serializeManifestRecord(manifest).environment).toEqual({
+        TOKEN: {
+          type: SessionSecretReference.type,
+          key: 'openai-key',
+        },
+        STATIC: { value: 'enabled' },
+      });
+      expect(
+        serializeRuntimeEnvironmentForPersistence(manifest, {
+          TOKEN: 'first-secret:openai-key',
+          STATIC: 'runtime-override',
+        }),
+      ).toEqual({
+        STATIC: 'enabled',
+      });
+
+      const restored = deserializeManifest(
+        JSON.parse(JSON.stringify(serializeManifestRecord(manifest))),
+      );
+      currentSecret = 'replayed-secret';
+      await expect(
+        rehydratePersistedEnvironmentForRuntime(restored, {
+          TOKEN: 'persisted-plaintext-must-not-win',
+          STATIC: 'enabled',
+        }),
+      ).resolves.toEqual({
+        TOKEN: 'replayed-secret:openai-key',
+        STATIC: 'enabled',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('materializes static manifest environment without invoking resolvers', () => {
+    const previous = new Manifest({
+      environment: {
+        TOKEN: {
+          value: 'placeholder',
+          resolve: () => {
+            throw new Error('resolver should not run');
+          },
+        },
+      },
+    });
+    const next = new Manifest({
+      environment: {
+        TOKEN: 'next',
+      },
+    });
+
+    expect(materializeStaticEnvironment(previous)).toEqual({
+      TOKEN: 'placeholder',
+    });
+    expect(
+      mergeStaticMaterializedEnvironment(previous, next, {
+        TOKEN: 'runtime',
+        CLIENT_ONLY: 'client',
+      }),
+    ).toEqual({
+      CLIENT_ONLY: 'client',
+      TOKEN: 'next',
+    });
+  });
+
+  it('keeps resolver-backed environment values materialized after manifest merges', async () => {
+    const resolveToken = vi.fn(async () => 'resolved-token');
+    const previous = new Manifest({
+      environment: {
+        TOKEN: {
+          value: 'placeholder-token',
+          resolve: resolveToken,
+        },
+        STATIC: 'old-static',
+      },
+    });
+    const currentEnvironment = await materializeEnvironment(previous);
+    const next = mergeManifestDelta(
+      previous,
+      new Manifest({
+        environment: {
+          STATIC: 'new-static',
+        },
+      }),
+    );
+
+    await expect(
+      mergeMaterializedEnvironment(previous, next, currentEnvironment),
+    ).resolves.toEqual({
+      TOKEN: 'resolved-token',
+      STATIC: 'new-static',
+    });
+    await expect(next.resolveEnvironment()).resolves.toMatchObject({
+      TOKEN: 'resolved-token',
+    });
+  });
+
+  it('merges manifest deltas by replacing named and path-keyed entries', () => {
+    const baseHostPath = process.cwd();
+    const updatedHostPath = `${process.cwd()}-updated`;
+    const base = new Manifest({
+      entries: {
+        'base.txt': file({ content: 'base' }),
+      },
+      groups: [{ name: 'operators', users: [{ name: 'agent' }] }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: baseHostPath,
+          readOnly: true,
+        },
+      ],
+    });
+    const update = new Manifest({
+      entries: {
+        'update.txt': file({ content: 'update' }),
+      },
+      groups: [{ name: 'operators', users: [{ name: 'reviewer' }] }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: updatedHostPath,
+          readOnly: false,
+        },
+      ],
+    });
+
+    const merged = mergeManifestDelta(base, update);
+
+    expect(Object.keys(merged.entries)).toEqual(['base.txt', 'update.txt']);
+    expect(merged.groups).toEqual([
+      { name: 'operators', users: [{ name: 'reviewer' }] },
+    ]);
+    expect(merged.extraPathGrants).toEqual([
+      {
+        path: '/tmp/base',
+        hostPath: updatedHostPath,
+        readOnly: false,
+      },
+    ]);
+  });
+
+  it('merges single manifest entry deltas without rebuilding the delta inline', () => {
+    const base = new Manifest({
+      root: '/workspace',
+      entries: {
+        'base.txt': file({ content: 'base' }),
+      },
+    });
+
+    const merged = mergeManifestEntryDelta(
+      base,
+      'nested/update.txt',
+      file({ content: 'update' }),
+    );
+
+    expect(merged.root).toBe('/workspace');
+    expect(merged.entries).toEqual({
+      'base.txt': file({ content: 'base' }),
+      'nested/update.txt': file({ content: 'update' }),
+    });
+  });
+});

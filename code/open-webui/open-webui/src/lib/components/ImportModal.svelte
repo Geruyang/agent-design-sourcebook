@@ -1,0 +1,121 @@
+<script lang="ts">
+	import { toast } from 'svelte-sonner';
+	import { getContext, onMount } from 'svelte';
+	const i18n = getContext('i18n');
+
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import { extractFrontmatter, nameToId } from '$lib/utils';
+
+	export let show = false;
+
+	export let onImport = (e) => {};
+	export let onClose = () => {};
+
+	export let loadUrlHandler: Function = () => {};
+	export let successMessage: string = '';
+	export let transformResult = (res) => {
+		const func = { ...res, id: res.id || nameToId(res.name) };
+		const frontmatter = extractFrontmatter(res.content);
+		if (frontmatter?.title) func.name = frontmatter.title;
+		func.meta = {
+			...(func.meta ?? {}),
+			description: frontmatter?.description ?? func.name
+		};
+		return func;
+	};
+
+	let loading = false;
+	let url = '';
+
+	const submitHandler = async () => {
+		loading = true;
+
+		if (!url) {
+			toast.error($i18n.t('Please enter a valid URL'));
+			loading = false;
+			return;
+		}
+
+		const res = await loadUrlHandler(url).catch((err) => {
+			toast.error(`${err}`);
+			loading = false;
+			return null;
+		});
+
+		if (res) {
+			if (!successMessage) {
+				successMessage = $i18n.t('Function imported successfully');
+			}
+
+			toast.success(successMessage);
+
+			onImport(transformResult(res));
+			show = false;
+		}
+		loading = false;
+	};
+</script>
+
+<Modal size="sm" bind:show>
+	<div>
+		<div class=" flex justify-between dark:text-gray-300 px-4 pt-3 pb-1">
+			<div class=" text-sm font-medium self-center">{$i18n.t('Import')}</div>
+			<button
+				class="self-center rounded-lg p-1 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+				aria-label={$i18n.t('Close')}
+				on:click={() => {
+					show = false;
+				}}
+			>
+				<XMark className={'size-4'} />
+			</button>
+		</div>
+
+		<div class="flex flex-col md:flex-row w-full px-4 pb-3 md:space-x-4 dark:text-gray-200">
+			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+				<form
+					class="flex flex-col w-full"
+					on:submit|preventDefault={() => {
+						submitHandler();
+					}}
+				>
+					<div class="px-1">
+						<div class="flex flex-col w-full">
+							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('URL')}</div>
+
+							<div class="flex-1">
+								<input
+									class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+									type="url"
+									bind:value={url}
+									placeholder={$i18n.t('Enter the URL to import')}
+									required
+								/>
+
+								<!-- $i18n.t('Enter the URL of the function to import') -->
+							</div>
+						</div>
+					</div>
+
+					<div class="flex justify-end pt-3 text-sm font-normal">
+						<button
+							class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white disabled:cursor-not-allowed"
+							type="submit"
+							disabled={loading}
+						>
+							{$i18n.t('Import')}
+
+							{#if loading}
+								<span class="shrink-0">
+									<Spinner className="size-3" />
+								</span>
+							{/if}
+						</button>
+					</div>
+				</form>
+			</div>
+		</div>
+	</div>
+</Modal>

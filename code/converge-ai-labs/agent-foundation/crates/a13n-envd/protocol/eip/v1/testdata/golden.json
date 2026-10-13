@@ -1,0 +1,184 @@
+{
+  "cases": [
+    {
+      "type": "InitializeParams",
+      "value": {
+        "client": {"name": "fixture-client", "version": "1.2.3"},
+        "expected_device_id": "device-fixture",
+        "supported_protocol_versions": ["0.1"]
+      }
+    },
+    {
+      "type": "EnvironmentReadinessParams",
+      "value": {
+        "context": {"operation_id": "op-readiness", "timeout_ms": 1000}
+      }
+    },
+    {
+      "type": "EnvironmentReadinessResult",
+      "value": {
+        "device_id": "device-fixture",
+        "session_id": "session-fixture",
+        "generation": 7,
+        "ready": true
+      }
+    },
+    {
+      "type": "FileStatParams",
+      "value": {
+        "context": {"operation_id": "op-stat"},
+        "path": {"path": "/src/main.py"}
+      }
+    },
+    {
+      "type": "FileStatResult",
+      "value": {
+        "info": {
+          "kind": "file",
+          "modified_at": "2026-08-20T14:00:00.123456789Z",
+          "path": {"path": "/src/main.py"},
+          "size_bytes": 128
+        }
+      }
+    },
+    {
+      "type": "FileFindParams",
+      "value": {
+        "context": {"operation_id": "op-find"},
+        "kinds": ["file"],
+        "pattern": "**/*.py",
+        "root": {"path": "/src"}
+      }
+    },
+    {
+      "type": "FileSearchParams",
+      "value": {
+        "case_sensitive": false,
+        "context": {"operation_id": "op-search"},
+        "context_lines": 2,
+        "include_hidden": true,
+        "include_pattern": "**/*.py",
+        "max_file_bytes": 4096,
+        "max_files": 50,
+        "max_line_length": 120,
+        "max_matches_per_file": 3,
+        "max_results": 25,
+        "mode": "regex",
+        "offset": 2,
+        "query": "needle",
+        "respect_git_ignore": true,
+        "root": {"path": "/src"}
+      }
+    },
+    {
+      "type": "FileSearchMatch",
+      "value": {
+        "context": "before\nneedle\nafter\n",
+        "context_start_line": 6,
+        "line_number": 7,
+        "path": {"path": "/src/app.py"},
+        "preview": "needle",
+        "preview_truncated": false
+      }
+    },
+    {
+      "type": "FileSearchResult",
+      "value": {
+        "has_more": true,
+        "matches": [
+          {
+            "context": "before\nneedle\nafter\n",
+            "context_start_line": 6,
+            "line_number": 7,
+            "path": {"path": "/src/app.py"},
+            "preview": "needle",
+            "preview_truncated": false
+          }
+        ],
+        "offset": 2,
+        "omitted_unrepresentable_entries": 0
+      }
+    },
+    {
+      "type": "ShellExecParams",
+      "value": {
+        "context": {"operation_id": "op-exec", "timeout_ms": 1000},
+        "request": {
+          "command": {
+            "arguments": ["status", "--short"],
+            "executable_spec": {"kind": "name", "name": "git"},
+            "kind": "argv"
+          },
+          "cwd": {"path": "/repo"}
+        }
+      }
+    },
+    {
+      "type": "OutputReadParams",
+      "value": {
+        "context": {"operation_id": "op-output-read"},
+        "reference": "output-ref-1",
+        "start_offset": 0
+      }
+    },
+    {
+      "type": "ProcessWriteStdinParams",
+      "value": {
+        "close_after_write": true,
+        "context": {"operation_id": "op-stdin"},
+        "data": {"data": "AAE", "encoding": "base64"},
+        "handle": "process-1"
+      }
+    },
+    {
+      "type": "ReceiptGetParams",
+      "value": {
+        "context": {"operation_id": "op-receipt-query"},
+        "operation_id": "op-ambiguous"
+      }
+    },
+    {
+      "type": "EIPError",
+      "value": {
+        "code": -32042,
+        "data": {
+          "dispatch_stage": "unknown",
+          "error_type": "unknown_outcome",
+          "operation_id": "op-ambiguous",
+          "retry_hint": "reconcile_first"
+        },
+        "message": "operation outcome is unknown"
+      }
+    },
+    {
+      "type": "EIPError",
+      "value": {
+        "code": -32032,
+        "data": {
+          "dispatch_stage": "completed",
+          "error_type": "output_limit_exceeded",
+          "output": {
+            "stderr": {
+              "content_complete": true,
+              "preview": {"data": "", "encoding": "base64"},
+              "producer_complete": true,
+              "produced_bytes": 0,
+              "reference": "output-stderr-1",
+              "retained_bytes": 0
+            },
+            "stdout": {
+              "content_complete": false,
+              "preview": {"data": "YWJj", "encoding": "base64"},
+              "producer_complete": true,
+              "produced_bytes": 4,
+              "reference": "output-stdout-1",
+              "retained_bytes": 3
+            }
+          },
+          "retry_hint": "never"
+        },
+        "message": "command output exceeded the stream limit"
+      }
+    }
+  ]
+}

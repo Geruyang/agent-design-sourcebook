@@ -1,0 +1,316 @@
+---
+title: Running Agents
+description: Configure and execute agent workflows with the Runner class
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import helloWorldWithRunnerExample from '../../../../../examples/docs/hello-world-with-runner.ts?raw';
+import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
+import runningAgentsExceptionExample from '../../../../../examples/docs/running-agents/exceptions1.ts?raw';
+import chatLoopExample from '../../../../../examples/docs/running-agents/chatLoop.ts?raw';
+import conversationIdExample from '../../../../../examples/docs/running-agents/conversationId.ts?raw';
+import previousResponseIdExample from '../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
+import modelInputIdentityExample from '../../../../../examples/docs/running-agents/modelInputIdentity.ts?raw';
+
+Agents do nothing by themselves – you **run** them with the `Runner` class or the `run()` utility.
+
+> Read this page after [Agents](/openai-agents-js/guides/agents) once you want to execute turns, stream events, or manage conversation state. If you are still deciding how the agent should be defined, start with [Agents](/openai-agents-js/guides/agents) first.
+
+<Code lang="typescript" code={helloWorldExample} title="Simple run" />
+
+When you don't need a custom runner, you can also use the `run()` utility, which runs a singleton default `Runner` instance.
+
+Alternatively, you can create your own runner instance:
+
+<Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
+
+After running your agent, you will receive a [result](/openai-agents-js/guides/results) object that contains the final output and the full history of the run.
+
+## Runner lifecycle and configuration
+
+### The agent loop
+
+When you use the run method in Runner, you pass in a starting agent and input. The input can either be a string (which is considered a user message), or a list of input items, which are the items in the OpenAI Responses API.
+
+The runner then runs a loop:
+
+1. Call the current agent’s model with the current input.
+2. Inspect the LLM response.
+   - **Final output** → return.
+   - **Handoff** → switch to the new agent, keep the accumulated conversation history, go to 1.
+   - **Tool calls** → execute tools, append their results to the conversation, go to 1.
+3. Throw [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) once `maxTurns` is reached, unless `maxTurns` is `null`.
+
+<Aside type="note">
+  The rule for whether the LLM output is considered as a "final output" is that
+  it produces text output with the desired type, and there are no tool calls.
+</Aside>
+
+#### Runner lifecycle
+
+Create a `Runner` when your app starts and reuse it across requests. The instance stores global configuration such as model provider and tracing options. Only create another `Runner` if you need a completely different setup. For simple scripts you can also call `run()` which uses a default runner internally.
+
+### Run arguments
+
+The input to the `run()` method is an initial agent to start the run on, input for the run and a set of options.
+
+The input can either be a string (which is considered a user message), or a list of [input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem), or a [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) object in case you are building a [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop) agent.
+
+The additional options are:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `stream` | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model. |
+| `context` | – | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context). |
+| `maxTurns` | `10` | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached. Pass `null` to disable the limit. |
+| `signal` | – | `AbortSignal` for cancellation. |
+| `session` | – | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions). |
+| `sessionInputCallback` | – | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions). |
+| `callModelInputFilter` | – | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter). |
+| `toolErrorFormatter` | – | Hook to customize tool error messages returned to the model. See [Tool error formatter](#tool-error-formatter). |
+| `reasoningItemIdPolicy` | – | Controls whether reasoning-item `id`s are preserved or omitted when prior run items are turned back into model input. See [Reasoning item ID policy](#reasoning-item-id-policy). |
+| `tracing` | – | Per-run tracing configuration overrides. Set `includeTaskAndTurnSpans: false` to omit the default task/turn span hierarchy. |
+| `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
+| `toolExecution` | – | SDK-side execution settings for local tool calls. Use `toolExecution.maxFunctionToolConcurrency` to limit how many function tools run at once, and `toolExecution.preApprovalInputGuardrails` to run function-tool input guardrails before pending approval requests. |
+| `toolNotFoundBehavior` | `'raise_error'` | Controls unresolved function tool calls emitted by the model. Use `'return_error_to_model'` to return a model-visible tool error and continue the run. |
+| `toolNameCollisionPolicy` | `'warn'` | Controls collisions between enabled function-tool and handoff names. Use `'error'` to fail before the model request instead of warning and exposing only the current dispatch winner. |
+| `errorHandlers` | – | Handlers for supported runtime errors. See [Error handlers](#error-handlers). |
+| `conversationId` | – | Reuse a server-side conversation (OpenAI Responses API + Conversations API only). |
+| `previousResponseId` | – | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only). |
+
+### Streaming
+
+Streaming additionally exposes events while the LLM runs. A `StreamedRunResult` accumulates information as the run proceeds. After the result's `completed` promise resolves, the result's summary properties include all newly produced outputs. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
+
+### Run config
+
+If you are creating your own `Runner` instance, you can pass in a `RunConfig` object to configure the runner.
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `model` | `string \| Model` | Force a specific model for **all** agents in the run. |
+| `modelProvider` | `ModelProvider` | Resolves model names – defaults to the OpenAI provider. |
+| `modelSettings` | `ModelSettings` | Global tuning parameters that override per‑agent settings. See the [models guide](/openai-agents-js/guides/models#modelsettings) for details, including opt-in retry configuration. |
+| `handoffInputFilter` | `HandoffInputFilter` | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one). |
+| `inputGuardrails` | `InputGuardrail[]` | Guardrails applied to the _initial_ user input. |
+| `outputGuardrails` | `OutputGuardrail[]` | Guardrails applied to the _final_ output. |
+| `tracingDisabled` | `boolean` | Disable OpenAI Tracing completely. |
+| `traceIncludeSensitiveData` | `boolean` | Exclude LLM/tool inputs & outputs from traces while still emitting spans. |
+| `workflowName` | `string` | Appears in the Traces dashboard – helps group related runs. |
+| `traceId` / `groupId` | `string` | Manually specify the trace or group ID instead of letting the SDK generate one. |
+| `traceMetadata` | `Record<string, string>` | Arbitrary metadata to attach to every span. |
+| `tracing` | `TracingConfig` | Runner-level tracing defaults, including the export API key and `includeTaskAndTurnSpans`. Individual run options can override these values. |
+| `sessionInputCallback` | `SessionInputCallback` | Default history merge strategy for all runs on this runner. |
+| `callModelInputFilter` | `CallModelInputFilter` | Global hook to edit model inputs before each model call. |
+| `toolErrorFormatter` | `ToolErrorFormatter` | Global hook to customize tool error messages returned to the model. |
+| `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | Default policy for preserving or omitting reasoning-item `id`s when replaying generated items into later model calls. |
+| `sandbox` | `SandboxRunConfig` | Default sandbox runtime configuration for `SandboxAgent` runs. |
+| `toolExecution` | `ToolExecutionConfig` | Default SDK-side execution settings for local tool calls. `maxFunctionToolConcurrency` caps local function tool concurrency for each turn; unset or `null` starts all function tool calls emitted in a turn. `preApprovalInputGuardrails` opts in to running function-tool input guardrails before pending approval requests. |
+| `toolNotFoundBehavior` | `ToolNotFoundBehavior` | Default behavior for unresolved function tool calls. `'raise_error'` raises `ModelBehaviorError`; `'return_error_to_model'` returns a model-visible tool error and lets the run continue. |
+| `toolNameCollisionPolicy` | `ToolNameCollisionPolicy` | Default collision policy for enabled function-tool and handoff names. `'warn'` logs and exposes the current dispatch winner; `'error'` raises `UserError` before the model is called. |
+
+`toolExecution.maxFunctionToolConcurrency` must be an integer greater than or equal to `1`. This setting only limits SDK-side execution of local function tools. It does not change provider-side `modelSettings.parallelToolCalls`.
+
+`toolExecution.preApprovalInputGuardrails` is disabled by default. When set to `true`, local function tools that require approval run their input guardrails before the SDK records a pending approval interruption. If the guardrail returns `rejectContent`, the SDK sends that rejection message back as the tool output instead of asking for approval. If the guardrail allows the call, the approval request is still raised, and the same input guardrails run again immediately before tool execution after the approval is resolved.
+
+`toolNameCollisionPolicy` only controls collisions between enabled function tools and handoffs. Existing strict validation for namespaced tools, deferred tools, and duplicate local MCP tool names is unchanged.
+
+## State and conversation management
+
+### Choose one memory strategy
+
+There are four common ways to carry state into the next turn:
+
+| Strategy | Where state lives | Best for | What you pass on the next turn |
+| --- | --- | --- | --- |
+| `result.history` | Your app memory | Small chat loops, full manual control, any provider | `result.history` |
+| `session` | Your storage + the SDK | Persistent chat state, resumable runs, custom stores | The same `session` instance (or a store-backed one) |
+| `conversationId` | OpenAI Conversations API | Shared server-side state across workers/services | The same `conversationId` plus only the new user turn |
+| `previousResponseId` | OpenAI Responses API only | The simplest server-managed continuation without creating a conversation | `result.lastResponseId` plus only the new user turn |
+
+`result.history` and `session` are client-managed. `conversationId` and `previousResponseId` are OpenAI-managed and only apply when you are using the OpenAI Responses API. In most applications, pick one persistence strategy per conversation. Mixing client-managed history with server-managed state can duplicate context unless you are deliberately reconciling both layers.
+
+Sandbox agents add another state layer: the live sandbox workspace. Use the regular SDK `session`, `conversationId`, or `previousResponseId` for conversation history, and use `sandbox.session`, `sandbox.sessionState`, `RunState`, or snapshots for sandbox filesystem state. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts) for the workspace lifecycle.
+
+### Conversations / chat threads
+
+Each call to `runner.run()` (or `run()` utility) represents one **turn** in your application-level conversation. You choose how much of the `RunResult` you show the end‑user – sometimes only `finalOutput`, other times every generated item.
+
+<Code
+  lang="typescript"
+  code={chatLoopExample}
+  title="Example of carrying over the conversation history"
+/>
+
+See [the chat example](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) for an interactive version.
+
+#### Server-managed conversations
+
+You can let the OpenAI Responses API persist conversation history for you instead of sending your entire local conversation history on every turn. This is useful when you are coordinating long conversations or multiple services. With either server-managed approach below, pass only the new turn's input on each request. The API reuses prior state for you. See the [Conversation state guide](https://developers.openai.com/api/docs/guides/conversation-state) for details.
+
+OpenAI exposes two ways to reuse server-side state:
+
+##### 1. `conversationId` for an entire conversation
+
+You can create a conversation once using [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) and then reuse its ID for every turn. The SDK automatically includes only the newly generated items.
+
+<Code
+  lang="typescript"
+  code={conversationIdExample}
+  title="Reusing a server conversation"
+/>
+
+##### 2. `previousResponseId` to continue from the last turn
+
+If you want to start only with Responses API anyway, you can chain each request using the ID returned from the previous response. This keeps the context alive across turns without creating a full conversation resource.
+
+<Code
+  lang="typescript"
+  code={previousResponseIdExample}
+  title="Chaining with previousResponseId"
+/>
+
+`conversationId` and `previousResponseId` are mutually exclusive. Use `conversationId` when you want a named conversation resource you can share across systems, and `previousResponseId` when you just want the cheapest SDK-level continuation primitive from one response to the next.
+
+## Hooks and customization
+
+### Call model input filter
+
+Use `callModelInputFilter` to edit the model input _right before_ the model is called. This hook receives the current agent, context, and the combined input items (including session history when present). Return the updated `input` array and optional `instructions` to redact sensitive data, drop old messages, or inject additional system guidance.
+
+Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in the `Runner` config (`callModelInputFilter` in `RunConfig`).
+
+The return value must be a `ModelInputData` object: `{ input: AgentInputItem[], instructions? }`. The `input` field is required and must be an array. Returning any other shape throws a `UserError`.
+
+The SDK clones the prepared turn input before invoking the filter. If you are also using a `session`, the filtered clones are what get persisted, so redaction or truncation applied here is reflected in stored session history as well.
+
+If a filter relies on object identity to memoize work across repeated model calls, set `preserveInputIdentity = true` on the filter. The SDK then preserves each SDK-prepared item's identity while that item remains in the prepared input, although the array passed to each filter invocation is new. This option does not preserve the identity of caller-owned objects originally passed to `run()`.
+
+<Code
+  lang="typescript"
+  code={modelInputIdentityExample}
+  title="Preserve prepared input item identity"
+/>
+
+This mode is opt-in because the SDK does not freeze the prepared items or their nested values. The filter and every helper that the filter calls must treat the items as immutable and return replacement values instead of mutating them. The model request and session input remain detached copies after the filter returns.
+
+With `conversationId` or `previousResponseId`, the hook runs on the prepared payload for the next Responses API call. Prior server-managed context is recovered by the API, so the filtered array for that call may already represent only the new turn delta rather than a full replay of earlier history. If you need to change how stored history and the current turn are merged before this final filter step, use `sessionInputCallback`.
+
+### Tool error formatter
+
+Use `toolErrorFormatter` to customize tool error messages that are sent back to the model. This lets you return domain-specific wording (for example, compliance guidance) instead of the SDK default message.
+
+The formatter can be set per-run (`runner.run(..., { toolErrorFormatter })`) or globally in `RunConfig` (`toolErrorFormatter` in `new Runner(...)`).
+
+This formatter is the global fallback for approval rejections. If you reject a specific interruption with `result.state.reject(interruption, { message: '...' })`, that per-call `message` takes precedence over `toolErrorFormatter`. If neither is provided, the SDK falls back to the default rejection text: `Tool execution was not approved.`
+
+The formatter also runs when `toolNotFoundBehavior: 'return_error_to_model'` converts an unresolved function tool call into model-visible tool output. In that case the default message is `Tool '<name>' not found.`
+
+The formatter receives:
+
+- `kind` (`'approval_rejected'` or `'tool_not_found'`)
+- `toolType` (`'function'`, `'computer'`, `'shell'`, or `'apply_patch'`)
+- `toolName`
+- `callId`
+- `defaultMessage` (the SDK fallback message for the current error kind)
+- `runContext`
+
+Return a string to override the message, or return `undefined` to keep the SDK default. If the formatter throws (or returns a non-string value), the SDK logs a warning and falls back to the default message for the current error kind.
+
+### Reasoning item ID policy
+
+Use `reasoningItemIdPolicy` to control whether reasoning items keep their `id` fields when the SDK converts previously generated run items back into `AgentInputItem[]` for later model input.
+
+This affects places where the SDK replays generated model items as input, such as:
+
+- follow-up model calls inside the same run (for example, after tool execution),
+- subsequent turns that reuse generated items as input/history,
+- resumed runs from a saved `RunState`,
+- derived result views like `result.history` / `result.output` (which are model-input-shaped arrays).
+- `'preserve'` (default) keeps reasoning-item IDs.
+- `'omit'` strips the `id` field from reasoning items before they are sent back as input.
+- Non-reasoning items are unaffected.
+
+What this does **not** change:
+
+- raw model responses (`result.rawResponses`),
+- run items (`result.newItems`),
+- the model's current-turn output as returned by the provider.
+
+In other words, the policy applies when the SDK builds the **next input** from prior generated items.
+
+You can set the policy per run (`runner.run(..., { reasoningItemIdPolicy: 'omit' })`) or as the runner default (`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). When resuming from a saved `RunState`, the previously resolved policy is reused unless you override it.
+
+#### Interaction with `callModelInputFilter`
+
+`reasoningItemIdPolicy` is applied before `callModelInputFilter`. If you need custom behavior, `callModelInputFilter` can still inspect the prepared input and re-introduce or remove reasoning IDs manually before the model call.
+
+#### When to use `'omit'`
+
+Use `'omit'` when you want replayed reasoning items to be normalized without IDs (for example, to keep forwarded/replayed model inputs simpler or to match integration requirements in your app pipeline).
+
+It is also a useful troubleshooting option if your backend/provider rejects replayed reasoning items with request validation errors (for example, HTTP `400` errors related to reasoning item IDs in follow-up inputs). In those cases, stripping replayed reasoning IDs with `'omit'` can avoid sending IDs that the backend treats as invalid for a new request.
+
+Keep `'preserve'` if you want the SDK to carry reasoning-item IDs through replayed inputs and your integration accepts them.
+
+## Errors and recovery
+
+### Error handlers
+
+Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. The supported keys are `maxTurns`, `modelRefusal`, and `invalidFinalOutput`.
+
+- `errorHandlers.maxTurns` handles only max-turn errors.
+- `errorHandlers.modelRefusal` handles model refusals surfaced as [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror).
+- `errorHandlers.invalidFinalOutput` handles [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) instances raised when a structured final output is missing or fails output schema validation. The handler returns a validated fallback without retrying the model or replaying tool side effects.
+- `errorHandlers.default` is used as a fallback for supported kinds.
+- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`. The returned `finalOutput` must match the current agent's `outputType`. For structured outputs, the SDK validates the fallback before completing the run. Returning `undefined` keeps the default behavior for that error.
+
+### Exceptions
+
+The SDK throws a small set of errors you can catch:
+
+- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns` reached.
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – model produced invalid output (e.g. malformed JSON, unknown tool).
+- [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror) – model refused to produce the requested output.
+- [`ModelTimeoutError`](/openai-agents-js/openai/agents-core/classes/modeltimeouterror) – a timed-out model request attempt remained the final failure after retry processing.
+- [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – guardrail violations.
+- [`ToolInputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/toolinputguardrailtripwiretriggered) / [`ToolOutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/tooloutputguardrailtripwiretriggered) – tool guardrail violations.
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – guardrails failed to complete.
+- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – a function tool exceeded `timeoutMs` and used `timeoutBehavior: 'raise_exception'`.
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – function tool execution failed for non-timeout errors.
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – any error thrown based on configuration or user input.
+
+All extend the base `AgentsError` class, which could provide the `state` property to access the current run state.
+
+Here is an example code that handles `GuardrailExecutionError`. Because input guardrails only run on the first user input, the example restarts the run with the original input and context. It also shows reusing the saved state to retry output guardrails without calling the model again:
+
+<Code
+  lang="typescript"
+  code={runningAgentsExceptionExample}
+  title="Guardrail execution error"
+/>
+
+Input vs. output retries:
+
+- Input guardrails run only on the very first user input of a run, so you must start a fresh run with the same input/context to retry them—passing a saved `state` will not re-trigger input guardrails.
+- Output guardrails run after the model response, so you can reuse the saved `state` from a `GuardrailExecutionError` to rerun output guardrails without another model call.
+
+When you run the above example, you will see the following output:
+
+```
+Guardrail execution failed (input): Error: Input guardrail failed to complete: Error: Something is wrong!
+Math homework input guardrail tripped on retry
+Guardrail execution failed (output): Error: Output guardrail failed to complete: Error: Output guardrail crashed.
+Output guardrail tripped after retry with saved state
+```
+
+---
+
+## Related guides
+
+- [Agents](/openai-agents-js/guides/agents) for defining the agent before you run it.
+- [Results](/openai-agents-js/guides/results) for `finalOutput`, run items, interruptions, and resume state.
+- [Sessions](/openai-agents-js/guides/sessions) for persistent SDK-managed memory.
+- [Tools](/openai-agents-js/guides/tools) for the capabilities used during the run loop.
+- [Models](/openai-agents-js/guides/models) for provider configuration and Responses transport.
+- Add [guardrails](/openai-agents-js/guides/guardrails) or [tracing](/openai-agents-js/guides/tracing) for production readiness.

@@ -1,0 +1,58 @@
+[project]
+name = "openhands-agent-server"
+version = "1.54.0"
+description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
+
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite>=0.22.1",
+  "alembic>=1.13",
+  "docker>=7.1,<8",
+  "fastapi>=0.104",
+  "openhands-sdk",
+  "openhands-tools",
+  "openai>=2.33.0,<3",
+  "pydantic>=2.13.5",
+  "sqlalchemy>=2",
+  "uvicorn>=0.54.0",
+  "websockets>=12",
+  "wsproto>=1.2.0",
+]
+
+[project.optional-dependencies]
+# Product-analytics exporter. Optional on purpose: the core server and every
+# library/headless consumer must be able to run without a vendor analytics SDK
+# on the import path. Constrained to the major already resolved in uv.lock so
+# installing the extra cannot force a resolver conflict.
+posthog = ["posthog>=7.60.0,<8"]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
+
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+include = ["openhands.agent_server*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
+# Include Docker-related files and VSCode extensions
+"openhands.agent_server" = [
+  "docker/Dockerfile",
+  "docker/wallpaper.svg",
+  "vscode_extensions/**/*.json",
+  "vscode_extensions/**/*.js",
+]
+
+[project.scripts]
+agent-server = "openhands.agent_server.__main__:main"

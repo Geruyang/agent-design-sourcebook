@@ -1,0 +1,13 @@
+{
+  "name": "deno",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "scripts": {
+    "start": "deno --allow-net --allow-env main.ts"
+  },
+  "dependencies": {
+    "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest",
+    "zod": "^4"
+  }
+}

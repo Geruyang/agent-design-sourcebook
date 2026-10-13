@@ -1,0 +1,680 @@
+"""Tests for Laminar observability configuration."""
+
+import asyncio
+import contextvars
+import inspect
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from openhands.sdk.agent.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_cache():
+    """Reset the module-level _observability_enabled flag between tests.
+
+    The flag is sticky-True by design (see laminar.py docstring), so it
+    leaks across tests. This fixture isolates each test from prior state.
+    """
+    from openhands.sdk.observability import laminar
+
+    laminar._observability_enabled = False
+    yield
+    laminar._observability_enabled = False
+
+
+def test_lmnr_base_url_passed_to_laminar():
+    """Test that LMNR_BASE_URL is correctly passed to Laminar.initialize."""
+    import os
+
+    # Save original values
+    original_base_url = os.environ.get("LMNR_BASE_URL")
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+        os.environ["LMNR_BASE_URL"] = "https://custom.lmnr.ai"
+
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
+                    mock_laminar.is_initialized.return_value = False
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+
+                    # Check that Laminar.initialize was called with base_url
+                    call_kwargs = mock_laminar.initialize.call_args.kwargs
+                    assert call_kwargs.get("base_url") == "https://custom.lmnr.ai"
+    finally:
+        # Restore original values
+        if original_base_url is not None:
+            os.environ["LMNR_BASE_URL"] = original_base_url
+        elif "LMNR_BASE_URL" in os.environ:
+            del os.environ["LMNR_BASE_URL"]
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+
+
+def test_lmnr_base_url_not_passed_when_empty():
+    """Test that base_url is None when LMNR_BASE_URL is not set."""
+    # Save original values
+    original_base_url = os.environ.get("LMNR_BASE_URL")
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+        if "LMNR_BASE_URL" in os.environ:
+            del os.environ["LMNR_BASE_URL"]
+
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
+                    mock_laminar.is_initialized.return_value = False
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+
+                    # Check that Laminar.initialize was called with base_url=None
+                    call_kwargs = mock_laminar.initialize.call_args.kwargs
+                    assert call_kwargs.get("base_url") is None
+    finally:
+        # Restore original values
+        if original_base_url is not None:
+            os.environ["LMNR_BASE_URL"] = original_base_url
+        elif "LMNR_BASE_URL" in os.environ:
+            del os.environ["LMNR_BASE_URL"]
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+
+
+def test_maybe_init_laminar_skips_when_already_initialized():
+    """Laminar.initialize must not be called again when already initialized.
+
+    Re-calling Laminar.initialize after a previous init emits
+    'Laminar is already initialized. Skipping initialization.' at INFO level
+    from lmnr. Since ``maybe_init_laminar`` runs at import time in agent.py
+    and acp_agent.py, that line shows up on every module load after the
+    first one. Guard against the re-init to keep logs clean.
+    """
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
+                    mock_laminar.is_initialized.return_value = True
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+                    maybe_init_laminar()
+
+                    mock_laminar.initialize.assert_not_called()
+    finally:
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+
+
+def test_observe_preserves_async_signature():
+    """@observe must keep an async function async so introspection works.
+
+    Regression test for a bug where the lazy wrapper was unconditionally
+    sync, causing `inspect.iscoroutinefunction` to return False for
+    decorated async methods. That broke `MCPToolExecutor.__call__`, which
+    relies on `iscoroutinefunction` in `run_async` to dispatch the call.
+    """
+    from openhands.sdk.observability.laminar import observe
+
+    @observe(name="async_fn")
+    async def async_fn(x: int) -> int:
+        return x + 1
+
+    @observe(name="sync_fn")
+    def sync_fn(x: int) -> int:
+        return x + 1
+
+    assert inspect.iscoroutinefunction(async_fn)
+    assert not inspect.iscoroutinefunction(sync_fn)
+
+
+@pytest.mark.parametrize(
+    ("force_http_value", "expected_force_http"),
+    [
+        ("true", True),
+        ("1", True),
+        ("YeS", True),
+        ("ON", True),
+        ("false", False),
+        ("0", False),
+        (None, False),
+    ],
+)
+def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http):
+    """Test that LMNR_FORCE_HTTP is correctly passed to Laminar.initialize."""
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+    original_force_http = os.environ.get("LMNR_FORCE_HTTP")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+        if force_http_value is not None:
+            os.environ["LMNR_FORCE_HTTP"] = force_http_value
+        elif "LMNR_FORCE_HTTP" in os.environ:
+            del os.environ["LMNR_FORCE_HTTP"]
+
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
+                    mock_laminar.is_initialized.return_value = False
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+
+                    call_kwargs = mock_laminar.initialize.call_args.kwargs
+                    assert call_kwargs.get("force_http") == expected_force_http
+    finally:
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+        if original_force_http is not None:
+            os.environ["LMNR_FORCE_HTTP"] = original_force_http
+        elif "LMNR_FORCE_HTTP" in os.environ:
+            del os.environ["LMNR_FORCE_HTTP"]
+
+
+@pytest.mark.parametrize("is_laminar_backend", [True, False])
+@pytest.mark.parametrize(
+    ("instruments_env", "expected", "invalid"),
+    [
+        ("litellm,mcp", {"litellm", "mcp"}, None),
+        ("litellm,,unsupported,", {"litellm"}, "unsupported"),
+    ],
+)
+def test_lmnr_instruments_passed_to_laminar(
+    is_laminar_backend, instruments_env, expected, invalid, caplog
+):
+    """LMNR_INSTRUMENTS limits Laminar to the selected integrations."""
+    from lmnr import Instruments
+
+    with patch.dict(
+        os.environ,
+        {
+            "LMNR_PROJECT_API_KEY": "test-key",
+            "LMNR_INSTRUMENTS": instruments_env,
+        },
+    ):
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.observability.laminar._is_otel_backend_laminar",
+                return_value=is_laminar_backend,
+            ),
+        ):
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
+
+            maybe_init_laminar()
+
+    assert mock_laminar.initialize.call_args.kwargs["instruments"] == {
+        Instruments(value) for value in expected
+    }
+    if invalid:
+        assert f"Ignoring invalid LMNR_INSTRUMENTS value '{invalid}'" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Cross-context root-span propagation
+# ---------------------------------------------------------------------------
+#
+# Regression tests for the orphan-trace bug where ``@observe``-decorated
+# methods on a Conversation, when called from a different asyncio task or
+# thread than the one that constructed the Conversation, started a fresh
+# trace instead of attaching to the conversation's root span. The fix moves
+# from ``Laminar.start_active_span`` (which relies on contextvars
+# propagation) to ``Laminar.start_span`` + ``Laminar.use_span`` re-attached
+# at every entry point.
+
+
+class _DummyOwner:
+    """Mimics a ``BaseConversation`` for the purposes of the observe wrapper."""
+
+    def __init__(self, root_span):
+        from openhands.sdk.observability.laminar import RootSpan
+
+        # Build a RootSpan-like object without invoking real lmnr.
+        self._observability_root_span = RootSpan.__new__(RootSpan)
+        self._observability_root_span.span = root_span
+        self._observability_root_span._ended = False
+
+
+def test_observe_calls_use_span_with_owner_root_span_on_sync():
+    """Sync ``@observe``'d methods must re-attach the owner's root span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar  # noqa: F401  ensure module is importable
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            # Force-enable observability for the duration of this call.
+            lam._observability_enabled = True
+            # Stub the lmnr-level ``observe`` so the wrapper just calls through.
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
+
+                @lam.observe(name="conversation.send_message")
+                def send_message(self, msg: str) -> str:
+                    return f"got {msg}"
+
+                owner = _DummyOwner(sentinel_span)
+                assert send_message(owner, "hi") == "got hi"
+
+        assert used_with == [sentinel_span], (
+            f"expected use_span to be called once with owner's root span, "
+            f"got {used_with!r}"
+        )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_observe_with_owner_root_span_preserves_wrapped_exceptions():
+    """Exceptions from wrapped functions must not be treated as use_span errors."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            lam._observability_enabled = True
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
+
+                @lam.observe(name="conversation.run")
+                def run(self) -> None:
+                    raise ValueError("boom")
+
+                owner = _DummyOwner(sentinel_span)
+                with pytest.raises(ValueError, match="boom"):
+                    run(owner)
+
+        assert used_with == [sentinel_span]
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_observe_calls_use_span_with_owner_root_span_on_async():
+    """Async ``@observe``'d methods must re-attach the owner's root span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            lam._observability_enabled = True
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
+
+                @lam.observe(name="conversation.run")
+                async def run(self) -> str:
+                    return "done"
+
+                owner = _DummyOwner(sentinel_span)
+                # Run from a fresh, empty contextvars Context to mimic a
+                # task created outside the conversation's async ancestry.
+
+                async def _call_in_isolated_context():
+                    new_ctx = contextvars.Context()
+                    return await asyncio.tasks.Task(run(owner), context=new_ctx)
+
+                result = asyncio.run(_call_in_isolated_context())
+                assert result == "done"
+
+        assert used_with == [sentinel_span], (
+            f"expected use_span to be called once even from an isolated "
+            f"context, got {used_with!r}"
+        )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_sets_user_id():
+    """RootSpan must call Laminar.set_trace_user_id when user_id is provided."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            root = lam.RootSpan("conversation", session_id="sess-1", user_id="user-42")
+            assert root.span is mock_span
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_called_once_with("user-42")
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_skips_user_id_when_none():
+    """RootSpan must not call set_trace_user_id when user_id is None."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            lam.RootSpan("conversation", session_id="sess-1")
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_not_called()
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_sets_attributes():
+    """RootSpan must attach provided attributes to the underlying span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        with patch.object(Laminar, "start_span", return_value=mock_span):
+            lam._observability_enabled = True
+            root = lam.RootSpan(
+                "conversation",
+                attributes={"conversation.tags.automationid": "auto-1"},
+            )
+            assert root.span is mock_span
+            mock_span.set_attribute.assert_called_once_with(
+                "conversation.tags.automationid", "auto-1"
+            )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_two_concurrent_conversations_do_not_collide():
+    """Each conversation must own its own root span (no global stack).
+
+    Before the fix, a process-wide ``SpanManager`` LIFO stack meant a second
+    conversation constructed while the first was alive would corrupt the
+    first's root span on close.
+    """
+    from openhands.sdk.conversation.base import BaseConversation
+
+    # Bypass ABC instantiation by calling ``BaseConversation.__init__`` on a
+    # bare ``object``-like instance. We only exercise the span-management
+    # methods, which are concrete on the base class.
+    class _BareConvo:
+        pass
+
+    c1 = _BareConvo()
+    c2 = _BareConvo()
+    BaseConversation.__init__(c1)  # type: ignore[arg-type]
+    BaseConversation.__init__(c2)  # type: ignore[arg-type]
+
+    # Patch the symbol in the module where it's looked up at call time, and
+    # force observability on so the shortcut early-return doesn't fire.
+    from openhands.sdk.conversation import base as base_mod
+
+    with (
+        patch.object(base_mod, "should_enable_observability", return_value=True),
+        patch.object(
+            base_mod,
+            "start_root_span",
+            side_effect=lambda *a, **k: MagicMock(spec_set=["end"]),
+        ) as mock_start,
+    ):
+        BaseConversation._start_observability_span(c1, "session-1")  # type: ignore[arg-type]
+        BaseConversation._start_observability_span(c2, "session-2")  # type: ignore[arg-type]
+
+        # Each conversation has its own root span – no shared stack.
+        assert c1._observability_root_span is not c2._observability_root_span  # type: ignore[attr-defined]
+
+        # Closing c2 must NOT end c1's root span.
+        c2_root = c2._observability_root_span  # type: ignore[attr-defined]
+        c1_root = c1._observability_root_span  # type: ignore[attr-defined]
+        BaseConversation._end_observability_span(c2)  # type: ignore[arg-type]
+        c2_root.end.assert_called_once()
+        c1_root.end.assert_not_called()
+
+        # And vice versa.
+        BaseConversation._end_observability_span(c1)  # type: ignore[arg-type]
+        c1_root.end.assert_called_once()
+
+        assert mock_start.call_count == 2
+
+
+# Tiny shim because we want a generator-based context manager helper that
+# also works as a side_effect for patch().
+def contextlib_compat():
+    import contextlib
+
+    return contextlib.contextmanager
+
+
+def test_root_span_sets_trace_metadata_and_tags():
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+
+        RootSpan(
+            "conversation",
+            session_id="session-1",
+            metadata={"repo_name": "OpenHands/software-agent-sdk"},
+            tags=["repo:OpenHands/software-agent-sdk"],
+        )
+
+        mock_laminar.start_span.assert_called_once_with("conversation")
+        mock_laminar.use_span.assert_called_once_with(
+            fake_span,
+            record_exception=False,
+            set_status_on_exception=False,
+        )
+        mock_laminar.set_trace_session_id.assert_called_once_with("session-1")
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"repo_name": "OpenHands/software-agent-sdk"}
+        )
+        mock_laminar.set_span_tags.assert_called_once_with(
+            ["repo:OpenHands/software-agent-sdk"]
+        )
+
+
+def test_detached_delegate_context_severs_ambient_span_and_links_parent():
+    """A span created inside the context manager must not join whatever span
+    is currently active — and the yielded link must identify the severed
+    parent (trace_id, span_id, tool_call_id), so the two traces stay
+    correlatable (software-agent-sdk#4365).
+
+    Only ``Laminar.get_laminar_span_context`` is mocked (not the whole
+    ``Laminar`` class): ``detached_delegate_context`` must sever the ambient
+    span via lmnr's OWN isolated context tracking, not just the standard
+    ``opentelemetry.context`` one (they are separate — see the docstring on
+    ``detached_delegate_context``), so this needs the real
+    ``Laminar.use_span`` to run. Laminar is never initialized here, so it
+    falls back to plain ``opentelemetry.trace.use_span`` internally, which is
+    enough to prove severance against a raw OTel tracer.
+    """
+    from types import SimpleNamespace
+
+    from lmnr import Laminar
+    from opentelemetry import trace as trace_api
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from openhands.sdk.observability import laminar as lam
+
+    parent_ctx = SimpleNamespace(
+        trace_id="11111111-1111-1111-1111-111111111111",
+        span_id="22222222-2222-2222-2222-222222222222",
+        metadata={"tool_call_id": "call_abc123"},
+    )
+
+    tracer = TracerProvider().get_tracer("test")
+    outer_span = tracer.start_span("outer")
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=parent_ctx):
+        lam._observability_enabled = True
+        with trace_api.use_span(outer_span, end_on_exit=False):
+            with lam.detached_delegate_context() as link:
+                inner_span = tracer.start_span("inner")
+
+        assert (
+            inner_span.get_span_context().trace_id
+            != outer_span.get_span_context().trace_id
+        )
+        assert link == {
+            "delegate.parent_trace_id": str(parent_ctx.trace_id),
+            "delegate.parent_span_id": str(parent_ctx.span_id),
+            "tool_call_id": "call_abc123",
+        }
+
+
+def test_detached_delegate_context_restores_ambient_span_after_exit():
+    """Code after the ``with`` block must see the original span again."""
+    from lmnr import Laminar
+    from opentelemetry import trace as trace_api
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from openhands.sdk.observability import laminar as lam
+
+    tracer = TracerProvider().get_tracer("test")
+    outer_span = tracer.start_span("outer")
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=None):
+        lam._observability_enabled = True
+
+        with trace_api.use_span(outer_span, end_on_exit=False):
+            with lam.detached_delegate_context():
+                pass
+            assert trace_api.get_current_span() is outer_span
+
+
+def test_detached_delegate_context_without_ambient_parent():
+    """No active span to sever must not crash and must yield an empty link."""
+    from lmnr import Laminar
+
+    from openhands.sdk.observability import laminar as lam
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=None):
+        lam._observability_enabled = True
+
+        with lam.detached_delegate_context() as link:
+            assert link == {}
+
+
+def test_detached_delegate_context_noop_when_observability_disabled():
+    """When observability is off, the context manager must be a pure no-op."""
+    from openhands.sdk.observability import laminar as lam
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.is_initialized.return_value = False
+        lam._observability_enabled = False
+
+        with lam.detached_delegate_context() as link:
+            assert link == {}
+
+        mock_laminar.get_laminar_span_context.assert_not_called()
+
+
+def test_deprecated_shims_are_removed():
+    """The legacy global-stack API (deprecated 1.22.0) was removed in 1.27.0."""
+    from openhands.sdk.observability import laminar as lam
+
+    assert not hasattr(lam, "start_active_span")
+    assert not hasattr(lam, "end_active_span")
+    assert not hasattr(lam, "SpanManager")
+
+
+def test_async_agent_and_conversation_paths_are_observed():
+    """The async twins must be ``@observe``-wrapped like their sync versions.
+
+    Regression test for the async-parity gap (issue #3449): ``Agent.astep`` and
+    ``LocalConversation.arun`` lost the tracing decorators their sync twins
+    (``Agent.step`` / ``LocalConversation.run``) carry. The ``observe`` wrapper
+    renames the underlying code object to ``async_wrapper``/``sync_wrapper``, so
+    its presence is detectable via ``__code__.co_name``.
+    """
+    assert Agent.step.__code__.co_name == "sync_wrapper"
+    assert Agent.astep.__code__.co_name == "async_wrapper"
+    assert LocalConversation.run.__code__.co_name == "sync_wrapper"
+    assert LocalConversation.arun.__code__.co_name == "async_wrapper"
+
+
+def test_should_enable_observability_returns_true_when_env_set():
+    """should_enable_observability returns True when an observability env var is set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {"LMNR_PROJECT_API_KEY": "test_key"}, clear=True):
+        assert should_enable_observability() is True
+
+
+def test_should_enable_observability_returns_false_when_no_env():
+    """should_enable_observability returns False when no relevant env vars are set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("lmnr.Laminar") as mock_laminar:
+            mock_laminar.is_initialized.return_value = False
+            assert should_enable_observability() is False

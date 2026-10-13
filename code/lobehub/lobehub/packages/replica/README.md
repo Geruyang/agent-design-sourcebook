@@ -1,0 +1,83 @@
+# @lobechat/replica
+
+Every list and detail the UI shows is a **replica**: a local copy of server state that paints on the first frame, then converges on the server in the background.
+
+- **First frame from the replica.** The last confirmed value is read from persistent storage before the network answers, so a reload or a revisit never flashes a skeleton.
+- **Server confirms quietly.** The head page from the network replaces the replica. Loaded pages, client-only rows and pending writes survive the replace.
+- **Writes land immediately.** Optimistic overlays apply right away. A failed write rolls back to the confirmed base plus any other writes still in flight. Optimistic values never reach storage.
+- **One entity, every copy.** `linkReplicaEntity` sends a patch or delete to every replica that holds the entity: the list row, the management page and the detail cache.
+- **Identity-safe.** Memory and storage are partitioned by scope (user + workspace). On a scope switch the view is cleared before paint, and late results from the previous scope are dropped.
+
+## Layers
+
+| Entry                       | What it owns                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@lobechat/replica`         | Core engine, framework-agnostic: resource definition, pure reducer, paging (offset / cursor, forward / backward), entity links, serialized persistence.                                     |
+| `@lobechat/replica/zustand` | Zustand adapter: binds a resource to one location in a domain store (`recordLens`). Adds a `useSync` hook that schedules fetches through a `ReplicaSyncDriver` (`createSWRDriver` for SWR). |
+
+The host store stays the only UI source of truth. Components read the store through their usual selectors. `useSync` only reports fetch flags (`isHydrated`, `isValidating`, `error`, `revalidate`) and never returns data.
+
+## Usage
+
+```ts
+import { definePagedReplica } from '@lobechat/replica';
+import { createReplicaSlice, createSWRDriver, recordLens } from '@lobechat/replica/zustand';
+
+const topicList = definePagedReplica<Params, Topic, number, TopicPage>({
+  key: ({ agentId }) => `agent_${agentId}`,
+  name: 'topicList',
+  paging: { direction: 'forward', getId: (t) => t.id, mode: 'offset', persist: { pages: 1 } },
+  query: ({ sortBy }) => ({ sortBy }), // query identity beyond the key
+  scope, // ReplicaScope: { get, use, canPersist }
+  storage: (namespace) => new MyIndexedDBStorage(namespace), // ReplicaStorage
+  version: 1,
+});
+
+const slice = createReplicaSlice(topicList, {
+  driver: createSWRDriver({ mutate, useSWR }),
+  fetcher: fetchTopicPage, // (params, cursor) => { items, total?, nextCursor? }
+  get,
+  set,
+  stateKey: 'topicListReplica', // bookkeeping slot: createReplicaState()
+  view: recordLens('topicDataMap'), // where the rendered value lives
+});
+
+slice.useSync(params); // in a component: hydrate, then sync
+slice.loadMore(key);
+slice.optimistic(key, apply, serverCall);
+```
+
+A persisted read is asynchronous, so a list hydrated only by `useSync` paints its loading state for a few frames on a cold start. When that list must paint without a skeleton, seed it from the route loader before the route commits: `slice.ensureScope(scope)` + `slice.hydrate(params, scope)`, bounded by `settleWithin(…, PRE_PAINT_HYDRATE_TIMEOUT)` from `@/libs/replica/prePaint`. A later `useSync` hydrate is a no-op once the slot is filled.
+
+Inside LobeHub, use `@/libs/replica`. It presets the cache scope, IndexedDB / localStorage storage and the app's SWR driver.
+
+## Invalidation
+
+Persisted rows are kept per entry key **and** per query (`key?<query>`), so a resource can hold several rows for one key. Never delete through a plain `set` or by clearing SWR keys: the persisted rows survive and a reload paints the deleted data. Use the primitive that matches what is gone:
+
+| What is gone                               | Call                                                           | What it does                                                                                                                                                                                            |
+| ------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One entity (a deleted topic, file, memory) | `linkReplicaEntity(...).remove(id)` / `slice.removeEntity(id)` | Drops it from every loaded entry and from persisted rows of unloaded entries. A value hydrated later — even by a read already in flight — comes back without it until a server value holds it again.    |
+| One entry key, under every filter / sort   | `slice.remove(key)`                                            | Drops the entry and every persisted query variant of the key. No variant hydrates again until a server `replace` for the key supersedes the removal.                                                    |
+| The whole resource ("delete all", a reset) | `slice.clear()` / `linkReplicaEntity(...).clear()`             | Empties memory in one commit, deletes every persisted row and the index of the active scope, and drops hydrates and `useSync` responses that started before it. Resolves `true` once storage is purged. |
+
+`slice.updateEntity(id, (item) => undefined)` also drops the entity from loaded values and persisted rows, but it is a plain patch: only `removeEntity` (which `linkReplicaEntity.remove` and an optimistic `'remove'` call) guards hydrates already in flight.
+
+A `ReplicaStorage` must reject from `remove` when a delete did not land, and should implement `getStrict` (a read that rejects on I/O failure) so an unreadable index fails a purge instead of passing for an empty one. `get` and `set` stay best-effort. The engine then keeps the row indexed and the removal unpurged, so the next `remove(key)` / `clear()` retries it.
+
+Prefer the narrowest call: an entity delete keeps the rest of every list; `remove(key)` is for a key whose whole value is gone or denied (NOT_FOUND / FORBIDDEN); `clear()` is for flows that invalidate everything the user has of that resource. `clear()` does not refetch: mounted views show their loading state until the next sync, so call `slice.revalidate()` after it when the server still has data to show.
+
+## Transcripts and other irregular pages
+
+Message-like resources page backward by cursor, with windows whose length changes on every refresh. The paging config covers them:
+
+| Option / API                                                       | Use                                                                                                                                                          |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `paging.isCursorable(item)`                                        | Skip synthetic rows (group / summary nodes) when pinning the join anchor or deriving a cursor. A head refresh replaces the head page's synthetic rows by id. |
+| `paging.deriveCursor(item)`                                        | Plain lists whose server reports no `nextCursor`: the next cursor comes from the oldest eligible row. Only for rows with a lossless position.                |
+| `paging.sort`                                                      | Stable: rows the comparator ties keep server order. Compare positions only.                                                                                  |
+| `persistKey(key)`                                                  | Entries that stay in memory (no hydrate, no persist), e.g. scoped buckets.                                                                                   |
+| `slice.update(key, fn, { persist: false })` + `slice.persist(key)` | Stream into memory, then persist the confirmed value once.                                                                                                   |
+| `splitPagedLens({ itemsField, metaField, derive })`                | Keep raw rows where readers expect them, paging bookkeeping beside them, and derived fields (a parsed display list) in the same commit.                      |
+
+`useSync(params, options)` forwards a sync schedule (`refreshInterval`, `dedupingInterval`, `revalidateIfStale`, `revalidateOnFocus`, …) to the driver, and runs `onSuccess` / `onError` side effects after a response is folded in.

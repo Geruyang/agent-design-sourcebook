@@ -1,0 +1,146 @@
+---
+title: "Scheduling"
+sidebarTitle: "Scheduling"
+description: "Run agents on cron schedules for recurring automations like daily summaries and code reviews."
+---
+<Warning>
+  This feature currently only applies to Cline SDK, CLI, and Kanban. This feature is not applicable on VSCode and JetBrains Extension for now.
+</Warning>
+
+The CLI supports running agents on cron schedules through the hub. Scheduled agents persist across process restarts and run independently of any terminal session.
+
+## Schedule Wizard
+
+Run `cline schedule` to open an interactive menu for creating and managing schedules, browsing execution history, and viewing performance statistics.
+
+```bash
+cline schedule
+```
+
+The wizard provides:
+
+| Action | Description |
+|--------|-------------|
+| Create new schedule | Set up a recurring task with cron timing and prompt |
+| List schedules | View all schedules with status and next run time |
+| Upcoming runs | Preview the next 10 scheduled executions |
+| Active executions | Show currently running tasks |
+| Trigger now | Immediately run a selected schedule |
+| Pause / Resume | Suspend or restart a schedule |
+| Execution history | View past runs with status, duration, tokens, and cost |
+| Statistics | Success rate, average duration, last failure |
+| Delete | Remove a schedule |
+
+## Creating Schedules with Flags
+
+```bash
+cline schedule create "PR summary" \
+  --cron "0 9 * * MON-FRI" \
+  --prompt "List all open PRs and their review status" \
+  --workspace /path/to/repo
+```
+
+`--cron`, `--prompt` and `--workspace` are required. Other options:
+
+| Option | Description |
+|--------|-------------|
+| `--provider <id>` and `--model <id>` | Provider and model for the runs. Without them, the schedule uses the provider and model you last used. |
+| `--mode <act\|plan\|yolo>` | Default `yolo`. `plan` runs have no tools for editing files, and Cline refuses shell commands that usually change files, such as `rm` and `git commit`. Other commands still run, and some of them, such as `python -c`, can write files. In every mode, a scheduled run approves its own tool calls, because nobody is there to approve them. |
+| `--timeout <seconds>` | Stop a run that takes longer than this |
+| `--max-parallel <n>` | How many runs of this schedule can run at once (default 1). Runs that come due while it is busy wait their turn. |
+| `--system-prompt <text>` | Replace the system prompt |
+| `--tags <list>` | Comma-separated tags. Filter with `cline schedule list --tags`. |
+| `--disabled` | Create the schedule paused |
+| `--json` | Print the new schedule as JSON |
+
+Run `cline schedule create --help` for the full list. The delivery options are under [Routing Results](#routing-results).
+
+## Managing Schedules
+
+```bash
+cline schedule list
+cline schedule get <schedule-id>
+cline schedule upcoming
+cline schedule active
+cline schedule trigger <schedule-id>
+cline schedule pause <schedule-id>
+cline schedule resume <schedule-id>
+cline schedule update <schedule-id> --cron "0 10 * * *"
+cline schedule history <schedule-id>
+cline schedule stats <schedule-id>
+cline schedule delete <schedule-id>
+```
+
+`cline schedule export <schedule-id> --to <file>` and `cline schedule import <file>` copy a schedule between machines.
+
+## Cron Expression Reference
+
+| Expression | Schedule |
+|-----------|----------|
+| `*/5 * * * *` | Every 5 minutes |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 * * * *` | Every hour |
+| `0 */6 * * *` | Every 6 hours |
+| `0 0 * * *` | Daily at midnight |
+| `0 9 * * *` | Daily at 9am |
+| `0 9 * * 1-5` | Every weekday at 9am |
+| `0 9 * * 1` | Every Monday at 9am |
+| `0 0 1 * *` | First of every month |
+
+Days and months can also be names: `0 9 * * MON-FRI` is the same as `0 9 * * 1-5`. Times are in the computer's local time zone.
+
+## Examples
+
+### Daily Standup Summary
+
+```bash
+cline schedule create "Standup prep" \
+  --cron "0 8 * * MON-FRI" \
+  --prompt "Summarize: (1) PRs merged yesterday, (2) PRs currently in review, (3) open issues assigned to team members." \
+  --workspace /path/to/repo
+```
+
+### Weekly Dependency Check
+
+```bash
+cline schedule create "Dependency check" \
+  --cron "0 10 * * MON" \
+  --prompt "Check for outdated npm dependencies. For any with security vulnerabilities, create a branch with the update and open a PR." \
+  --workspace /path/to/project
+```
+
+### Codebase Health Report
+
+```bash
+cline schedule create "Code health" \
+  --cron "0 6 * * MON" \
+  --prompt "Analyze the codebase for: (1) files with no test coverage, (2) TODO/FIXME comments older than 30 days, (3) functions longer than 100 lines." \
+  --workspace /path/to/project
+```
+
+## Routing Results
+
+A [connector](/cli/connectors) can post each run's final reply to a chat. The connector must be running when the run finishes, and the schedule must name the chat.
+
+The simplest way is to create the schedule from the chat itself. Send this to your bot:
+
+```text
+/schedule create "Morning briefing" --cron "0 8 * * *" --prompt "Summarize overnight activity in the repo"
+```
+
+The schedule runs in the connector's working directory and posts to that chat.
+
+To create the schedule from a terminal instead, send `/whereami` in the chat first. It replies with the chat's `deliveryAdapter` and `deliveryThread`. Pass them to `cline schedule create`:
+
+```bash
+cline schedule create "Morning briefing" \
+  --cron "0 8 * * *" \
+  --prompt "Summarize overnight activity in the repo" \
+  --workspace /path/to/repo \
+  --delivery-adapter telegram \
+  --delivery-thread <deliveryThread>
+```
+
+If more than one bot of the same kind is running, add `--delivery-bot <bot-username>` so that only that bot posts. [Supply-Chain Scan Alerts](/cli/samples/supply-chain-alerts) walks through a complete example.
+
+Scheduling requires the hub. It starts automatically when you create a schedule.

@@ -1,0 +1,609 @@
+<script lang="ts">
+	import { toast } from 'svelte-sonner';
+	import { getContext, onMount, tick } from 'svelte';
+
+	const i18n = getContext<any>('i18n');
+
+	import { goto } from '$app/navigation';
+	import VersionDiff from '$lib/components/workspace/common/VersionDiff.svelte';
+	import ToolHistory from './ToolHistory.svelte';
+	import { getToolHistoryDiff } from '$lib/apis/tools';
+	import { user } from '$lib/stores';
+	import { updateToolAccessGrants } from '$lib/apis/tools';
+
+	import { extractFrontmatter, formatSkillName, nameToId } from '$lib/utils';
+	import CodeEditor from '$lib/components/common/CodeEditor.svelte';
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import AccessButton from '$lib/components/common/AccessButton.svelte';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import AccessControlModal from '../common/AccessControlModal.svelte';
+	import LanguageModeSelect from '$lib/components/common/LanguageModeSelect.svelte';
+	import LocalizedField from '$lib/components/common/LocalizedField.svelte';
+	import PluginTranslations from '$lib/components/workspace/common/PluginTranslations.svelte';
+	import { pruneEmptyLocaleEntries } from '$lib/utils/localizedContent';
+	let locale = '';
+	$: warning = [
+		$i18n.t('Warning:'),
+		$i18n.t('Tools can execute arbitrary code.'),
+		$i18n.t('Only install tools from sources you trust.')
+	].join(' ');
+
+	let formElement: HTMLFormElement | null = null;
+	let loading = false;
+
+	let showConfirm = false;
+	let showAccessControlModal = false;
+
+	export let edit = false;
+	export let clone = false;
+
+	export let onSave: (value: any) => Promise<any> = async (_value) => false;
+
+	export let id = '';
+	export let version_id: string | null = null;
+	export let onProduction: (resource: any) => Promise<void> = async (_resource) => {};
+	let selected: any = null;
+	let selecting = false;
+	let promoting = false;
+	let historyControl: { requestPromotion: () => void };
+	let commitMessage = '';
+	let comparison: any = null;
+	let comparing = false;
+	let comparisonRequest = 0;
+	let comparisonSelection: string | null | undefined = null;
+	$: if (selected?.id !== comparisonSelection) {
+		comparisonSelection = selected?.id;
+		comparison = null;
+		comparing = false;
+		comparisonRequest++;
+	}
+	const compareToCurrent = async () => {
+		if (!selected || !version_id || comparing) return;
+		const request = ++comparisonRequest;
+		comparing = true;
+		try {
+			const result = await getToolHistoryDiff(localStorage.token, id, selected.id, version_id);
+			if (request === comparisonRequest) comparison = result;
+		} catch (error: any) {
+			if (request === comparisonRequest) toast.error(error?.detail || String(error));
+		} finally {
+			if (request === comparisonRequest) comparing = false;
+		}
+	};
+	const applyProduction = async (resource: any) => {
+		name = resource.name;
+		meta = structuredClone(resource.meta);
+		content = resource.content;
+		_content = content;
+		version_id = resource.version_id;
+		commitMessage = '';
+		comparison = null;
+		savedDraft = draftSnapshot(id, name, meta, content);
+		accessGrants = resource.access_grants ?? accessGrants;
+	};
+	const productionHandler = async (resource: any) => {
+		await applyProduction(resource);
+		try {
+			await onProduction(resource);
+		} catch (error: any) {
+			toast.error(String(error));
+		}
+	};
+	export let name = '';
+	/** @type {{description: string, i18n?: Record<string, Record<string, string>>, manifest?: {translations?: Record<string, Record<string, string>>}}} */
+	export let meta: {
+		description: string;
+		i18n?: Record<string, Record<string, string>>;
+		[key: string]: any;
+	} = {
+		description: ''
+	};
+	export let content = '';
+	export let accessGrants: any[] = [];
+
+	let _content = '';
+	/** @param {string} id @param {string} name @param {Record<string, any>} meta @param {string} content */
+	const draftSnapshot = (id: string, name: string, meta: Record<string, any>, content: string) =>
+		JSON.stringify({
+			id,
+			name,
+			meta: {
+				...meta,
+				manifest: undefined,
+				has_user_valves: undefined,
+				toggle: undefined,
+				i18n: pruneEmptyLocaleEntries(meta.i18n)
+			},
+			content
+		});
+	let savedDraft = draftSnapshot(id, name, meta, content);
+	$: draft = draftSnapshot(id, name, meta, _content);
+	$: changed = draft !== savedDraft;
+
+	$: _content = content;
+
+	$: if (name && !edit && !clone) {
+		id = nameToId(name);
+	}
+
+	let codeEditor: CodeEditor;
+	let boilerplate = `import os
+import requests
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+class Tools:
+    def __init__(self):
+        pass
+
+    # Add your custom tools using pure Python code here, make sure to add type hints and descriptions
+	
+    def get_user_name_and_email_and_id(self, __user__: dict = {}) -> str:
+        """
+        Get the user name, Email and ID from the user object.
+        """
+
+        # Do not include a descrption for __user__ as it should not be shown in the tool's specification
+        # The session user object will be passed as a parameter when the function is called
+
+        print(__user__)
+        result = ""
+
+        if "name" in __user__:
+            result += f"User: {__user__['name']}"
+        if "id" in __user__:
+            result += f" (ID: {__user__['id']})"
+        if "email" in __user__:
+            result += f" (Email: {__user__['email']})"
+
+        if result == "":
+            result = "User: Unknown"
+
+        return result
+
+    def get_current_time(self) -> str:
+        """
+        Get the current time in a more human-readable format.
+        """
+
+        now = datetime.now()
+        current_time = now.strftime("%I:%M:%S %p")  # Using 12-hour format with AM/PM
+        current_date = now.strftime(
+            "%A, %B %d, %Y"
+        )  # Full weekday, month name, day, and year
+
+        return f"Current Date and Time = {current_date}, {current_time}"
+
+    def calculator(
+        self,
+        equation: str = Field(
+            ..., description="The mathematical equation to calculate."
+        ),
+    ) -> str:
+        """
+        Calculate the result of an equation.
+        """
+
+        # Avoid using eval in production code
+        # https://nedbatchelder.com/blog/201206/eval_really_is_dangerous.html
+        try:
+            result = eval(equation)
+            return f"{equation} = {result}"
+        except Exception as e:
+            print(e)
+            return "Invalid equation"
+
+    def get_current_weather(
+        self,
+        city: str = Field(
+            "New York, NY", description="Get the current weather for a given city."
+        ),
+    ) -> str:
+        """
+        Get the current weather for a given city.
+        """
+
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        if not api_key:
+            return (
+                "API key is not set in the environment variable 'OPENWEATHER_API_KEY'."
+            )
+
+        base_url = "http://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "q": city,
+            "appid": api_key,
+            "units": "metric",  # Optional: Use 'imperial' for Fahrenheit
+        }
+
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx and 5xx)
+            data = response.json()
+
+            if data.get("cod") != 200:
+                return f"Error fetching weather data: {data.get('message')}"
+
+            weather_description = data["weather"][0]["description"]
+            temperature = data["main"]["temp"]
+            humidity = data["main"]["humidity"]
+            wind_speed = data["wind"]["speed"]
+
+            return f"Weather in {city}: {temperature}°C"
+        except requests.RequestException as e:
+            return f"Error fetching weather data: {str(e)}"
+`;
+
+	const saveHandler = async () => {
+		if (!name.trim() || !meta.description?.trim()) {
+			locale = '';
+			toast.error($i18n.t('Name and description are required'));
+			loading = false;
+			return;
+		}
+		loading = true;
+		try {
+			const submittedDraft = draftSnapshot(id, name, meta, content);
+			const saved = await onSave({
+				commit_message: commitMessage || null,
+				id,
+				name,
+				meta: { ...meta, i18n: pruneEmptyLocaleEntries(meta.i18n) },
+				content,
+				access_grants: accessGrants
+			});
+			if (saved) {
+				if (saved.version_id && saved.content !== undefined) await applyProduction(saved);
+				else {
+					savedDraft = submittedDraft;
+					commitMessage = '';
+				}
+			}
+		} finally {
+			loading = false;
+		}
+	};
+
+	const submitHandler = async () => {
+		if (selected || selecting || promoting || loading || (edit && !changed)) return;
+		if (codeEditor) {
+			loading = true;
+			content = _content;
+			await tick();
+
+			const res = await codeEditor.formatPythonCodeHandler();
+			await tick();
+
+			content = _content;
+			await tick();
+
+			if (!res) {
+				console.warn('Code formatting failed or was skipped, saving unformatted code');
+			}
+
+			saveHandler();
+		}
+	};
+</script>
+
+<AccessControlModal
+	bind:show={showAccessControlModal}
+	bind:accessGrants
+	accessRoles={['read', 'write']}
+	share={$user?.permissions?.sharing?.tools || $user?.role === 'admin'}
+	sharePublic={$user?.permissions?.sharing?.public_tools || $user?.role === 'admin'}
+	shareUsers={($user?.permissions?.access_grants?.allow_users ?? true) || $user?.role === 'admin'}
+	allowGroups={($user?.permissions?.access_grants?.allow_groups ?? true) || $user?.role === 'admin'}
+	onChange={async () => {
+		if (edit && id) {
+			try {
+				await updateToolAccessGrants(localStorage.token, id, accessGrants);
+				toast.success($i18n.t('Saved'));
+			} catch (error: any) {
+				toast.error(`${error}`);
+			}
+		}
+	}}
+/>
+
+<div class="flex h-full w-full min-w-0 flex-col overflow-hidden">
+	<form
+		bind:this={formElement}
+		class="flex h-full min-h-0 min-w-0 flex-col"
+		on:submit|preventDefault={() => {
+			if (selected) return;
+			if (edit) {
+				submitHandler();
+			} else {
+				showConfirm = true;
+			}
+		}}
+	>
+		<div class="flex shrink-0 items-center justify-between gap-2">
+			<div class="flex min-w-0 items-center gap-3">
+				<button
+					class="flex h-6 w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-md text-xs text-gray-400 transition-colors duration-75 hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
+					type="button"
+					on:click={() => {
+						goto('/workspace/tools');
+					}}
+				>
+					<ChevronLeft className="size-3" strokeWidth="2" />
+					<span>{$i18n.t('Back')}</span>
+				</button>
+				{#if edit && version_id}
+					<ToolHistory
+						bind:this={historyControl}
+						resource={{ id, version_id }}
+						bind:selected
+						bind:selecting
+						bind:promoting
+						dirty={changed || !!commitMessage}
+						disabled={loading}
+						onProduction={productionHandler}
+					/>
+				{/if}
+			</div>
+			<div class="flex shrink-0 items-center gap-1 pr-0.5">
+				<LanguageModeSelect
+					bind:value={locale}
+					translatedLocales={Object.keys(
+						pruneEmptyLocaleEntries(selected ? selected.snapshot.meta.i18n : meta.i18n)
+					)}
+				/>
+				<AccessButton
+					disabled={!!selected || loading || selecting || promoting}
+					on:click={() => {
+						showAccessControlModal = true;
+					}}
+				/>
+			</div>
+		</div>
+
+		<div class="flex shrink-0 flex-col gap-2 pb-2 px-1 sm:flex-row sm:items-start">
+			<div class="min-w-0 w-full flex-1">
+				<Tooltip content={$i18n.t('e.g. My Tools')} placement="top-start">
+					{#if selected}
+						<LocalizedField
+							disabled
+							placeholder={$i18n.t('Tool Name')}
+							showControls={false}
+							value={selected.snapshot.name}
+							translations={selected.snapshot.meta.i18n}
+							{locale}
+							required
+						/>
+					{:else}
+						<LocalizedField
+							placeholder={$i18n.t('Tool Name')}
+							showControls={false}
+							bind:value={name}
+							bind:translations={meta.i18n}
+							{locale}
+							required
+						/>
+					{/if}
+				</Tooltip>
+
+				<div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-gray-500">
+					{#if edit}
+						<div class="shrink-0 truncate font-mono" title={id}>
+							{id}
+						</div>
+					{:else}
+						<Tooltip
+							className="min-w-[8rem] flex-1"
+							content={$i18n.t('e.g. my_tools')}
+							placement="top-start"
+						>
+							<input
+								class="w-full bg-transparent font-mono outline-hidden disabled:text-gray-500"
+								type="text"
+								placeholder={$i18n.t('Tool ID')}
+								aria-label={$i18n.t('Tool ID')}
+								bind:value={id}
+								required
+								disabled={edit}
+							/>
+						</Tooltip>
+					{/if}
+
+					<Tooltip
+						className="flex min-w-0 flex-1 items-center"
+						content={$i18n.t('e.g. Tools for performing various operations')}
+						placement="top-start"
+					>
+						{#if selected}
+							<LocalizedField
+								disabled
+								placeholder={$i18n.t('Tool Description')}
+								showControls={false}
+								value={selected.snapshot.meta.description}
+								translations={selected.snapshot.meta.i18n}
+								{locale}
+								field="description"
+								required
+							/>
+						{:else}
+							<LocalizedField
+								placeholder={$i18n.t('Tool Description')}
+								showControls={false}
+								bind:value={meta.description}
+								bind:translations={meta.i18n}
+								{locale}
+								field="description"
+								required
+							/>
+						{/if}
+					</Tooltip>
+				</div>
+			</div>
+		</div>
+
+		<div class="min-h-0 flex-1 overflow-hidden rounded-lg flex flex-col">
+			{#if locale && !comparison}
+				{#key selected?.id}
+					{#if selected}
+						<PluginTranslations
+							{id}
+							kind="tool"
+							{locale}
+							readOnly
+							translations={selected.snapshot.meta.i18n}
+						/>
+					{:else}
+						<PluginTranslations
+							id={edit ? id : ''}
+							kind="tool"
+							{locale}
+							bind:translations={meta.i18n}
+						/>
+					{/if}
+				{/key}
+			{/if}
+
+			{#if comparison}
+				<VersionDiff
+					currentLabel={$i18n.t('Production')}
+					showFileHeaders={false}
+					diff={{
+						fromId: comparison.from_id,
+						toId: comparison.to_id,
+						metadata: comparison.metadata,
+						files:
+							comparison.content_diff || comparison.line_endings_only
+								? [{ path: `${id}.py`, status: 'modified', binary: false }]
+								: []
+					}}
+					loadFileDiff={async () => ({
+						diff: comparison.content_diff,
+						line_endings_only: comparison.line_endings_only
+					})}
+					onClose={() => {
+						comparison = null;
+					}}
+				/>
+			{/if}
+			{#if selected && !locale && !comparison}
+				<CodeEditor
+					value={selected.snapshot.content}
+					lang="python"
+					readOnly
+					className="text-[0.6875rem]"
+				/>
+			{/if}
+			<div class={locale || comparison || selected ? 'hidden' : 'h-full min-h-0'}>
+				<CodeEditor
+					bind:this={codeEditor}
+					value={content}
+					readOnly={!!selected || selecting || promoting}
+					lang="python"
+					{boilerplate}
+					className="text-[0.6875rem]"
+					onChange={(e: string) => {
+						if (selected) return;
+						content = e;
+						_content = e;
+						if (!edit) {
+							const fm = extractFrontmatter(e) as Record<string, string>;
+							if (fm.title && !name) {
+								name = formatSkillName(fm.title);
+								id = nameToId(fm.title);
+							}
+							if (fm.description && !meta.description) {
+								meta = { ...meta, description: fm.description };
+							}
+						}
+					}}
+					onSave={async () => {
+						if (formElement) {
+							formElement.requestSubmit();
+						}
+					}}
+				/>
+			</div>
+		</div>
+
+		<div class="shrink-0 py-2 text-xs text-gray-500">
+			<div class="flex items-center justify-between gap-3">
+				<Tooltip
+					className="min-w-0 flex-1"
+					content={warning}
+					allowHTML={false}
+					placement="top-start"
+				>
+					<div class="truncate">{warning}</div>
+				</Tooltip>
+
+				<div class="ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-3">
+					{#if selected}
+						{#if !comparison}
+							<button
+								type="button"
+								class="flex h-7 shrink-0 items-center gap-1.5 text-xs text-gray-500 hover:text-gray-900 dark:hover:text-gray-100"
+								disabled={comparing || promoting || selecting}
+								on:click={compareToCurrent}
+							>
+								{$i18n.t('Compare to current')}{#if comparing}<Spinner className="size-3" />{/if}
+							</button>
+						{/if}
+						<button
+							type="button"
+							class="flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs text-white disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900"
+							disabled={promoting || selecting}
+							on:click={() => historyControl?.requestPromotion()}
+						>
+							{$i18n.t('Set as Production')}{#if promoting}<Spinner className="size-3" />{/if}
+						</button>
+					{:else}
+						<input
+							class="w-32 min-w-0 flex-1 border-0 bg-transparent text-xs outline-hidden placeholder:text-gray-400"
+							aria-label={$i18n.t('Describe this change')}
+							placeholder={$i18n.t('Describe this change')}
+							bind:value={commitMessage}
+							disabled={loading}
+						/>
+						<button
+							class="flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+							type="submit"
+							disabled={loading || selecting || promoting || (edit && !changed)}
+						>
+							{edit ? $i18n.t('Save') : $i18n.t('Save & Create')}
+							{#if loading}
+								<Spinner className="size-3" />
+							{/if}
+						</button>
+					{/if}
+				</div>
+			</div>
+		</div>
+	</form>
+</div>
+
+<ConfirmDialog
+	bind:show={showConfirm}
+	on:confirm={() => {
+		submitHandler();
+	}}
+>
+	<div class="text-sm text-gray-500">
+		<div class=" bg-yellow-500/20 text-yellow-700 dark:text-yellow-200 rounded-lg px-4 py-3">
+			<div>{$i18n.t('Please carefully review the following warnings:')}</div>
+
+			<ul class=" mt-1 list-disc pl-4 text-xs">
+				<li>
+					{$i18n.t('Tools have a function calling system that allows arbitrary code execution.')}
+				</li>
+				<li>{$i18n.t('Do not install tools from sources you do not fully trust.')}</li>
+			</ul>
+		</div>
+
+		<div class="my-3">
+			{$i18n.t(
+				'I acknowledge that I have read and I understand the implications of my action. I am aware of the risks associated with executing arbitrary code and I have verified the trustworthiness of the source.'
+			)}
+		</div>
+	</div>
+</ConfirmDialog>

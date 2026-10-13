@@ -1,0 +1,304 @@
+import { Agent, AgentOutputType } from './agent';
+import {
+  InputGuardrailResult,
+  OutputGuardrailMetadata,
+  OutputGuardrailResult,
+} from './guardrail';
+import {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from './toolGuardrail';
+import { RunContext } from './runContext';
+import { RunState } from './runState';
+import { TextOutput } from './types';
+import * as protocol from './types/protocol';
+
+/**
+ * Base class for all errors thrown by the library.
+ */
+export abstract class AgentsError extends Error {
+  state?: RunState<any, Agent<any, any>>;
+
+  constructor(message: string, state?: RunState<any, Agent<any, any>>) {
+    super(message);
+    this.name = new.target.name;
+    this.state = state;
+  }
+}
+
+/**
+ * System error thrown when the library encounters an error that is not caused by the user's
+ * misconfiguration.
+ */
+export class SystemError extends AgentsError {}
+
+/**
+ * Error thrown when the maximum number of turns is exceeded.
+ */
+export class MaxTurnsExceededError extends AgentsError {}
+
+/**
+ * Error thrown when the model refuses to produce output.
+ */
+export class ModelRefusalError extends AgentsError {
+  /**
+   * The refusal text returned by the model.
+   */
+  refusal: string;
+
+  constructor(refusal: string, state?: RunState<any, Agent<any, any>>) {
+    super(`Model refused to produce output: ${refusal}`, state);
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * Error thrown when a model behavior is unexpected.
+ */
+export class ModelBehaviorError extends AgentsError {}
+
+/**
+ * Error thrown when a model call exceeds its configured timeout.
+ */
+export class ModelTimeoutError extends AgentsError {
+  readonly code = 'ETIMEDOUT' as const;
+  readonly timeoutMs: number;
+  /**
+   * The provider or transport error observed after the timeout signal was sent, if any.
+   */
+  readonly cause?: unknown;
+
+  constructor({ timeoutMs, cause }: { timeoutMs: number; cause?: unknown }) {
+    super(`Model call timed out after ${timeoutMs}ms.`);
+    this.timeoutMs = timeoutMs;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Context from tool invocation that failed validation.
+ */
+export type ToolInvocationErrorContext = {
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+  /** The invalid tool input produced by the model. */
+  input?: string;
+  /** The details of the tool call made by the model. */
+  details?: {
+    toolCall?: protocol.FunctionCallItem;
+    resumeState?: string;
+    signal?: AbortSignal;
+  };
+};
+
+/**
+ * Error thrown when a model produces invalid tool input.
+ */
+export class InvalidToolInputError extends ModelBehaviorError {
+  /** The original error thrown during validation, if any. */
+  originalError?: unknown;
+
+  /** Context from the tool invocation that failed. */
+  toolInvocation?: ToolInvocationErrorContext;
+
+  constructor(
+    message: string,
+    state?: RunState<any, Agent<any, any>>,
+    originalError?: unknown,
+    toolInvocation?: ToolInvocationErrorContext,
+  ) {
+    super(message, state);
+    this.originalError = originalError;
+    this.toolInvocation = toolInvocation;
+  }
+}
+
+/**
+ * Error thrown when the error is caused by the library user's misconfiguration.
+ */
+export class UserError extends AgentsError {}
+
+/**
+ * Context from a function tool output that failed runtime validation.
+ */
+export type ToolOutputErrorContext = {
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+  /** The invalid value returned by the tool or one of its fallback paths. */
+  output?: unknown;
+  /** The details of the tool call made by the model. */
+  details?: ToolInvocationErrorContext['details'];
+};
+
+/**
+ * Error thrown when a function tool returns a value that does not match its
+ * runtime output schema.
+ */
+export class InvalidToolOutputError extends UserError {
+  /** The original error thrown during validation, if any. */
+  originalError?: unknown;
+
+  /** Context from the tool output that failed validation. */
+  toolOutput?: ToolOutputErrorContext;
+
+  constructor(
+    message: string,
+    state?: RunState<any, Agent<any, any>>,
+    originalError?: unknown,
+    toolOutput?: ToolOutputErrorContext,
+  ) {
+    super(message, state);
+    this.originalError = originalError;
+    this.toolOutput = toolOutput;
+  }
+}
+
+/**
+ * Error thrown when a guardrail execution fails.
+ */
+export class GuardrailExecutionError extends AgentsError {
+  error: Error;
+  constructor(
+    message: string,
+    error: Error,
+    state?: RunState<any, Agent<any, any>>,
+  ) {
+    super(message, state);
+    this.error = error;
+  }
+}
+
+/**
+ * Error thrown when a tool call fails.
+ */
+const toolCallErrors = new WeakSet<ToolCallError>();
+const toolTimeoutErrors = new WeakSet<ToolTimeoutError>();
+
+export class ToolCallError extends AgentsError {
+  error: Error;
+  constructor(
+    message: string,
+    error: Error,
+    state?: RunState<any, Agent<any, any>>,
+  ) {
+    super(message, state);
+    this.error = error;
+    toolCallErrors.add(this);
+  }
+}
+
+/**
+ * Error thrown when a function tool invocation exceeds its timeout.
+ */
+export class ToolTimeoutError extends AgentsError {
+  toolName: string;
+  timeoutMs: number;
+  constructor({
+    toolName,
+    timeoutMs,
+    state,
+  }: {
+    toolName: string;
+    timeoutMs: number;
+    state?: RunState<any, Agent<any, any>>;
+  }) {
+    super(`Tool '${toolName}' timed out after ${timeoutMs}ms.`, state);
+    this.toolName = toolName;
+    this.timeoutMs = timeoutMs;
+    toolTimeoutErrors.add(this);
+  }
+}
+
+/** @internal */
+export function isToolTimeoutError(error: unknown): error is ToolTimeoutError {
+  return toolTimeoutErrors.has(error as ToolTimeoutError);
+}
+
+/** @internal */
+export function clearToolErrorState(
+  error: unknown,
+  state: RunState<any, Agent<any, any>>,
+): void {
+  const visited = new WeakSet<object>();
+  let current = error;
+  while (toolCallErrors.has(current as ToolCallError)) {
+    const toolCallError = current as ToolCallError;
+    if (visited.has(toolCallError)) {
+      return;
+    }
+    visited.add(toolCallError);
+    if (toolCallError.state === state) {
+      toolCallError.state = undefined;
+    }
+    current = toolCallError.error;
+  }
+  if (toolTimeoutErrors.has(current as ToolTimeoutError)) {
+    const timeoutError = current as ToolTimeoutError;
+    if (timeoutError.state === state) {
+      timeoutError.state = undefined;
+    }
+  }
+}
+
+/**
+ * Error thrown when an input guardrail tripwire is triggered.
+ */
+export class InputGuardrailTripwireTriggered extends AgentsError {
+  result: InputGuardrailResult;
+  constructor(
+    message: string,
+    result: InputGuardrailResult,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}
+
+/**
+ * Error thrown when an output guardrail tripwire is triggered.
+ */
+export class OutputGuardrailTripwireTriggered<
+  TMeta extends OutputGuardrailMetadata,
+  TOutputType extends AgentOutputType = TextOutput,
+> extends AgentsError {
+  result: OutputGuardrailResult<TMeta, TOutputType>;
+  constructor(
+    message: string,
+    result: OutputGuardrailResult<TMeta, TOutputType>,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}
+
+/**
+ * Error thrown when a tool input guardrail tripwire is triggered.
+ */
+export class ToolInputGuardrailTripwireTriggered extends AgentsError {
+  result: ToolInputGuardrailResult;
+  constructor(
+    message: string,
+    result: ToolInputGuardrailResult,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}
+
+/**
+ * Error thrown when a tool output guardrail tripwire is triggered.
+ */
+export class ToolOutputGuardrailTripwireTriggered extends AgentsError {
+  result: ToolOutputGuardrailResult;
+  constructor(
+    message: string,
+    result: ToolOutputGuardrailResult,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}

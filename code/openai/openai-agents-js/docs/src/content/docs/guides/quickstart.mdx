@@ -1,0 +1,118 @@
+---
+title: Quickstart
+description: Create your first AI Agent from scratch
+---
+
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import quickstartExample from '../../../../../examples/docs/quickstart/index.ts?raw';
+import createAgentExample from '../../../../../examples/docs/quickstart/createAgent.ts?raw';
+import runAgentExample from '../../../../../examples/docs/quickstart/runAgent.ts?raw';
+import agentWithToolsExample from '../../../../../examples/docs/quickstart/agentWithTools.ts?raw';
+import additionalAgentsExample from '../../../../../examples/docs/quickstart/additionalAgents.ts?raw';
+import defineHandoffsExample from '../../../../../examples/docs/quickstart/defineHandoffs.ts?raw';
+import runOrchestrationExample from '../../../../../examples/docs/quickstart/runOrchestration.ts?raw';
+
+<Aside type="note" title="Looking for sandbox agents?">
+  This quickstart builds a text agent that runs in your app process. If you want
+  an agent with an isolated filesystem workspace, shell commands, and sandbox
+  session state, start with the [Sandbox agents
+  quickstart](/openai-agents-js/guides/sandbox-agents).
+</Aside>
+
+## Project Setup
+
+<Steps>
+
+1. Create a project and initialize npm. You'll only need to do this once.
+
+   ```bash
+   mkdir my_project
+   cd my_project
+   npm init -y
+   ```
+
+2. Install the Agents SDK and Zod. The SDK uses Zod v4 for tool schemas and structured outputs.
+
+   ```bash
+   npm install @openai/agents zod
+   ```
+
+3. Set an OpenAI API key. If you don't have one, follow [these instructions](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) to create an OpenAI API key.
+
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   ```
+
+   Alternatively you can call `setDefaultOpenAIKey('<api key>')` to set the key programmatically and use `setTracingExportApiKey('<api key>')` for tracing. See [the config guide](/openai-agents-js/guides/config) for more details.
+
+</Steps>
+
+## Create your first agent
+
+Agents are defined with instructions and a name.
+
+<Code lang="typescript" code={createAgentExample} title="Create an agent" />
+
+## Run your first agent
+
+You can use the `run` method to run your agent. You trigger a run by passing both the agent you want to start on and the input you want to pass in.
+
+This will return a result that contains the final output and any actions that were performed during that run.
+
+<Code lang="typescript" code={runAgentExample} title="Run an agent" />
+
+For a second turn, you can either pass `result.history` back into `run()`, attach a [session](/openai-agents-js/guides/sessions), or reuse OpenAI server-managed state with `conversationId` / `previousResponseId`. The [running agents](/openai-agents-js/guides/running-agents) guide compares these approaches.
+
+## Give your agent tools
+
+You can give an agent tools to use to look up information or perform actions.
+
+<Code lang="typescript" code={agentWithToolsExample} title="Add a tool" />
+
+## Add a few more agents
+
+Define additional specialist agents to break down problems into smaller parts, keep each specialist focused on one task, and use different models for different problems.
+
+<Code
+  lang="typescript"
+  code={additionalAgentsExample}
+  title="Create specialist agents"
+/>
+
+## Define your handoffs
+
+To orchestrate multiple agents, define an agent's `handoffs`. When a handoff is selected during a run, the runner automatically transfers the conversation to the target agent.
+
+<Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
+
+After your run you can see which agent generated the final response by looking at the `lastAgent` property on the result.
+
+## Run the agent orchestration
+
+The runner handles executing individual agents, any handoffs, and any tool calls.
+
+<Code
+  lang="typescript"
+  code={runOrchestrationExample}
+  title="Run agent orchestration"
+/>
+
+## Putting it all together
+
+Let's put it all together into one full example. Place this into your `index.js` file and run it. If your app is already set up for TypeScript, you can use `index.ts` instead.
+
+<Code lang="typescript" code={quickstartExample} title="Quickstart" />
+
+## View your traces
+
+The Agents SDK automatically generates traces. You can use these traces to review how your agents are operating, what tools they called, and which agents received handoffs.
+
+To review what happened during your agent run, navigate to the [Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
+
+## Next steps
+
+Learn how to build more complex agentic flows:
+
+- Learn about configuring [Agents](/openai-agents-js/guides/agents).
+- Learn about [running agents](/openai-agents-js/guides/running-agents) and [sessions](/openai-agents-js/guides/sessions).
+- Learn about [tools](/openai-agents-js/guides/tools), [guardrails](/openai-agents-js/guides/guardrails), and [models](/openai-agents-js/guides/models).

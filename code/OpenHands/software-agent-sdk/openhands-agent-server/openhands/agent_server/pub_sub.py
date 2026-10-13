@@ -1,0 +1,114 @@
+import asyncio
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import ClassVar, TypeVar
+from uuid import UUID, uuid4
+
+from openhands.sdk.event import StreamingDeltaEvent
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
+
+T = TypeVar("T")
+
+
+class Subscriber[T](ABC):
+    # Deltas arrive at token rate; consumers opt in rather than inherit them.
+    receives_streaming_deltas: ClassVar[bool] = False
+
+    @abstractmethod
+    async def __call__(self, event: T):
+        """Invoke this subscriber"""
+
+    async def close(self):
+        """Clean up this subscriber"""
+
+
+class MaxSubscribersError(Exception):
+    """Raised when a PubSub instance has reached its subscriber limit."""
+
+
+@dataclass
+class PubSub[T]:
+    """A subscription service that extends ConversationCallbackType functionality.
+    This class maintains a dictionary of UUIDs to ConversationCallbackType instances
+    and provides methods to subscribe/unsubscribe callbacks. When invoked, it calls
+    all registered callbacks with proper error handling.
+    """
+
+    _subscribers: dict[UUID, Subscriber[T]] = field(default_factory=dict)
+    max_subscribers: int | None = None
+
+    def subscribe(self, subscriber: Subscriber[T]) -> UUID:
+        """Subscribe a subscriber and return its UUID for later unsubscription.
+        Args:
+            subscriber: The callback function to register
+        Returns:
+            UUID: UUID that can be used to unsubscribe this callback
+        Raises:
+            MaxSubscribersError: If the subscriber limit has been reached.
+        """
+        if (
+            self.max_subscribers is not None
+            and len(self._subscribers) >= self.max_subscribers
+        ):
+            raise MaxSubscribersError(
+                f"Subscriber limit reached ({self.max_subscribers})"
+            )
+        subscriber_id = uuid4()
+        self._subscribers[subscriber_id] = subscriber
+        logger.debug(f"Subscribed subscriber with ID: {subscriber_id}")
+        return subscriber_id
+
+    def unsubscribe(self, subscriber_id: UUID) -> bool:
+        """Unsubscribe a subscriber by its UUID.
+        Args:
+            subscriber_id: The UUID returned by subscribe()
+        Returns:
+            bool: True if subscriber was found and removed, False otherwise
+        """
+        if subscriber_id in self._subscribers:
+            del self._subscribers[subscriber_id]
+            logger.debug(f"Unsubscribed subscriber with ID: {subscriber_id}")
+            return True
+        else:
+            logger.warning(
+                f"Attempted to unsubscribe unknown subscriber ID: {subscriber_id}"
+            )
+            return False
+
+    def subscriber_ids(self) -> set[UUID]:
+        """Return the ids of all currently-registered subscribers."""
+        return set(self._subscribers.keys())
+
+    async def __call__(self, event: T) -> None:
+        """Invoke all registered callbacks with the given event.
+        Subscribers are notified concurrently so a slow client cannot
+        block delivery to others.  Each callback runs in its own
+        error-handling wrapper to preserve fault isolation.
+        Args:
+            event: The event to pass to all callbacks
+        """
+        subscribers = list(self._subscribers.items())
+        if isinstance(event, StreamingDeltaEvent):
+            subscribers = [s for s in subscribers if s[1].receives_streaming_deltas]
+        if not subscribers:
+            return
+
+        async def _notify(subscriber_id: UUID, subscriber: Subscriber[T]):
+            try:
+                await subscriber(event)
+            except Exception as e:
+                logger.error(
+                    f"Error in subscriber {subscriber_id}: {e}",
+                    exc_info=True,
+                )
+
+        await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
+
+    async def close(self):
+        await asyncio.gather(
+            *[subscriber.close() for subscriber in self._subscribers.values()]
+        )
+        self._subscribers.clear()

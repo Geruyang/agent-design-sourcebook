@@ -1,0 +1,148 @@
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 8px 8px 8px 12px;
+  border-radius: 16px;
+  background: var(--a13n-elevated);
+  box-shadow: var(--a13n-shadow);
+  transition: box-shadow 140ms ease;
+}
+.composer:focus-within {
+  box-shadow:
+    var(--a13n-shadow),
+    0 0 0 1px color-mix(in srgb, var(--a13n-focus) 45%, transparent);
+}
+/* The fieldset carries the disabled state, never the layout: the send button
+   stays reachable so an active run can always be stopped. */
+.fields {
+  display: contents;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.messageInput {
+  grid-column: 1 / -1;
+  display: block;
+  width: 100%;
+}
+.messageInput textarea {
+  min-height: 34px;
+  max-height: 240px;
+  padding: 6px 0;
+  border: 0;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--a13n-text-md);
+  line-height: 1.6;
+}
+.messageInput textarea::placeholder {
+  color: var(--a13n-muted);
+}
+.attachments {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+.tools {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  margin-left: -4px;
+}
+.send {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.hint {
+  color: var(--a13n-muted);
+  font-size: var(--a13n-text-2xs);
+  white-space: nowrap;
+}
+.sendButton {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+.composer > [role="alert"] {
+  grid-column: 1 / -1;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--a13n-surface);
+  color: var(--a13n-secondary);
+  font-size: var(--a13n-text-xs);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.chip:hover {
+  background: var(--a13n-hover);
+  color: var(--a13n-text);
+}
+.chip:focus-visible {
+  outline: 2px solid var(--a13n-focus);
+  outline-offset: 2px;
+}
+.chipLabel {
+  flex: none;
+}
+.chipValue {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--a13n-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dialogs ---------------------------------------------------------------- */
+.attach,
+.optionFields {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.segments {
+  justify-self: start;
+}
+.attachRow {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.optionSwitch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--a13n-text-sm);
+  font-weight: 500;
+}
+@media (max-width: 720px) {
+  .hint {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer,
+  .chip {
+    transition: none;
+  }
+}

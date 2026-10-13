@@ -1,0 +1,505 @@
+// Flat ESLint config (ESLint 9+).
+//
+// Migration notes (see commit history for full context):
+// - Replaces the legacy `.eslintrc` file, which ESLint 9 deprecated and
+//   ESLint 10 will remove entirely.
+// - Drops `eslint-config-airbnb` / `eslint-config-airbnb-typescript`: they
+//   pin ESLint to v7/v8 and `@typescript-eslint/*` to v7, so they block any
+//   future ESLint major bumps. The opinionated airbnb rules the codebase
+//   actually leaned on (no-param-reassign, import/extensions, etc.) are
+//   re-declared explicitly below, and the long list of airbnb rules the old
+//   config already turned off has just been deleted instead of re-disabled.
+// - Replaces `eslint-plugin-import` (only declares an `^8 || ^9` peer) with
+//   the actively-maintained, flat-config-native fork `eslint-plugin-import-x`.
+//   The rule names are kept under the `import/` prefix below to minimise
+//   churn on existing `// eslint-disable-next-line import/...` comments.
+// - `eslint-plugin-i18next` still ships only legacy config, so it is pulled
+//   in via `FlatCompat` from `@eslint/eslintrc`.
+// - Targets ESLint 9, not 10. The original dependabot PR proposed eslint@10,
+//   but as of this commit `eslint-plugin-react` still calls
+//   `context.getFilename()` (removed in ESLint 10) at rule-load time, which
+//   makes a v10 bump explode on every file. Re-evaluate once that plugin
+//   ships an ESLint-10-compatible release.
+
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+import { FlatCompat } from "@eslint/eslintrc";
+import js from "@eslint/js";
+import tsParser from "@typescript-eslint/parser";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
+import reactPlugin from "eslint-plugin-react";
+import reactHooksPlugin from "eslint-plugin-react-hooks";
+import jsxA11yPlugin from "eslint-plugin-jsx-a11y";
+import importXPlugin from "eslint-plugin-import-x";
+import prettierPlugin from "eslint-plugin-prettier";
+import prettierConfig from "eslint-config-prettier";
+import unusedImportsPlugin from "eslint-plugin-unused-imports";
+import tanstackQueryPlugin from "@tanstack/eslint-plugin-query";
+import { plugin as shadcnPlugin } from "@shadcn/lint";
+import globals from "globals";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const compat = new FlatCompat({
+  baseDirectory: __dirname,
+  resolvePluginsRelativeTo: __dirname,
+});
+
+/**
+ * ESLint rule: forbid raw `fetch` calls that target an agent-server `/api/...`
+ * path, so API access goes through the typed @openhands/typescript-client
+ * clients. Only statically-resolvable agent-server paths are flagged; external
+ * URLs, dynamic identifiers, and non-`/api/` draws (cookie-auth static
+ * fileserver, OAuth device verification) are left alone.
+ */
+function createNoDirectAgentServerFetchRule() {
+  return {
+    meta: {
+      type: "problem",
+      docs: {
+        description:
+          "Use typed @openhands/typescript-client clients instead of global fetch for agent-server API calls.",
+      },
+      messages: {
+        noRawFetch:
+          "Use a typed @openhands/typescript-client client (or AgentServerClient.request) instead of global fetch for agent-server API calls.",
+      },
+    },
+    create(context) {
+      function resolveStaticUrl(node) {
+        if (node.type === "Literal" && typeof node.value === "string") {
+          return node.value;
+        }
+        if (node.type === "TemplateLiteral") {
+          return node.quasis
+            .map((q) => q.value.raw)
+            .join("");
+        }
+        return null;
+      }
+
+      return {
+        CallExpression(node) {
+          const callee = node.callee;
+          if (callee.type !== "Identifier" || callee.name !== "fetch") return;
+          const urlNode = node.arguments[0];
+          if (!urlNode) return;
+          const url = resolveStaticUrl(urlNode);
+          if (url === null || !url.includes("/api/")) return;
+          context.report({ node, messageId: "noRawFetch" });
+        },
+      };
+    },
+  };
+}
+
+export default [
+  // Files / dirs we never want to lint.
+  {
+    ignores: [
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "coverage/**",
+      ".react-router/**",
+      "playwright-report/**",
+      "playwright-report-live/**",
+      "test-results/**",
+      "test-results-live/**",
+      "public/mockServiceWorker.js",
+      // Self-contained browser ES module served to extensions at runtime;
+      // not part of the TypeScript project.
+      "src/fixtures/canvas-extensions/**/*.js",
+      "src/i18n/declaration.d.ts",
+    ],
+  },
+
+  // Base JS recommended rules.
+  js.configs.recommended,
+
+  // `eslint-plugin-import-x` ships flat configs directly. The rules are
+  // registered under both `import-x/*` and `import/*` aliases so existing
+  // `// eslint-disable-next-line import/*` comments still match.
+  importXPlugin.flatConfigs.recommended,
+  importXPlugin.flatConfigs.typescript,
+
+  // `eslint-plugin-i18next` is still eslintrc-only — pull it in via compat.
+  ...compat.extends("plugin:i18next/recommended"),
+
+  // Project-wide settings + React/TS/etc. rules for source files.
+  {
+    files: ["**/*.{ts,tsx,js,jsx,mjs,cjs}"],
+    // Surface (but don't fail on) `// eslint-disable-next-line ...` directives
+    // that target rules this config no longer enables. The codebase has ~50
+    // such directives left over from the airbnb era; "warn" lets us clean
+    // them up incrementally instead of either failing CI on day one or
+    // letting new stale directives accumulate silently.
+    linterOptions: {
+      reportUnusedDisableDirectives: "warn",
+    },
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      parser: tsParser,
+      parserOptions: {
+        project: "./tsconfig.json",
+        ecmaFeatures: { jsx: true },
+      },
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        ...globals.es2024,
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+      react: reactPlugin,
+      "react-hooks": reactHooksPlugin,
+      "jsx-a11y": jsxA11yPlugin,
+      "@tanstack/query": tanstackQueryPlugin,
+      "unused-imports": unusedImportsPlugin,
+      // Alias `import-x` rules under `import/*` so existing
+      // `// eslint-disable-next-line import/foo` comments keep working.
+      import: importXPlugin,
+      prettier: prettierPlugin,
+      // Local rule enforcing that agent-server API calls go through the typed
+      // @openhands/typescript-client clients instead of a raw `fetch`.
+      local: {
+        rules: {
+          "no-direct-agent-server-fetch":
+            createNoDirectAgentServerFetchRule(),
+        },
+      },
+    },
+    settings: {
+      react: { version: "detect" },
+      // `eslint-import-resolver-typescript` resolves both TS path aliases
+      // (via tsconfig) and regular node-style imports, so we don't also
+      // configure the legacy `node` resolver shortcut here.
+      "import-x/resolver": {
+        typescript: true,
+      },
+    },
+    rules: {
+      // Recommended rule packs we want everywhere.
+      ...tsPlugin.configs["eslint-recommended"].overrides[0].rules,
+      ...tsPlugin.configs.recommended.rules,
+      ...reactPlugin.configs.recommended.rules,
+      ...reactPlugin.configs["jsx-runtime"].rules,
+      ...reactHooksPlugin.configs.recommended.rules,
+      ...jsxA11yPlugin.configs.recommended.rules,
+      ...tanstackQueryPlugin.configs.recommended.rules,
+
+      // Prettier integration. `eslint-config-prettier` turns off conflicting
+      // stylistic rules; `eslint-plugin-prettier` re-reports prettier diffs
+      // as lint errors so `npm run lint` fails on unformatted code (matching
+      // the pre-flat-config behaviour).
+      ...prettierConfig.rules,
+      "prettier/prettier": "error",
+
+      // Project conventions previously enforced via airbnb / custom rules.
+      // Lint JSX *attributes* (not just text between tags) for hard-coded
+      // user-facing strings. The plugin default (`mode: 'jsx-text-only'`)
+      // never checks attribute values, which let untranslated strings like
+      // `aria-label="Close"` / `placeholder="..."` slip past lint (cf. #1306).
+      //
+      // `jsx-only` checks every literal inside a JSX subtree, so we scope it:
+      //  - jsx-attributes.include: only attributes that carry translatable
+      //    text. Everything else (testId, name, color, to, href, className,
+      //    data-*, …) is ignored automatically — no brittle deny-list.
+      //  - callees/object-properties: re-list the plugin defaults (the option
+      //    merge is shallow, so providing a key replaces it) and add
+      //    `cn`/`className` so Tailwind class strings built via `cn(...)` or
+      //    `{ className: "..." }` aren't flagged.
+      "i18next/no-literal-string": [
+        "error",
+        {
+          mode: "jsx-only",
+          "jsx-attributes": {
+            include: [
+              "placeholder",
+              "alt",
+              "aria-label",
+              "title",
+              "label",
+              "heading",
+              "text",
+            ],
+          },
+          callees: {
+            exclude: [
+              "i18n(ext)?",
+              "t",
+              "require",
+              "addEventListener",
+              "removeEventListener",
+              "postMessage",
+              "getElementById",
+              "dispatch",
+              "commit",
+              "includes",
+              "indexOf",
+              "endsWith",
+              "startsWith",
+              "cn",
+            ],
+          },
+          "object-properties": {
+            exclude: ["[A-Z_-]+", "className"],
+          },
+        },
+      ],
+      "unused-imports/no-unused-imports": "error",
+      "@typescript-eslint/prefer-optional-chain": "error",
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@openhands/typescript-client/client/http-client",
+              message:
+                "Use typed @openhands/typescript-client clients instead of constructing HttpClient directly.",
+            },
+          ],
+        },
+      ],
+      // All agent-server API access must go through the typed
+      // @openhands/typescript-client clients. A raw global `fetch` against an
+      // agent-server `/api/...` path bypasses the typed access layer, so it is
+      // banned here (see also src/api/no-direct-agent-server-calls.test.ts).
+      // Browser-cookie-auth and external (non-agent-server) fetches — e.g. the
+      // workspace static fileserver, OAuth device verification, and the npm
+      // registry version check — do not target `/api/...` and are unaffected.
+      "local/no-direct-agent-server-fetch": "error",
+
+      // Allow `interface Foo extends Bar<"foo"> {}` — the codebase uses this
+      // discriminated-union pattern in `src/types/agent-server/**` and the
+      // empty body is intentional. We still disallow `interface Foo {}` and
+      // `type Foo = {}` (the default behaviour for the other two options).
+      "@typescript-eslint/no-empty-object-type": [
+        "error",
+        { allowInterfaces: "with-single-extends" },
+      ],
+
+      // tsPlugin's `recommended` enables no-unused-vars; we already report
+      // unused imports above, so make sure the TS rule still catches unused
+      // locals/args (with the standard airbnb-style `_`-prefix escape hatch).
+      // `caughtErrors: 'none'` keeps the v7 behaviour of allowing
+      // `catch (error)` clauses where the error is intentionally unused.
+      "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          args: "after-used",
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          ignoreRestSiblings: true,
+          caughtErrors: "none",
+        },
+      ],
+
+      // React Compiler rules (added in eslint-plugin-react-hooks v5+) are
+      // opt-in for projects that have actually adopted the compiler. Keep
+      // them off so existing code isn't retroactively flagged.
+      "react-hooks/immutability": "off",
+      "react-hooks/preserve-manual-memoization": "off",
+      "react-hooks/refs": "off",
+      "react-hooks/set-state-in-effect": "off",
+
+      // Match the legacy config: don't require .ts/.tsx import extensions,
+      // but enforce them for everything else. See
+      // https://stackoverflow.com/q/59265981 for background.
+      "import-x/extensions": [
+        "error",
+        "ignorePackages",
+        { "": "never", ts: "never", tsx: "never", js: "never", jsx: "never" },
+      ],
+      // The old config inherited a bunch of import rules from airbnb that
+      // either don't apply or are now noise; explicitly turn off the ones
+      // most likely to fire on this codebase.
+      "import-x/prefer-default-export": "off",
+      "import-x/no-extraneous-dependencies": "off",
+      // `import-x/no-unresolved` is redundant with the TypeScript compiler:
+      // `tsc` (run as `npm run typecheck` before `eslint`) already fails on
+      // unresolved imports with much better error messages, and the rule
+      // has known false positives with `paths`/exports-map resolution even
+      // when the typescript resolver is configured. Keeping it on duplicates
+      // tsc errors and produces noise on Vite's `?url` / `?worker` import
+      // suffixes that ESLint can't see through.
+      "import-x/no-unresolved": "off",
+      // These two fire a lot of false positives on TypeScript projects that
+      // import a namespace and then call methods off it (`import api from
+      // './foo'; api.bar()` etc.). The TS compiler already catches anything
+      // truly wrong here.
+      "import-x/no-named-as-default": "off",
+      "import-x/no-named-as-default-member": "off",
+    },
+  },
+
+  // TypeScript-only overrides (re-applied airbnb-ish relaxations from the
+  // previous `.eslintrc` overrides block).
+  {
+    files: ["**/*.{ts,tsx}"],
+    ignores: ["src/hooks/query/query-keys.ts"],
+    rules: {
+      // Allow state mutation in reduce and Redux-style reducers.
+      "no-param-reassign": [
+        "error",
+        {
+          props: true,
+          ignorePropertyModificationsFor: ["acc", "state"],
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "Property[key.name='queryKey'] > ArrayExpression[elements.0.value='settings']",
+          message:
+            "Use SETTINGS_QUERY_KEYS helpers instead of raw settings query key arrays.",
+        },
+        {
+          selector:
+            "CallExpression[callee.name='t'] > Literal:first-child[value=/^[A-Z0-9_]+\\$/]",
+          message: "Use I18nKey instead of raw translation key strings.",
+        },
+        {
+          selector:
+            "CallExpression[callee.property.name='t'] > Literal:first-child[value=/^[A-Z0-9_]+\\$/]",
+          message: "Use I18nKey instead of raw translation key strings.",
+        },
+      ],
+      "react/require-default-props": "off",
+      "no-underscore-dangle": "off",
+      "jsx-a11y/no-static-element-interactions": "off",
+      "jsx-a11y/click-events-have-key-events": "off",
+      // For https://github.com/airbnb/javascript/issues/1885
+      "jsx-a11y/label-has-associated-control": [
+        2,
+        {
+          required: {
+            some: ["nesting", "id"],
+          },
+        },
+      ],
+      "react/prop-types": "off",
+      "react/no-array-index-key": "off",
+      "react-hooks/exhaustive-deps": "off",
+      "react/react-in-jsx-scope": "off",
+    },
+  },
+
+  // @shadcn/lint — design-system linter for Tailwind v4.
+  // Rules: https://github.com/shadcn-ui/lint/blob/main/docs/rules.md
+  // `no-arbitrary-values` stays at "warn": the remaining hits are one-offs
+  // (raw hex, vh/vw, calc(), grid templates) with no theme-scale equivalent.
+  // Class existence does not need component contracts. With no remaining
+  // unknown utilities, new findings fail lint; styling policy remains opt-in.
+  // Canvas primitives use #/ui, not the plugin's default components/ui path.
+  // require-static-classes is enabled for those consumers; 0.2.0 still cannot
+  // read imported constants, so its documented narrow exceptions remain.
+  // no-raw-colors starts at warn while existing palette colors are migrated
+  // and checked across themes (#18004). Keep verified plugin/config tokens exempt below.
+  // no-restyle first protects divider/toggle appearances; layout remains public,
+  // and ToggleSwitch callers can dim the control for disabled/pending states.
+  // Carets expose layout and text color; their padding/shape stay internal.
+  // Stateful carets own rotation through isOpen; generic icons retain orientation.
+  // Next: finish the color migration before promoting to error; define contracts
+  // for the remaining UI primitives and audit dynamic styles for no-inline-styles.
+  // 0.2.0 also improves render-prop, destructuring, barrel-export, and custom
+  // animation recognition. Vue/Svelte support adds no new rule names or parsers
+  // to this React project; keep this upgrade separate from rule activation.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { shadcn: shadcnPlugin },
+    rules: {
+      "shadcn/no-arbitrary-values": "warn",
+      "shadcn/no-restyle": [
+        "error",
+        {
+          // Adopt only primitives whose appearance contract is already settled.
+          // Typography, menus, and Pre need a separate design audit.
+          componentImports: [
+            "^#/ui/(divider|toggle-switch|combobox-caret)$",
+            // 0.2.0 needs the existing re-export path matched explicitly too.
+            "^#/components/features/automations/toggle-switch$",
+          ],
+          allow: ["layout"],
+          contracts: [
+            // The button wrapper can express caller-owned disabled/pending state.
+            // ToggleSwitchVisual still owns the track/thumb color, shape, and effects.
+            { pattern: "^ToggleSwitch$", allow: ["layout", "opacity"] },
+            {
+              pattern: "^ComboboxCaretIcon$",
+              allow: ["layout", "text-color"],
+              message:
+                "Keep caret classes to layout and text color; the SVG owns its appearance.",
+            },
+            {
+              pattern: "^ComboboxCaret(Button|Inline)$",
+              allow: ["layout", "text-color"],
+              deny: ["rotate-*"],
+              message:
+                "Use isOpen for caret rotation; keep caller classes to layout and text color.",
+            },
+          ],
+        },
+      ],
+      "shadcn/no-raw-colors": [
+        "warn",
+        {
+          // 0.2.0 reads CSS @theme tokens, but not these JS-config/plugin tokens.
+          // Exact classes only: do not exempt raw palettes or whole namespaces.
+          allow: [
+            // hero.ts / @heroui/theme: semantic colors and the medium font size.
+            "bg-background",
+            "bg-content1",
+            "text-primary-foreground",
+            "text-medium",
+            // tailwind.config.js: existing named tokens, pending theme migration.
+            "bg-status-fail-bg",
+            "text-status-fail-text",
+            "text-content-muted",
+            "text-modal-muted",
+          ],
+        },
+      ],
+      // Warning-only while measured layout, portal placement, accessibility
+      // helpers and renderer interfaces are reviewed by their owners. The rule
+      // permits CSS variables itself; no broad property/color exception is needed.
+      "shadcn/no-inline-styles": "warn",
+      "shadcn/require-static-classes": [
+        "error",
+        { componentImports: ["^#/ui(/|$)"] },
+      ],
+      "shadcn/no-unknown-classes": [
+        "error",
+        {
+          allow: [
+            // src/index.css owns the overlay animation outside the theme graph.
+            "environment-switch-overlay",
+            // Selector target for has-[.conversation-overview-diffs-git-action:hover].
+            "conversation-overview-diffs-git-action",
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Primitive implementations own appearance and variant helpers. Token and
+    // unknown-class checks still apply to their definitions.
+    files: ["src/ui/**/*.{ts,tsx}"],
+    rules: {
+      "shadcn/no-restyle": "off",
+      "shadcn/require-static-classes": "off",
+    },
+  },
+  {
+    // Public embedding API: this owner must forward arbitrary caller styles.
+    // Its opaque object cannot be converted to custom-properties-only styles.
+    files: ["src/components/providers/agent-server-ui-root.tsx"],
+    rules: { "shadcn/no-inline-styles": "off" },
+  },
+];

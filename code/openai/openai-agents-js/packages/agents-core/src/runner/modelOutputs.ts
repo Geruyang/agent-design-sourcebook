@@ -1,0 +1,1506 @@
+import { Agent } from '../agent';
+import { ModelBehaviorError } from '../errors';
+import { Handoff } from '../handoff';
+import {
+  RunCompactionItem,
+  RunHandoffCallItem,
+  RunInputItem,
+  RunItem,
+  RunMessageOutputItem,
+  RunReasoningItem,
+  RunToolApprovalItem,
+  RunToolCallItem,
+  RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
+} from '../items';
+import { ModelResponse } from '../model';
+import { RunState } from '../runState';
+import type { AgentInputItem } from '../types';
+import {
+  ApplyPatchTool,
+  ComputerTool,
+  FunctionTool,
+  HostedMCPTool,
+  HostedTool,
+  ShellTool,
+  Tool,
+  type ToolAllowedCaller,
+  getClientToolSearchExecutor,
+  getToolSearchRuntimeRoutingKey,
+} from '../tool';
+import * as ProviderData from '../types/providerData';
+import { addErrorToCurrentSpan } from '../tracing/context';
+import {
+  buildFunctionToolLookupMap,
+  type FunctionToolLookupKey,
+  getFunctionToolNamespace,
+  getFunctionToolQualifiedName,
+  getFunctionToolStateKey,
+  isDeferredTopLevelFunctionTool,
+  getToolCallNamespace,
+  resolveFunctionToolCall,
+} from '../toolIdentity';
+import {
+  getToolSearchMatchKey,
+  getToolSearchExecution,
+  getToolSearchOutputReplacementKey,
+  getToolSearchProviderCallId,
+} from '../utils';
+import type {
+  ProcessedResponse,
+  ToolRunApplyPatch,
+  ToolRunComputer,
+  ToolRunFunction,
+  ToolRunFunctionNotFound,
+  ToolRunHandoff,
+  ToolRunMCPApprovalRequest,
+  ToolRunShell,
+} from './types';
+import { createToolRunFunction } from './types';
+import type { ToolNotFoundBehavior } from '../run';
+import * as protocol from '../types/protocol';
+import {
+  addHostedMcpToolsFromToolSearchOutput,
+  addLoadedToolNamesFromToolSearchOutput,
+  createBuiltInClientToolSearchOutput,
+  executeCustomClientToolSearch,
+  getClientToolSearchHelper,
+  toolSearchOutputLoadsHostedMcpTool,
+  recordHostedMcpDiscovery,
+  registerRuntimeToolSearchTools,
+} from './toolSearch';
+import { ensureToolCallerAllowed } from './toolCaller';
+import { assertValidCompactionItems, trimToLatestCompaction } from './items';
+import { attributeToolSearchOutput } from './toolSearchAttribution';
+
+function ensureToolAvailable<T>(
+  tool: T | undefined,
+  message: string,
+  data: Record<string, unknown>,
+): T {
+  if (!tool) {
+    addErrorToCurrentSpan({
+      message,
+      data,
+    });
+    throw new ModelBehaviorError(message);
+  }
+  return tool;
+}
+
+function ensureProgrammaticToolCallingAvailable<TContext>(
+  output: protocol.ProgramCallItem,
+  tools: Tool<TContext>[],
+  agent: Agent<any, any>,
+  options: ModelResponseProcessingOptions,
+): void {
+  const programmaticTool = tools.find(
+    (tool) =>
+      tool.type === 'hosted_tool' &&
+      tool.providerData?.type === 'programmatic_tool_calling',
+  );
+  if (programmaticTool || options.allowPromptSuppliedTools === true) {
+    return;
+  }
+  ensureToolAvailable(
+    programmaticTool,
+    `Model produced a program item without programmaticToolCallingTool() in Agent (${agent.name}).`,
+    {
+      agent_name: agent.name,
+      tool_call_id: output.callId,
+    },
+  );
+}
+
+type ModelResponseProcessingOptions = {
+  toolSearchAgentName?: string;
+  allowPromptSuppliedTools?: boolean;
+  beforeClientToolSearch?: () => void;
+};
+
+const MCP_HOSTED_CALL_TYPES = new Set([
+  'mcp_call',
+  'mcp_list_tools',
+  'mcp_approval_request',
+  'mcp_approval_response',
+]);
+
+function ensureHostedToolCallAllowed<TContext>(
+  output: protocol.HostedToolCallItem,
+  tools: Tool<TContext>[],
+  mcpToolMap: Map<string, HostedMCPTool>,
+  loadedState: LoadedDeferredToolState,
+  agent: Agent<any, any>,
+): void {
+  const providerType = output.providerData?.type;
+  const isCodeInterpreterCall =
+    providerType === 'code_interpreter_call' ||
+    providerType === 'code_interpreter' ||
+    output.name === 'code_interpreter_call' ||
+    output.name === 'code_interpreter';
+  if (isCodeInterpreterCall) {
+    const codeInterpreterTool = tools.find(
+      (tool): tool is HostedTool =>
+        tool.type === 'hosted_tool' &&
+        tool.providerData?.type === 'code_interpreter',
+    );
+    if (!codeInterpreterTool) {
+      return;
+    }
+
+    ensureToolCallerAllowed(
+      output,
+      codeInterpreterTool.providerData?.allowed_callers,
+      codeInterpreterTool.name,
+      agent,
+    );
+    return;
+  }
+
+  if (
+    !MCP_HOSTED_CALL_TYPES.has(providerType) &&
+    !MCP_HOSTED_CALL_TYPES.has(output.name)
+  ) {
+    return;
+  }
+
+  const serverLabel = output.providerData?.server_label;
+  if (typeof serverLabel !== 'string') {
+    return;
+  }
+  const mcpTool = mcpToolMap.get(serverLabel);
+  if (!mcpTool) {
+    return;
+  }
+  ensureToolCallerAllowed(
+    output,
+    mcpTool.providerData.allowed_callers,
+    serverLabel,
+    agent,
+  );
+  // Hosted MCP discovery can be reported before the tool-search result.
+  // Listing tools does not execute them or mark the server as loaded.
+  if (providerType === 'mcp_list_tools' || output.name === 'mcp_list_tools') {
+    return;
+  }
+  if (
+    mcpTool.providerData.defer_loading !== true ||
+    [
+      ...loadedState.keyedToolSearchOutputsByKey.values(),
+      ...loadedState.anonymousToolSearchOutputs,
+    ].some((searchOutput) =>
+      toolSearchOutputLoadsHostedMcpTool(
+        searchOutput,
+        serverLabel,
+        output.providerData?.name,
+      ),
+    )
+  ) {
+    return;
+  }
+
+  const message = `Model produced deferred MCP call ${serverLabel} before it was loaded via tool_search.`;
+  addErrorToCurrentSpan({
+    message,
+    data: {
+      agent_name: agent.name,
+      mcp_server_label: serverLabel,
+      tool_call_id: output.id,
+    },
+  });
+  throw new ModelBehaviorError(message);
+}
+
+function handleToolCallAction<
+  TTool extends {
+    name: string;
+    allowedCallers?: readonly ToolAllowedCaller[];
+  },
+  TAction,
+>({
+  output,
+  tool,
+  agent,
+  errorMessage,
+  errorData,
+  items,
+  toolsUsed,
+  actions,
+  buildAction,
+}: {
+  output: protocol.ToolCallItem;
+  tool: TTool | undefined;
+  agent: Agent<any, any>;
+  errorMessage: string;
+  errorData: Record<string, unknown>;
+  items: RunItem[];
+  toolsUsed: string[];
+  actions: TAction[];
+  buildAction: (resolvedTool: TTool) => TAction;
+}) {
+  const resolvedTool = ensureToolAvailable(tool, errorMessage, errorData);
+  ensureToolCallerAllowed(
+    output,
+    resolvedTool.allowedCallers,
+    resolvedTool.name,
+    agent,
+  );
+  items.push(new RunToolCallItem(output, agent));
+  toolsUsed.push(resolvedTool.name);
+  actions.push(buildAction(resolvedTool));
+}
+
+function recordHandoffRequest(
+  output: protocol.FunctionCallItem,
+  handoff: Handoff<any, any>,
+  agent: Agent<any, any>,
+  items: RunItem[],
+  toolsUsed: string[],
+  handoffs: ToolRunHandoff[],
+): void {
+  toolsUsed.push(output.name);
+  const isPrimaryHandoff = handoffs.length === 0;
+  handoffs.push({
+    toolCall: output,
+    handoff,
+  });
+  if (!isPrimaryHandoff) {
+    return;
+  }
+  // Only persist the first handoff request. Later handoffs are SDK-ignored and
+  // would otherwise bias future turns against valid delegation targets.
+  items.push(new RunHandoffCallItem(output, agent));
+}
+
+function resolveFunctionOrHandoff(
+  toolCall: protocol.FunctionCallItem,
+  handoffMap: Map<string, Handoff<any, any>>,
+  functionMap: Map<FunctionToolLookupKey, FunctionTool<any>>,
+):
+  | { type: 'handoff'; handoff: Handoff<any, any> }
+  | { type: 'function'; tool: FunctionTool<any> }
+  | { type: 'not_found'; toolName: string } {
+  const namespace = getToolCallNamespace(toolCall);
+  if (!namespace) {
+    const handoff = handoffMap.get(toolCall.name);
+    if (handoff) {
+      return { type: 'handoff', handoff };
+    }
+  }
+
+  const functionTool = resolveFunctionToolCall(toolCall, functionMap);
+  if (!functionTool) {
+    return {
+      type: 'not_found',
+      toolName:
+        getToolCallNamespace(toolCall) &&
+        getToolCallNamespace(toolCall) !== toolCall.name
+          ? `${getToolCallNamespace(toolCall)}.${toolCall.name}`
+          : toolCall.name,
+    };
+  }
+  return { type: 'function', tool: functionTool };
+}
+
+function throwFunctionToolNotFound(
+  toolName: string,
+  agent: Agent<any, any>,
+): never {
+  const message = `Tool ${toolName} not found in agent ${agent.name}.`;
+  addErrorToCurrentSpan({
+    message,
+    data: {
+      tool_name: toolName,
+      agent_name: agent.name,
+    },
+  });
+
+  throw new ModelBehaviorError(message);
+}
+
+function recordMissingFunctionTool(
+  output: protocol.FunctionCallItem,
+  toolName: string,
+  agent: Agent<any, any>,
+  items: RunItem[],
+  toolsUsed: string[],
+  functionToolsNotFound: ToolRunFunctionNotFound[],
+  reason?: ToolRunFunctionNotFound['reason'],
+): void {
+  toolsUsed.push(toolName);
+  items.push(new RunToolCallItem(output, agent));
+  functionToolsNotFound.push({
+    toolCall: output,
+    toolName,
+    ...(reason ? { reason } : {}),
+  });
+}
+
+function normalizeFunctionToolCallForStorage(
+  toolCall: protocol.FunctionCallItem,
+  tool: FunctionTool<any>,
+): protocol.FunctionCallItem {
+  const namespace = getToolCallNamespace(toolCall);
+  const explicitNamespace = getFunctionToolNamespace(tool);
+  const qualifiedToolName = getFunctionToolQualifiedName(tool);
+
+  if (
+    namespace ||
+    !explicitNamespace ||
+    !qualifiedToolName ||
+    toolCall.name !== qualifiedToolName
+  ) {
+    return toolCall;
+  }
+
+  return {
+    ...toolCall,
+    name: tool.name,
+    namespace: explicitNamespace,
+  };
+}
+
+type LoadedDeferredToolState = {
+  anonymousToolSearchOutputs: protocol.ToolSearchOutputItem[];
+  keyedToolSearchOutputsByKey: Map<string, protocol.ToolSearchOutputItem>;
+  loadedToolNames: Set<string>;
+};
+
+function getRawAgentInputItem(
+  item: RunItem | AgentInputItem,
+): AgentInputItem | undefined {
+  if (
+    item &&
+    typeof item === 'object' &&
+    'rawItem' in item &&
+    item.rawItem &&
+    typeof item.rawItem === 'object'
+  ) {
+    return item.rawItem as AgentInputItem;
+  }
+
+  return item as AgentInputItem;
+}
+
+function refreshLoadedDeferredToolNames(state: LoadedDeferredToolState): void {
+  state.loadedToolNames.clear();
+
+  for (const toolSearchOutput of state.keyedToolSearchOutputsByKey.values()) {
+    addLoadedToolNamesFromToolSearchOutput(
+      toolSearchOutput,
+      state.loadedToolNames,
+    );
+  }
+
+  for (const toolSearchOutput of state.anonymousToolSearchOutputs) {
+    addLoadedToolNamesFromToolSearchOutput(
+      toolSearchOutput,
+      state.loadedToolNames,
+    );
+  }
+}
+
+function recordLoadedToolSearchOutput(
+  state: LoadedDeferredToolState,
+  toolSearchOutput: protocol.ToolSearchOutputItem,
+): void {
+  const replacementKey = getToolSearchOutputReplacementKey(toolSearchOutput);
+  if (replacementKey) {
+    state.keyedToolSearchOutputsByKey.set(replacementKey, toolSearchOutput);
+  } else {
+    state.anonymousToolSearchOutputs.push(toolSearchOutput);
+  }
+
+  refreshLoadedDeferredToolNames(state);
+}
+
+function collectLoadedDeferredToolStateFromHistory(
+  items: Array<RunItem | AgentInputItem>,
+  agent: Agent<any, any>,
+  agentName: string | undefined,
+): LoadedDeferredToolState {
+  const state: LoadedDeferredToolState = {
+    anonymousToolSearchOutputs: [],
+    keyedToolSearchOutputsByKey: new Map(),
+    loadedToolNames: new Set<string>(),
+  };
+
+  // Use the active history boundary without discarding the surviving item owners.
+  for (const item of trimToLatestCompaction(items)) {
+    if (
+      (item instanceof RunToolSearchOutputItem ||
+        item instanceof RunInputItem) &&
+      item.agent !== agent
+    ) {
+      continue;
+    }
+
+    const rawItem = getRawAgentInputItem(item);
+    if (rawItem?.type !== 'tool_search_output') {
+      continue;
+    }
+
+    // Raw history has no live owner; only an unambiguous recorded name can restore discovery.
+    if (
+      !(item instanceof RunToolSearchOutputItem) &&
+      (typeof agentName !== 'string' ||
+        rawItem.toolSearchAgentName !== agentName)
+    ) {
+      continue;
+    }
+
+    const replacementKey = getToolSearchOutputReplacementKey(rawItem);
+    if (replacementKey) {
+      state.keyedToolSearchOutputsByKey.set(replacementKey, rawItem);
+    } else {
+      state.anonymousToolSearchOutputs.push(rawItem);
+    }
+  }
+
+  refreshLoadedDeferredToolNames(state);
+  return state;
+}
+
+function seedHostedMcpToolsFromLoadedDeferredToolState(
+  state: LoadedDeferredToolState,
+  mcpToolMap: Map<string, HostedMCPTool>,
+  preserveExistingServerLabels: Set<string>,
+): void {
+  for (const toolSearchOutput of state.keyedToolSearchOutputsByKey.values()) {
+    addHostedMcpToolsFromToolSearchOutput(toolSearchOutput, mcpToolMap, {
+      preserveExistingServerLabels,
+    });
+  }
+
+  for (const toolSearchOutput of state.anonymousToolSearchOutputs) {
+    addHostedMcpToolsFromToolSearchOutput(toolSearchOutput, mcpToolMap, {
+      preserveExistingServerLabels,
+    });
+  }
+}
+
+function buildFunctionToolMap<TContext>(
+  tools: Tool<TContext>[],
+): Map<FunctionToolLookupKey, FunctionTool<TContext>> {
+  return buildFunctionToolLookupMap(
+    tools.filter((t): t is FunctionTool<TContext> => t.type === 'function'),
+  );
+}
+
+type GeneratedClientToolSearchOutput<TContext> = {
+  output: protocol.ToolSearchOutputItem;
+  runtimeTools: Tool<TContext>[];
+  callbackRuntimeTools: Tool<TContext>[];
+};
+
+function getUnresolvedClientToolSearchCalls(
+  modelResponse: ModelResponse,
+  hasClientToolSearchTool: boolean,
+): protocol.ToolSearchCallItem[] {
+  const clientToolSearchCalls: protocol.ToolSearchCallItem[] = [];
+  const pendingCalls: protocol.ToolSearchCallItem[] = [];
+  const latestCallByMatchKey = new Map<string, protocol.ToolSearchCallItem>();
+  const resolvedCalls = new Set<protocol.ToolSearchCallItem>();
+
+  for (const output of modelResponse.output) {
+    if (output.type === 'tool_search_call') {
+      const execution = getToolSearchExecution(output);
+      if (
+        execution === 'client' ||
+        (typeof execution === 'undefined' && hasClientToolSearchTool)
+      ) {
+        clientToolSearchCalls.push(output);
+        pendingCalls.push(output);
+        const matchKey = getToolSearchMatchKey(output);
+        if (matchKey) {
+          latestCallByMatchKey.set(matchKey, output);
+        }
+      }
+      continue;
+    }
+    if (
+      output.type !== 'tool_search_output' ||
+      getToolSearchExecution(output) === 'server'
+    ) {
+      continue;
+    }
+
+    const explicitCallId = getToolSearchProviderCallId(output);
+    const matchedCall = explicitCallId
+      ? latestCallByMatchKey.get(explicitCallId)
+      : pendingCalls.shift();
+    if (!matchedCall) {
+      continue;
+    }
+    resolvedCalls.add(matchedCall);
+    const pendingIndex = pendingCalls.indexOf(matchedCall);
+    if (pendingIndex >= 0) {
+      pendingCalls.splice(pendingIndex, 1);
+    }
+  }
+
+  return clientToolSearchCalls.filter((call) => !resolvedCalls.has(call));
+}
+
+function buildGeneratedClientToolSearchOutputMap<TContext>(
+  modelResponse: ModelResponse,
+  tools: Tool<TContext>[],
+  hasClientToolSearchTool: boolean,
+): Map<protocol.ToolSearchCallItem, protocol.ToolSearchOutputItem> {
+  const clientToolSearchCalls = getUnresolvedClientToolSearchCalls(
+    modelResponse,
+    hasClientToolSearchTool,
+  );
+
+  const generatedOutputs = new Map<
+    protocol.ToolSearchCallItem,
+    protocol.ToolSearchOutputItem
+  >();
+  for (const toolSearchCall of clientToolSearchCalls) {
+    generatedOutputs.set(
+      toolSearchCall,
+      createBuiltInClientToolSearchOutput(toolSearchCall, tools),
+    );
+  }
+
+  return generatedOutputs;
+}
+
+async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
+  agent: Agent<any, any>;
+  handoffs: Handoff<any, any>[];
+  modelResponse: ModelResponse;
+  replaceableRuntimeToolKeys: Set<string>;
+  runContext: RunState<TContext, Agent<any, any>>['_context'];
+  tools: Tool<TContext>[];
+}): Promise<
+  Map<protocol.ToolSearchCallItem, GeneratedClientToolSearchOutput<TContext>>
+> {
+  const {
+    agent,
+    handoffs,
+    modelResponse,
+    replaceableRuntimeToolKeys,
+    runContext,
+    tools,
+  } = args;
+  const clientToolSearchTool = getClientToolSearchHelper(tools);
+  const hasClientToolSearchTool = typeof clientToolSearchTool !== 'undefined';
+  const executionTools = [...tools];
+  const validationAvailableTools = [...tools];
+  const validationFunctionMap = buildFunctionToolMap(tools);
+  const validationHandoffMap = new Map(
+    handoffs.map((handoff) => [handoff.toolName, handoff]),
+  );
+  const validationMcpToolMap = new Map(
+    tools
+      .filter(
+        (tool): tool is HostedMCPTool<any> =>
+          tool.type === 'hosted_tool' && tool.providerData?.type === 'mcp',
+      )
+      .map((tool) => [tool.providerData!.server_label, tool as HostedMCPTool]),
+  );
+  const validationReplaceableRuntimeToolKeys = new Set(
+    replaceableRuntimeToolKeys,
+  );
+  const clientToolSearchCalls = getUnresolvedClientToolSearchCalls(
+    modelResponse,
+    hasClientToolSearchTool,
+  );
+
+  const generatedOutputs = new Map<
+    protocol.ToolSearchCallItem,
+    GeneratedClientToolSearchOutput<TContext>
+  >();
+  for (const toolSearchCall of clientToolSearchCalls) {
+    if (
+      clientToolSearchTool &&
+      getClientToolSearchExecutor(clientToolSearchTool)
+    ) {
+      const generatedOutput = await executeCustomClientToolSearch({
+        agent,
+        runContext,
+        toolSearchCall,
+        toolSearchTool: clientToolSearchTool,
+        tools: executionTools,
+      });
+      registerRuntimeToolSearchTools({
+        availableTools: validationAvailableTools,
+        functionMap: validationFunctionMap,
+        handoffMap: validationHandoffMap,
+        mcpToolMap: validationMcpToolMap,
+        replaceableRuntimeToolKeys: validationReplaceableRuntimeToolKeys,
+        runtimeTools: generatedOutput.runtimeTools,
+      });
+      generatedOutputs.set(toolSearchCall, generatedOutput);
+      executionTools.push(...generatedOutput.callbackRuntimeTools);
+      continue;
+    }
+
+    generatedOutputs.set(toolSearchCall, {
+      output: createBuiltInClientToolSearchOutput(
+        toolSearchCall,
+        executionTools,
+      ),
+      runtimeTools: [],
+      callbackRuntimeTools: [],
+    });
+  }
+
+  return generatedOutputs;
+}
+
+function checkDeferredFunctionToolLoaded(
+  toolCall: protocol.FunctionCallItem,
+  tool: FunctionTool<any>,
+  loadedToolNames: Set<string>,
+  agent: Agent<any, any>,
+  behavior: ToolNotFoundBehavior,
+): boolean {
+  if (tool.deferLoading !== true) {
+    return true;
+  }
+
+  const explicitNamespace = getFunctionToolNamespace(tool);
+  const qualifiedName = getFunctionToolQualifiedName(tool);
+  const isLoaded =
+    (qualifiedName ? loadedToolNames.has(qualifiedName) : false) ||
+    ((!explicitNamespace || explicitNamespace === tool.name) &&
+      loadedToolNames.has(tool.name));
+
+  if (isLoaded) {
+    return true;
+  }
+
+  if (behavior === 'return_error_to_model') {
+    return false;
+  }
+
+  const toolName = qualifiedName ?? tool.name;
+  const message = `Model produced deferred function call ${toolName} before it was loaded via tool_search.`;
+  addErrorToCurrentSpan({
+    message,
+    data: {
+      agent_name: agent.name,
+      tool_name: toolName,
+      tool_call_id: toolCall.callId,
+    },
+  });
+  throw new ModelBehaviorError(message);
+}
+
+type ShellCallStatus = 'in_progress' | 'completed' | 'incomplete';
+
+function parseShellCallStatus(status: unknown): ShellCallStatus | undefined {
+  if (
+    status === 'in_progress' ||
+    status === 'completed' ||
+    status === 'incomplete'
+  ) {
+    return status;
+  }
+  return undefined;
+}
+
+function isShellCallPendingStatus(status: unknown): boolean {
+  if (typeof status === 'undefined') {
+    return true;
+  }
+  return parseShellCallStatus(status) === 'in_progress';
+}
+
+function hasPendingShellOutputStatus(
+  output: protocol.ShellCallResultItem,
+): boolean {
+  const outputStatus =
+    (output as { status?: unknown }).status ?? output.providerData?.status;
+  if (typeof outputStatus !== 'string') {
+    return false;
+  }
+  return isShellCallPendingStatus(outputStatus);
+}
+
+/**
+ * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
+ * Returns both the serializable RunItems (for history/streaming) and the actionable tool metadata.
+ */
+export function processModelResponse<TContext>(
+  modelResponse: ModelResponse,
+  agent: Agent<any, any>,
+  tools: Tool<TContext>[],
+  handoffs: Handoff<any, any>[],
+  priorItems: Array<RunItem | AgentInputItem> = [],
+  toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
+  processingOptions: ModelResponseProcessingOptions = {},
+): ProcessedResponse<TContext> {
+  assertValidCompactionItems(modelResponse.output);
+  const items: RunItem[] = [];
+  const runHandoffs: ToolRunHandoff[] = [];
+  const runFunctions: ToolRunFunction<TContext>[] = [];
+  const functionToolsNotFound: ToolRunFunctionNotFound[] = [];
+  const runComputerActions: ToolRunComputer[] = [];
+  const runShellActions: ToolRunShell[] = [];
+  let hasHostedShellCall = false;
+  const runApplyPatchActions: ToolRunApplyPatch[] = [];
+  const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
+  const toolsUsed: string[] = [];
+  const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
+  // Resolve tools upfront so we can look up the concrete handler in O(1) while iterating outputs.
+  const functionMap = buildFunctionToolMap(tools);
+  const computerTool = tools.find(
+    (t): t is ComputerTool<TContext, any> => t.type === 'computer',
+  );
+  const shellTool = tools.find((t): t is ShellTool => t.type === 'shell');
+  const applyPatchTool = tools.find(
+    (t): t is ApplyPatchTool => t.type === 'apply_patch',
+  );
+  const mcpToolMap = new Map(
+    tools
+      .filter((t) => t.type === 'hosted_tool' && t.providerData?.type === 'mcp')
+      .map((t) => t as HostedMCPTool)
+      .map((t) => [t.providerData.server_label, t]),
+  );
+  const originalMcpServerLabels = new Set(mcpToolMap.keys());
+  const hasClientToolSearchTool = tools.some(
+    (tool) =>
+      tool.type === 'hosted_tool' &&
+      tool.providerData?.type === 'tool_search' &&
+      tool.providerData.execution === 'client',
+  );
+  const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
+    priorItems,
+    agent,
+    processingOptions.toolSearchAgentName,
+  );
+  seedHostedMcpToolsFromLoadedDeferredToolState(
+    loadedDeferredToolState,
+    mcpToolMap,
+    originalMcpServerLabels,
+  );
+  const generatedClientToolSearchOutputsByCall =
+    buildGeneratedClientToolSearchOutputMap(
+      modelResponse,
+      tools,
+      hasClientToolSearchTool,
+    );
+  let hasGeneratedClientToolSearchOutputs = false;
+
+  for (const output of modelResponse.output) {
+    if (output.type === 'message') {
+      if (output.role === 'assistant') {
+        items.push(new RunMessageOutputItem(output, agent));
+      }
+    } else if (output.type === 'tool_search_call') {
+      items.push(new RunToolSearchCallItem(output, agent));
+      toolsUsed.push('tool_search');
+      const generatedOutput =
+        generatedClientToolSearchOutputsByCall.get(output);
+      if (generatedOutput) {
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
+        recordLoadedToolSearchOutput(loadedDeferredToolState, generatedOutput);
+        addHostedMcpToolsFromToolSearchOutput(generatedOutput, mcpToolMap, {
+          preserveExistingServerLabels: originalMcpServerLabels,
+        });
+        hasGeneratedClientToolSearchOutputs = true;
+      }
+    } else if (output.type === 'tool_search_output') {
+      const recordedOutput = recordHostedMcpDiscovery(output, [
+        ...agent.tools,
+        ...tools,
+      ]);
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            recordedOutput,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
+      recordLoadedToolSearchOutput(loadedDeferredToolState, recordedOutput);
+      addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
+        preserveExistingServerLabels: originalMcpServerLabels,
+      });
+    } else if (output.type === 'program') {
+      ensureProgrammaticToolCallingAvailable(
+        output,
+        tools,
+        agent,
+        processingOptions,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('programmatic_tool_calling');
+    } else if (output.type === 'program_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
+    } else if (output.type === 'hosted_tool_call') {
+      ensureHostedToolCallAllowed(
+        output,
+        tools,
+        mcpToolMap,
+        loadedDeferredToolState,
+        agent,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      const toolName = output.name;
+      toolsUsed.push(toolName);
+
+      if (
+        output.providerData?.type === 'mcp_approval_request' ||
+        output.name === 'mcp_approval_request'
+      ) {
+        // Hosted remote MCP server's approval process
+        const providerData =
+          output.providerData as ProviderData.HostedMCPApprovalRequest;
+
+        const mcpServerLabel = providerData.server_label;
+        const mcpServerTool = mcpToolMap.get(mcpServerLabel);
+        if (typeof mcpServerTool === 'undefined') {
+          const message = `MCP server (${mcpServerLabel}) not found in Agent (${agent.name})`;
+          addErrorToCurrentSpan({
+            message,
+            data: { mcp_server_label: mcpServerLabel },
+          });
+          throw new ModelBehaviorError(message);
+        }
+        // Do this approval later:
+        // We support both onApproval callback (like the Python SDK does) and HITL patterns.
+        const approvalItem = new RunToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            // We must use this name to align with the name sent from the servers
+            name: providerData.name,
+            id: providerData.id,
+            status: 'in_progress',
+            providerData,
+            ...(output.caller ? { caller: output.caller } : {}),
+          },
+          agent,
+        );
+        runMCPApprovalRequests.push({
+          requestItem: approvalItem,
+          mcpTool: mcpServerTool,
+        });
+        if (!mcpServerTool.providerData.on_approval) {
+          // When onApproval function exists, it confirms the approval right after this.
+          // Thus, this approval item must be appended only for the next turn interruption patterns.
+          items.push(approvalItem);
+        }
+      }
+    } else if (output.type === 'reasoning') {
+      items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
+    } else if (output.type === 'computer_call') {
+      handleToolCallAction({
+        output,
+        tool: computerTool,
+        agent,
+        errorMessage: 'Model produced computer action without a computer tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runComputerActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          computer: resolvedTool,
+        }),
+      });
+    } else if (output.type === 'shell_call') {
+      const resolvedShellTool = ensureToolAvailable(
+        shellTool,
+        'Model produced shell action without a shell tool.',
+        { agent_name: agent.name },
+      );
+      ensureToolCallerAllowed(
+        output,
+        resolvedShellTool.allowedCallers,
+        resolvedShellTool.name,
+        agent,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push(resolvedShellTool.name);
+      const shellEnvironmentType =
+        resolvedShellTool.environment?.type ?? 'local';
+
+      // Hosted container shell is executed by the API provider, so no local action is queued.
+      if (shellEnvironmentType !== 'local') {
+        if (isShellCallPendingStatus(output.status)) {
+          hasHostedShellCall = true;
+        }
+        continue;
+      }
+
+      if (!resolvedShellTool.shell) {
+        const message =
+          'Model produced local shell action without a local shell implementation.';
+        addErrorToCurrentSpan({
+          message,
+          data: { agent_name: agent.name },
+        });
+        throw new ModelBehaviorError(message);
+      }
+
+      runShellActions.push({
+        toolCall: output,
+        shell: resolvedShellTool,
+      });
+    } else if (output.type === 'shell_call_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      if (hasPendingShellOutputStatus(output)) {
+        hasHostedShellCall = true;
+      }
+    } else if (output.type === 'apply_patch_call') {
+      handleToolCallAction({
+        output,
+        tool: applyPatchTool,
+        agent,
+        errorMessage:
+          'Model produced apply_patch action without an apply_patch tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runApplyPatchActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          applyPatch: resolvedTool,
+        }),
+      });
+    }
+    /*
+     * Intentionally skip returning here so function_call processing can still
+     * run when output.type matches other tool call types.
+     */
+    if (output.type !== 'function_call') {
+      continue;
+    }
+
+    const resolved = resolveFunctionOrHandoff(output, handoffMap, functionMap);
+    if (resolved.type === 'not_found') {
+      if (toolNotFoundBehavior !== 'return_error_to_model') {
+        throwFunctionToolNotFound(resolved.toolName, agent);
+      }
+      recordMissingFunctionTool(
+        output,
+        resolved.toolName,
+        agent,
+        items,
+        toolsUsed,
+        functionToolsNotFound,
+      );
+    } else if (resolved.type === 'handoff') {
+      ensureToolCallerAllowed(
+        output,
+        undefined,
+        resolved.handoff.toolName,
+        agent,
+      );
+      recordHandoffRequest(
+        output,
+        resolved.handoff,
+        agent,
+        items,
+        toolsUsed,
+        runHandoffs,
+      );
+    } else {
+      ensureToolCallerAllowed(
+        output,
+        resolved.tool.allowedCallers,
+        getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+        agent,
+      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
+      const normalizedToolCall = normalizeFunctionToolCallForStorage(
+        output,
+        resolved.tool,
+      );
+      toolsUsed.push(
+        getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+      );
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
+      runFunctions.push(
+        createToolRunFunction({
+          toolCall: normalizedToolCall,
+          tool: resolved.tool,
+          availableFunctionTools: [...new Set(functionMap.values())],
+        }),
+      );
+    }
+  }
+
+  return {
+    newItems: items,
+    handoffs: runHandoffs,
+    functions: runFunctions,
+    functionToolsNotFound,
+    computerActions: runComputerActions,
+    shellActions: runShellActions,
+    applyPatchActions: runApplyPatchActions,
+    mcpApprovalRequests: runMCPApprovalRequests,
+    toolsUsed: toolsUsed,
+    hasToolsOrApprovalsToRun(): boolean {
+      return (
+        runHandoffs.length > 0 ||
+        runFunctions.length > 0 ||
+        functionToolsNotFound.length > 0 ||
+        runMCPApprovalRequests.length > 0 ||
+        runComputerActions.length > 0 ||
+        runShellActions.length > 0 ||
+        hasHostedShellCall ||
+        runApplyPatchActions.length > 0 ||
+        hasGeneratedClientToolSearchOutputs
+      );
+    },
+  };
+}
+
+export async function processModelResponseAsync<TContext>(
+  modelResponse: ModelResponse,
+  agent: Agent<any, any>,
+  tools: Tool<TContext>[],
+  handoffs: Handoff<any, any>[],
+  state: RunState<TContext, Agent<any, any>>,
+  priorItems: Array<RunItem | AgentInputItem> = [],
+  toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
+  processingOptions: ModelResponseProcessingOptions = {},
+): Promise<ProcessedResponse<TContext>> {
+  assertValidCompactionItems(modelResponse.output);
+  processingOptions = {
+    ...processingOptions,
+    toolSearchAgentName: state._getToolSearchAgentName(agent),
+  };
+  const clientToolSearchTool = getClientToolSearchHelper(tools);
+  const hasCustomClientToolSearchExecutor = Boolean(
+    clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),
+  );
+  const hasRelevantClientToolSearchCall = modelResponse.output.some(
+    (output) =>
+      output.type === 'tool_search_call' &&
+      (getToolSearchExecution(output) === 'client' ||
+        (typeof getToolSearchExecution(output) === 'undefined' &&
+          typeof clientToolSearchTool !== 'undefined')),
+  );
+  if (!hasCustomClientToolSearchExecutor || !hasRelevantClientToolSearchCall) {
+    return processModelResponse(
+      modelResponse,
+      agent,
+      tools,
+      handoffs,
+      priorItems,
+      toolNotFoundBehavior,
+      processingOptions,
+    );
+  }
+
+  processingOptions.beforeClientToolSearch?.();
+
+  const items: RunItem[] = [];
+  const runHandoffs: ToolRunHandoff[] = [];
+  const runFunctions: ToolRunFunction<TContext>[] = [];
+  const functionToolsNotFound: ToolRunFunctionNotFound[] = [];
+  const runComputerActions: ToolRunComputer[] = [];
+  const runShellActions: ToolRunShell[] = [];
+  let hasHostedShellCall = false;
+  const runApplyPatchActions: ToolRunApplyPatch[] = [];
+  const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
+  const toolsUsed: string[] = [];
+  const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
+  const functionMap = buildFunctionToolMap(tools);
+  const computerTool = tools.find(
+    (t): t is ComputerTool<TContext, any> => t.type === 'computer',
+  );
+  const shellTool = tools.find((t): t is ShellTool => t.type === 'shell');
+  const applyPatchTool = tools.find(
+    (t): t is ApplyPatchTool => t.type === 'apply_patch',
+  );
+  const mcpToolMap = new Map(
+    tools
+      .filter((t) => t.type === 'hosted_tool' && t.providerData?.type === 'mcp')
+      .map((t) => t as HostedMCPTool)
+      .map((t) => [t.providerData.server_label, t]),
+  );
+  const originalMcpServerLabels = new Set(mcpToolMap.keys());
+  const replaceableRuntimeToolKeys = new Set(
+    state
+      .getToolSearchRuntimeTools(agent)
+      .map((tool) => getToolSearchRuntimeRoutingKey(tool))
+      .filter((key): key is string => typeof key === 'string'),
+  );
+  const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
+    priorItems,
+    agent,
+    processingOptions.toolSearchAgentName,
+  );
+  seedHostedMcpToolsFromLoadedDeferredToolState(
+    loadedDeferredToolState,
+    mcpToolMap,
+    originalMcpServerLabels,
+  );
+  const generatedClientToolSearchOutputsByCall =
+    await buildGeneratedClientToolSearchOutputMapAsync({
+      agent,
+      handoffs,
+      modelResponse,
+      replaceableRuntimeToolKeys,
+      runContext: state._context,
+      tools,
+    });
+  let hasGeneratedClientToolSearchOutputs = false;
+  const availableTools = [...tools];
+
+  for (const output of modelResponse.output) {
+    if (output.type === 'message') {
+      if (output.role === 'assistant') {
+        items.push(new RunMessageOutputItem(output, agent));
+      }
+    } else if (output.type === 'tool_search_call') {
+      items.push(new RunToolSearchCallItem(output, agent));
+      toolsUsed.push('tool_search');
+      const generatedOutput =
+        generatedClientToolSearchOutputsByCall.get(output);
+      if (generatedOutput) {
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput.output,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
+        recordLoadedToolSearchOutput(
+          loadedDeferredToolState,
+          generatedOutput.output,
+        );
+        addHostedMcpToolsFromToolSearchOutput(
+          generatedOutput.output,
+          mcpToolMap,
+          {
+            preserveExistingServerLabels: originalMcpServerLabels,
+          },
+        );
+        const replacedRuntimeTools = state.getToolSearchRuntimeToolsForOutput(
+          agent,
+          generatedOutput.output,
+        );
+        const registeredRuntimeTools = registerRuntimeToolSearchTools({
+          availableTools,
+          functionMap,
+          handoffMap,
+          mcpToolMap,
+          replaceableRuntimeToolKeys,
+          replacedRuntimeTools,
+          runtimeTools: generatedOutput.runtimeTools,
+        });
+        state.recordToolSearchRuntimeTools(
+          agent,
+          generatedOutput.output,
+          registeredRuntimeTools,
+        );
+        hasGeneratedClientToolSearchOutputs = true;
+      }
+    } else if (output.type === 'tool_search_output') {
+      const recordedOutput = recordHostedMcpDiscovery(output, [
+        ...agent.tools,
+        ...availableTools,
+      ]);
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            recordedOutput,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
+      recordLoadedToolSearchOutput(loadedDeferredToolState, recordedOutput);
+      addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
+        preserveExistingServerLabels: originalMcpServerLabels,
+      });
+    } else if (output.type === 'program') {
+      ensureProgrammaticToolCallingAvailable(
+        output,
+        availableTools,
+        agent,
+        processingOptions,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('programmatic_tool_calling');
+    } else if (output.type === 'program_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
+    } else if (output.type === 'hosted_tool_call') {
+      ensureHostedToolCallAllowed(
+        output,
+        availableTools,
+        mcpToolMap,
+        loadedDeferredToolState,
+        agent,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      const toolName = output.name;
+      toolsUsed.push(toolName);
+
+      if (
+        output.providerData?.type === 'mcp_approval_request' ||
+        output.name === 'mcp_approval_request'
+      ) {
+        const providerData =
+          output.providerData as ProviderData.HostedMCPApprovalRequest;
+
+        const mcpServerLabel = providerData.server_label;
+        const mcpServerTool = mcpToolMap.get(mcpServerLabel);
+        if (typeof mcpServerTool === 'undefined') {
+          const message = `MCP server (${mcpServerLabel}) not found in Agent (${agent.name})`;
+          addErrorToCurrentSpan({
+            message,
+            data: { mcp_server_label: mcpServerLabel },
+          });
+          throw new ModelBehaviorError(message);
+        }
+        const approvalItem = new RunToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            name: providerData.name,
+            id: providerData.id,
+            status: 'in_progress',
+            providerData,
+            ...(output.caller ? { caller: output.caller } : {}),
+          },
+          agent,
+        );
+        runMCPApprovalRequests.push({
+          requestItem: approvalItem,
+          mcpTool: mcpServerTool,
+        });
+        if (!mcpServerTool.providerData.on_approval) {
+          items.push(approvalItem);
+        }
+      }
+    } else if (output.type === 'reasoning') {
+      items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
+    } else if (output.type === 'computer_call') {
+      handleToolCallAction({
+        output,
+        tool: computerTool,
+        agent,
+        errorMessage: 'Model produced computer action without a computer tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runComputerActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          computer: resolvedTool,
+        }),
+      });
+    } else if (output.type === 'shell_call') {
+      const resolvedShellTool = ensureToolAvailable(
+        shellTool,
+        'Model produced shell action without a shell tool.',
+        { agent_name: agent.name },
+      );
+      ensureToolCallerAllowed(
+        output,
+        resolvedShellTool.allowedCallers,
+        resolvedShellTool.name,
+        agent,
+      );
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push(resolvedShellTool.name);
+      const shellEnvironmentType =
+        resolvedShellTool.environment?.type ?? 'local';
+
+      if (shellEnvironmentType !== 'local') {
+        if (isShellCallPendingStatus(output.status)) {
+          hasHostedShellCall = true;
+        }
+        continue;
+      }
+
+      if (!resolvedShellTool.shell) {
+        const message =
+          'Model produced local shell action without a local shell implementation.';
+        addErrorToCurrentSpan({
+          message,
+          data: { agent_name: agent.name },
+        });
+        throw new ModelBehaviorError(message);
+      }
+
+      runShellActions.push({
+        toolCall: output,
+        shell: resolvedShellTool,
+      });
+    } else if (output.type === 'shell_call_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      if (hasPendingShellOutputStatus(output)) {
+        hasHostedShellCall = true;
+      }
+    } else if (output.type === 'apply_patch_call') {
+      handleToolCallAction({
+        output,
+        tool: applyPatchTool,
+        agent,
+        errorMessage:
+          'Model produced apply_patch action without an apply_patch tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runApplyPatchActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          applyPatch: resolvedTool,
+        }),
+      });
+    }
+
+    if (output.type !== 'function_call') {
+      continue;
+    }
+
+    const resolved = resolveFunctionOrHandoff(output, handoffMap, functionMap);
+    if (resolved.type === 'not_found') {
+      if (toolNotFoundBehavior !== 'return_error_to_model') {
+        throwFunctionToolNotFound(resolved.toolName, agent);
+      }
+      recordMissingFunctionTool(
+        output,
+        resolved.toolName,
+        agent,
+        items,
+        toolsUsed,
+        functionToolsNotFound,
+      );
+    } else if (resolved.type === 'handoff') {
+      ensureToolCallerAllowed(
+        output,
+        undefined,
+        resolved.handoff.toolName,
+        agent,
+      );
+      recordHandoffRequest(
+        output,
+        resolved.handoff,
+        agent,
+        items,
+        toolsUsed,
+        runHandoffs,
+      );
+    } else {
+      ensureToolCallerAllowed(
+        output,
+        resolved.tool.allowedCallers,
+        getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+        agent,
+      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
+      const normalizedToolCall = normalizeFunctionToolCallForStorage(
+        output,
+        resolved.tool,
+      );
+      toolsUsed.push(
+        getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+      );
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
+      runFunctions.push(
+        createToolRunFunction({
+          toolCall: normalizedToolCall,
+          tool: resolved.tool,
+          availableFunctionTools: [...new Set(functionMap.values())],
+        }),
+      );
+    }
+  }
+
+  return {
+    newItems: items,
+    handoffs: runHandoffs,
+    functions: runFunctions,
+    functionToolsNotFound,
+    computerActions: runComputerActions,
+    shellActions: runShellActions,
+    applyPatchActions: runApplyPatchActions,
+    mcpApprovalRequests: runMCPApprovalRequests,
+    toolsUsed,
+    hasToolsOrApprovalsToRun(): boolean {
+      return (
+        runHandoffs.length > 0 ||
+        runFunctions.length > 0 ||
+        functionToolsNotFound.length > 0 ||
+        runMCPApprovalRequests.length > 0 ||
+        runComputerActions.length > 0 ||
+        runShellActions.length > 0 ||
+        hasHostedShellCall ||
+        runApplyPatchActions.length > 0 ||
+        hasGeneratedClientToolSearchOutputs
+      );
+    },
+  };
+}

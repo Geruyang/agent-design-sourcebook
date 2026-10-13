@@ -1,0 +1,33 @@
+name: Question
+description: Ask about using, extending, or contributing to Agent Foundation
+title: "[Question]: "
+labels: [question]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - a13n-harness
+        - a13n-service
+        - logging and observability
+        - a13n-envd and sandbox
+        - CI, release, or repository tooling
+        - documentation or specification
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Explain what you are trying to accomplish and where you are blocked.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include relevant versions, configuration, code, and approaches already tried. Do not include secrets or sensitive data.

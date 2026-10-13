@@ -1,0 +1,24 @@
+{
+  "name": "bun",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "scripts": {
+    "start": "bun run index.ts",
+    "start:aisdk": "bun run aisdk.ts",
+    "start:zod": "bun run zod.ts",
+    "start:sandbox:unix-local": "bun run sandbox-unix-local.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest",
+    "zod": "^4"
+  }
+}

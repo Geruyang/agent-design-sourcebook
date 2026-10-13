@@ -1,0 +1,515 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+from contextlib import asynccontextmanager, nullcontext
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from a13n_harness_ui.errors import StoreIntegrityError
+from a13n_harness_ui.settings import StorageSettings
+from a13n_harness_ui.storage import database as database_module
+from a13n_harness_ui.storage.database import check_database, open_database, short_session, transaction
+from a13n_harness_ui.storage.metadata import harness_ui_metadata
+from a13n_harness_ui.storage.migration import DatabaseMigrator, DatabaseSchemaError
+from a13n_harness_ui.storage.models import AcceptedConfigurationRecord
+from alembic import command
+from alembic.autogenerate import compare_metadata
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from anyio import fail_after, sleep_forever
+from sqlalchemy import DateTime, Engine, bindparam, create_engine, event, inspect, select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.mark.parametrize("timeout_seconds", [None, 1.25])
+def test_migrator_configures_busy_timeout(tmp_path: Path, timeout_seconds: float | None) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = (
+        DatabaseMigrator(path)
+        if timeout_seconds is None
+        else DatabaseMigrator(path, busy_timeout_seconds=timeout_seconds)
+    )
+    expected_timeout_ms = 30000 if timeout_seconds is None else 1250
+
+    def check_timeout(config: Config) -> None:
+        connection = DatabaseMigrator._connection(config)
+        assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == expected_timeout_ms
+
+    migrator._run(check_timeout)
+
+
+@pytest.mark.parametrize("timeout_seconds,hold_seconds", [(None, 6.0), (0.05, None)])
+async def test_database_waits_for_external_writer(
+    tmp_path: Path, timeout_seconds: float | None, hold_seconds: float | None
+) -> None:
+    settings = StorageSettings(data_root=tmp_path)
+    if timeout_seconds is not None:
+        settings = settings.model_copy(update={"busy_timeout_seconds": timeout_seconds})
+    path = tmp_path / "metadata.sqlite3"
+    async with open_database(path, settings) as database:
+        # A separate interpreter exercises OS-level locking on Windows as well
+        # as POSIX, without sharing the App's process-local writer queue.
+        writer = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import sqlite3, sys, time\n"
+            "with sqlite3.connect(sys.argv[1]) as connection:\n"
+            "    connection.execute('BEGIN IMMEDIATE')\n"
+            "    print('locked', flush=True)\n"
+            "    if sys.argv[2] == 'wait':\n"
+            "        sys.stdin.readline()\n"
+            "    else:\n"
+            "        time.sleep(float(sys.argv[2]))\n",
+            str(path),
+            "wait" if hold_seconds is None else str(hold_seconds),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            assert writer.stdout is not None
+            assert (await asyncio.wait_for(writer.stdout.readline(), timeout=10)).strip() == b"locked"
+            expectation = (
+                nullcontext()
+                if timeout_seconds is None
+                else pytest.raises(OperationalError, match="database is locked")
+            )
+            with expectation:
+                async with transaction(database.sessions) as session:
+                    await session.execute(text("INSERT INTO planned_restart (singleton_id, payload) VALUES (1, '{}')"))
+        finally:
+            try:
+                _, stderr = await asyncio.wait_for(writer.communicate(b"release\n"), timeout=15)
+            except TimeoutError:
+                writer.kill()
+                await writer.wait()
+                raise
+        assert writer.returncode == 0, stderr.decode()
+        async with short_session(database.sessions) as session:
+            count = (await session.execute(text("SELECT count(*) FROM planned_restart"))).scalar_one()
+            assert count == (1 if timeout_seconds is None else 0)
+        # Exhausting an explicit short budget must not leak a connection or lock.
+        async with transaction(database.sessions) as session:
+            await session.execute(text("DELETE FROM planned_restart"))
+
+
+def test_migration_history_clean_upgrade_and_schema_parity(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+
+    migrator.verify_history()
+    migrator.upgrade()
+    migrator.verify_current()
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        assert set(inspect(engine).get_table_names()) == {
+            "accepted_configuration",
+            "alembic_version",
+            "child_execution",
+            "configuration_source",
+            "current_configuration",
+            "environment_binding",
+            "project_model_preference",
+            "coordinator",
+            "coordinator_worker",
+            "planned_restart",
+            "resource_index",
+            "thread",
+            "thread_configuration",
+            "thread_inspection",
+            "thread_work",
+            "transcript_entry",
+            "transcript_turn",
+            "thread_usage",
+            "web_push_key",
+            "web_push_subscription",
+        }
+        with engine.connect() as connection:
+            context = MigrationContext.configure(
+                connection,
+                opts={"compare_type": True, "compare_server_default": True, "render_as_batch": True},
+            )
+            assert compare_metadata(context, harness_ui_metadata()) == []
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_preserves_planned_handoff(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(lambda config: command.upgrade(config, "ba240ec65035"), write=True)
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO planned_restart (singleton_id, payload) VALUES (1, '{}')"))
+        migrator.upgrade()
+        migrator.verify_current()
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT payload FROM planned_restart")).scalar_one() == "{}"
+    finally:
+        engine.dispose()
+
+
+def test_populated_session_store_upgrade_fails_before_schema_change(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(  # pyright: ignore[reportPrivateUsage]
+        lambda config: command.upgrade(config, "41ec8abea31a"),
+        write=True,
+    )
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO accepted_configuration "
+                    "(source_digest, yaml_digest, document_json, accepted_at) "
+                    "VALUES (:source, :yaml, :document, :accepted_at)"
+                ).bindparams(bindparam("accepted_at", type_=DateTime())),
+                {
+                    "source": "1" * 64,
+                    "yaml": "2" * 64,
+                    "document": "{}",
+                    "accepted_at": datetime.now(UTC).replace(tzinfo=None),
+                },
+            )
+
+        with pytest.raises(RuntimeError, match="cannot be safely converted"):
+            migrator.upgrade()
+
+        assert "local_session" in inspect(engine).get_table_names()
+        assert "thread" not in inspect(engine).get_table_names()
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT source_digest FROM accepted_configuration")).scalar_one() == "1" * 64
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "41ec8abea31a"
+    finally:
+        engine.dispose()
+
+
+def test_thread_metadata_migration_backfills_existing_rows(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(  # pyright: ignore[reportPrivateUsage]
+        lambda config: command.upgrade(config, "f293cefc6ea1"),
+        write=True,
+    )
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO thread "
+                    "(thread_id, parent_thread_id, title, archived, created_at, updated_at, "
+                    "initial_state_schema_version, initial_state_digest, continuation_schema_version, "
+                    "continuation_digest) VALUES "
+                    "(:thread_id, NULL, :title, 0, :created_at, :updated_at, '1', :digest, NULL, NULL)"
+                ).bindparams(
+                    bindparam("created_at", type_=DateTime()),
+                    bindparam("updated_at", type_=DateTime()),
+                ),
+                {
+                    "thread_id": "thread-existing",
+                    "title": "Existing",
+                    "created_at": datetime.now(UTC).replace(tzinfo=None),
+                    "updated_at": datetime.now(UTC).replace(tzinfo=None),
+                    "digest": "1" * 64,
+                },
+            )
+        migrator.upgrade()
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT metadata_version FROM thread WHERE thread_id = 'thread-existing'")
+                ).scalar_one()
+                == 1
+            )
+            row = connection.execute(
+                text(
+                    "SELECT search_text, first_input, latest_reply, activity_at, initial_state_digest FROM thread WHERE thread_id = 'thread-existing'"
+                )
+            ).one()
+            assert row.search_text == "thread-existing\nexisting"
+            assert row.first_input == row.latest_reply == ""
+            assert row.activity_at is None
+            assert row.initial_state_digest == "1" * 64
+        migrator.upgrade()
+        migrator.verify_current()
+    finally:
+        engine.dispose()
+
+
+def test_thread_store_downgrade_is_rejected_before_schema_change(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator.upgrade()
+
+    with pytest.raises(RuntimeError, match="restore a pre-upgrade backup"):
+        migrator._run(  # pyright: ignore[reportPrivateUsage]
+            lambda config: command.downgrade(config, "41ec8abea31a"),
+            write=True,
+        )
+
+    migrator.verify_current()
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        assert "thread" in inspect(engine).get_table_names()
+        assert "local_session" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_migration_verification_rejects_an_unknown_database_revision(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('unknown')"))
+    finally:
+        engine.dispose()
+
+    with pytest.raises(DatabaseSchemaError, match="missing required table"):
+        DatabaseMigrator(path).verify_current()
+
+
+async def test_database_startup_uses_lightweight_probe_with_twenty_second_budget(tmp_path, monkeypatch):
+    statements = []
+    timeouts = []
+
+    def record_statement(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    def record_timeout(seconds):
+        timeouts.append(seconds)
+        return fail_after(seconds)
+
+    monkeypatch.setattr(database_module, "fail_after", record_timeout)
+    event.listen(Engine, "before_cursor_execute", record_statement)
+    try:
+        async with open_database(tmp_path / "metadata.sqlite3", StorageSettings(data_root=tmp_path)):
+            pass
+    finally:
+        event.remove(Engine, "before_cursor_execute", record_statement)
+
+    assert timeouts == [20.0]
+    assert "SELECT 1" in statements
+    assert not any("quick_check" in statement or "integrity_check" in statement for statement in statements)
+
+
+async def test_database_check_connection_wait_respects_timeout(tmp_path, monkeypatch):
+    async with open_database(tmp_path / "metadata.sqlite3", StorageSettings(data_root=tmp_path)) as database:
+
+        @asynccontextmanager
+        async def blocked_connect(self):
+            await sleep_forever()
+            yield
+
+        with monkeypatch.context() as patch:
+            patch.setattr(AsyncEngine, "connect", blocked_connect)
+            with pytest.raises(TimeoutError):
+                await check_database(database, timeout_seconds=0.01)
+
+        await check_database(database)
+
+
+async def test_database_startup_still_rejects_missing_required_schema(tmp_path):
+    path = tmp_path / "metadata.sqlite3"
+    settings = StorageSettings(data_root=tmp_path)
+    async with open_database(path, settings) as database:
+        async with database.engine.begin() as connection:
+            await connection.execute(text("DROP TABLE project_model_preference"))
+
+    with pytest.raises(StoreIntegrityError) as error:
+        async with open_database(path, settings):
+            pytest.fail("An incompatible database must not be exposed")
+
+    assert error.value.code == "database_incompatible"
+    assert isinstance(error.value.__cause__, DatabaseSchemaError)
+    assert "missing required table project_model_preference" in str(error.value.__cause__)
+
+
+@pytest.mark.parametrize("timeout_seconds", [None, 1.25])
+async def test_database_configures_sqlite_and_short_transactions(tmp_path: Path, timeout_seconds: float | None) -> None:
+    settings = StorageSettings(data_root=tmp_path)
+    if timeout_seconds is not None:
+        settings = settings.model_copy(update={"busy_timeout_seconds": timeout_seconds})
+    expected_timeout_ms = 30000 if timeout_seconds is None else 1250
+    path = tmp_path / "metadata.sqlite3"
+
+    async with open_database(path, settings) as database:
+        async with database.engine.connect() as connection:
+            assert (await connection.execute(text("PRAGMA journal_mode"))).scalar_one() == "wal"
+            assert (await connection.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
+            assert (await connection.execute(text("PRAGMA busy_timeout"))).scalar_one() == expected_timeout_ms
+            assert (await connection.execute(text("PRAGMA synchronous"))).scalar_one() == 2
+
+        now = datetime.now(UTC)
+        async with transaction(database.sessions) as session:
+            session.add(
+                AcceptedConfigurationRecord(
+                    generation_digest="1" * 64,
+                    object_schema_version="1",
+                    object_digest="2" * 64,
+                    accepted_at=now,
+                )
+            )
+
+        with pytest.raises(RuntimeError, match="rollback"):
+            async with transaction(database.sessions) as session:
+                session.add(
+                    AcceptedConfigurationRecord(
+                        generation_digest="3" * 64,
+                        object_schema_version="1",
+                        object_digest="4" * 64,
+                        accepted_at=now,
+                    )
+                )
+                raise RuntimeError("rollback")
+
+        async with short_session(database.sessions) as session:
+            records = tuple((await session.execute(select(AcceptedConfigurationRecord))).scalars())
+            assert [record.generation_digest for record in records] == ["1" * 64]
+            assert records[0].accepted_at.tzinfo is UTC
+
+
+def test_mcp_bundle_index_upgrade_preserves_rows(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(lambda config: command.upgrade(config, "11422c5bac45"), write=True)
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO accepted_configuration (generation_digest, object_schema_version, object_digest, accepted_at) "
+                    "VALUES (:digest, '1', :digest, :created)"
+                ),
+                {"digest": "a" * 64, "created": datetime.now(UTC).isoformat()},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO resource_index "
+                    "(generation_digest, relative_path, resource_kind, resource_id, name, source_digest, normalized_digest) "
+                    "VALUES (:digest, 'mcp/servers.json', 'mcp_server', 'mcp-one', 'One', :digest, :digest)"
+                ),
+                {"digest": "a" * 64},
+            )
+        migrator.upgrade()
+        migrator.upgrade()
+        migrator.verify_current()
+        assert inspect(engine).get_pk_constraint("resource_index")["constrained_columns"] == [
+            "generation_digest",
+            "resource_kind",
+            "resource_id",
+        ]
+        with engine.begin() as connection:
+            assert connection.execute(text("SELECT resource_id FROM resource_index")).scalar_one() == "mcp-one"
+            connection.execute(
+                text(
+                    "INSERT INTO resource_index "
+                    "(generation_digest, relative_path, resource_kind, resource_id, name, source_digest, normalized_digest) "
+                    "VALUES (:digest, 'mcp/servers.json', 'mcp_server', 'mcp-two', 'Two', :digest, :digest)"
+                ),
+                {"digest": "a" * 64},
+            )
+        migrator.upgrade()
+        migrator.verify_current()
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM resource_index")).scalar_one() == 2
+    finally:
+        engine.dispose()
+
+
+async def test_project_model_preferences_are_independent_and_last_write_wins(tmp_path: Path) -> None:
+    import asyncio
+
+    from a13n_harness_ui.storage.repositories import ProjectModelPreferenceRepository
+
+    settings = StorageSettings(data_root=tmp_path)
+    path = tmp_path / "metadata.sqlite3"
+    async with open_database(path, settings) as first_db, open_database(path, settings) as second_db:
+        first = ProjectModelPreferenceRepository(first_db.sessions)
+        second = ProjectModelPreferenceRepository(second_db.sessions)
+        await asyncio.gather(first.set("project-a", "model-a"), second.set("project-b", "model-b"))
+        assert await first.get("project-b") == "model-b"
+        assert await second.get("project-a") == "model-a"
+        await second.set("project-a", "model-new")
+        assert await first.get("project-a") == "model-new"
+        await first.set("project-a", None)
+        await first.set("project-a", None)
+        assert await second.get("project-a") is None
+        assert await second.get("project-b") == "model-b"
+    async with open_database(path, settings) as database:
+        repository = ProjectModelPreferenceRepository(database.sessions)
+        assert await repository.get("project-a") is None
+        assert await repository.get("project-b") == "model-b"
+
+
+def test_project_model_preference_upgrade_preserves_selection(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(  # pyright: ignore[reportPrivateUsage]
+        lambda config: command.upgrade(config, "a65ad8a5330d"), write=True
+    )
+    migrator.upgrade()
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO project_model_preference VALUES ('project-a', 'model-a')"))
+        migrator.upgrade()
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT model_id FROM project_model_preference")).scalar_one() == "model-a"
+        migrator.verify_current()
+    finally:
+        engine.dispose()
+
+
+def test_default_model_migration_preserves_populated_configuration(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.sqlite3"
+    migrator = DatabaseMigrator(path)
+    migrator._run(lambda config: command.upgrade(config, "768a6a993a59"), write=True)
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO thread (thread_id, title, archived, metadata_version, created_at, updated_at, "
+                    "initial_state_schema_version, initial_state_digest) "
+                    "VALUES ('thread-existing', 'Existing', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '1', :digest)"
+                ),
+                {"digest": "1" * 64},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO thread_configuration (thread_id, version, project_id, agent_source_kind, "
+                    "agent_source_id, environment_profile_id, harness_plugin_ids_json, "
+                    "environment_run_extension_ids_json, mcp_server_ids_json) "
+                    "VALUES ('thread-existing', 3, NULL, 'agent', 'agent-assistant', 'environment-native', '[]', '[]', '[]')"
+                )
+            )
+            before = dict(connection.execute(text("SELECT * FROM thread_configuration")).mappings().one())
+        migrator.upgrade()
+        with engine.begin() as connection:
+            after = dict(connection.execute(text("SELECT * FROM thread_configuration")).mappings().one())
+            assert after.pop("default_model_id") is None
+            assert after.pop("environment_bindings_json") == "[]"
+            assert after.pop("local_roots_json") == "[]"
+            assert after.pop("default_environment") is None
+            assert after == before
+            assert connection.execute(text("SELECT initial_state_digest FROM thread")).scalar_one() == "1" * 64
+            connection.execute(text("UPDATE thread_configuration SET default_model_id = 'model-secondary'"))
+        migrator.upgrade()
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT default_model_id FROM thread_configuration")).scalar_one()
+                == "model-secondary"
+            )
+        migrator.verify_current()
+    finally:
+        engine.dispose()

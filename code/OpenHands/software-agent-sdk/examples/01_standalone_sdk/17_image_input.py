@@ -1,0 +1,164 @@
+"""OpenHands Agent SDK — Image Input Example.
+
+This script mirrors the basic setup from ``examples/01_hello_world.py`` but adds
+vision support by sending an image to the agent alongside text instructions.
+
+It also demonstrates multi-image input with base64-encoded images that exercise
+the Anthropic many-image resizing path (>20 images are automatically downscaled
+to 2000×2000 px).
+"""
+
+import base64
+import io
+import os
+
+from PIL import Image
+from pydantic import SecretStr
+
+from openhands.sdk import (
+    LLM,
+    Agent,
+    Conversation,
+    Event,
+    ImageContent,
+    LLMConvertibleEvent,
+    Message,
+    TextContent,
+    get_logger,
+)
+from openhands.sdk.tool.spec import Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
+
+
+logger = get_logger(__name__)
+
+
+def _make_png_data_url(width: int, height: int, color: str = "red") -> str:
+    """Create a base64 PNG data URL with the given dimensions and colour."""
+    image = Image.new("RGB", (width, height), color=color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+# Configure LLM (vision-capable model)
+api_key = os.getenv("LLM_API_KEY")
+assert api_key is not None, "LLM_API_KEY environment variable is not set."
+model = os.getenv("LLM_MODEL", "gpt-5.5")
+base_url = os.getenv("LLM_BASE_URL")
+llm = LLM(
+    usage_id="vision-llm",
+    model=model,
+    base_url=base_url,
+    api_key=SecretStr(api_key),
+)
+assert llm.vision_is_active(), "The selected LLM model does not support vision input."
+
+cwd = os.getcwd()
+
+agent = Agent(
+    llm=llm,
+    tools=[
+        Tool(
+            name=TerminalTool.name,
+        ),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
+    ],
+)
+
+llm_messages = []  # collect raw LLM messages for inspection
+
+
+def conversation_callback(event: Event) -> None:
+    if isinstance(event, LLMConvertibleEvent):
+        llm_messages.append(event.to_llm_message())
+
+
+conversation = Conversation(
+    agent=agent, callbacks=[conversation_callback], workspace=cwd
+)
+
+# ── Part 1: single URL image ──────────────────────────────────────────────
+IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
+
+conversation.send_message(
+    Message(
+        role="user",
+        content=[
+            TextContent(
+                text=(
+                    "Study this image and describe the key elements you see. "
+                    "Summarize them in a short paragraph and suggest a catchy caption."
+                )
+            ),
+            ImageContent(image_urls=[IMAGE_URL]),
+        ],
+    )
+)
+conversation.run()
+
+conversation.send_message(
+    "Great! Please save your description and caption into image_report.md."
+)
+conversation.run()
+
+# ── Part 2: many oversized base64 images (exercises Anthropic resize) ─────
+# Generate 21 base64 images at 2500×100 px — just above the 20-image threshold
+# that triggers Anthropic's many-image limit (2000×2000 px per image).
+# The SDK will automatically downscale these before sending to the provider.
+COLORS = [
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "cyan",
+    "magenta",
+    "orange",
+    "purple",
+    "pink",
+    "brown",
+    "gray",
+    "white",
+    "navy",
+    "teal",
+    "olive",
+    "maroon",
+    "lime",
+    "aqua",
+    "coral",
+    "gold",
+    "indigo",
+]
+oversized_data_urls = [
+    _make_png_data_url(2500, 100, color=COLORS[i % len(COLORS)]) for i in range(21)
+]
+
+conversation.send_message(
+    Message(
+        role="user",
+        content=[
+            TextContent(
+                text=(
+                    "I'm sending you 21 solid-colour test images. "
+                    "List the dominant colour of each image in order, "
+                    "one per line."
+                )
+            ),
+            ImageContent(image_urls=oversized_data_urls),
+        ],
+    )
+)
+conversation.run()
+
+print("=" * 100)
+print("Conversation finished. Got the following LLM messages:")
+for i, message in enumerate(llm_messages):
+    print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

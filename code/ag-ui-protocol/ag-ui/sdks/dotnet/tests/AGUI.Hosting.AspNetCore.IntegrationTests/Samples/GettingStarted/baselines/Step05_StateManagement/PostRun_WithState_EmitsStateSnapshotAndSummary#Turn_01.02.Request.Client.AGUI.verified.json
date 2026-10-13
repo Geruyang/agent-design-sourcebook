@@ -1,0 +1,23 @@
+﻿{
+  "threadId": "thread_Id_1",
+  "runId": "run_Id_1",
+  "protocolVersion": "1.0",
+  "state": {
+    "recipe": {
+      "title": "",
+      "cuisine": "",
+      "ingredients": [],
+      "steps": [],
+      "prep_time_minutes": 0,
+      "cook_time_minutes": 0,
+      "skill_level": ""
+    }
+  },
+  "messages": [
+    {
+      "id": "",
+      "role": "user",
+      "content": "Suggest me an Italian pasta recipe"
+    }
+  ]
+}

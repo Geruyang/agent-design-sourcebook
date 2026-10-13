@@ -1,0 +1,390 @@
+"""Unit tests for API client functionality."""
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from openhands_cli.auth.api_client import (
+    ApiClientError,
+    OpenHandsApiClient,
+    UnauthenticatedError,
+    _ask_user_consent_for_overwrite,
+    create_and_save_agent_configuration,
+    fetch_user_data_after_oauth,
+)
+
+
+class TestOpenHandsApiClient:
+    """Test cases for OpenHandsApiClient class."""
+
+    def test_init(self):
+        """Test OpenHandsApiClient initialization."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        client = OpenHandsApiClient(server_url, api_key)
+
+        assert client.server_url == server_url
+        assert client.api_key == api_key
+        assert client._headers == {
+            "Authorization": "Bearer test-api-key",
+            "Content-Type": "application/json",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_json_success(self):
+        """Test successful JSON GET request."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        mock_response = httpx.Response(status_code=200)
+        mock_response._content = json.dumps({"key": "value"}).encode()
+
+        with patch.object(client, "get") as mock_get:
+            mock_get.return_value = mock_response
+
+            result = await client._get_json("/test")
+
+            assert result == {"key": "value"}
+            mock_get.assert_called_once_with("/test", headers=client._headers)
+
+    @pytest.mark.asyncio
+    async def test_get_json_http_error(self):
+        """Test JSON GET request with HTTP error."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        with patch.object(client, "get") as mock_get:
+            from openhands_cli.auth.http_client import AuthHttpError
+
+            mock_get.side_effect = AuthHttpError("Network error")
+
+            with pytest.raises(
+                ApiClientError, match="Request to '/test' failed: Network error"
+            ):
+                await client._get_json("/test")
+
+    @pytest.mark.asyncio
+    async def test_get_llm_api_key_success(self):
+        """Test successful LLM API key retrieval."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        with patch.object(client, "_get_json") as mock_get_json:
+            mock_get_json.return_value = {"key": "llm-api-key-123"}
+
+            result = await client.get_llm_api_key()
+
+            assert result == "llm-api-key-123"
+            mock_get_json.assert_called_once_with("/api/keys/llm/byor")
+
+    @pytest.mark.asyncio
+    async def test_get_llm_api_key_no_key(self):
+        """Test LLM API key retrieval when no key is present."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        with patch.object(client, "_get_json") as mock_get_json:
+            mock_get_json.return_value = {}
+
+            result = await client.get_llm_api_key()
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_user_settings_flattens_v1_payload(self):
+        """`/api/v1/settings` returns nested agent_settings; the client should
+        surface the legacy flat keys consumed by the rest of the CLI."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        v1_payload = {
+            "language": "en",
+            "llm_api_key_set": True,
+            "agent_settings": {
+                "agent": "CodeActAgent",
+                "llm": {
+                    "model": "gpt-4o-mini",
+                    "base_url": "https://llm-proxy.example.com",
+                },
+            },
+        }
+
+        with patch.object(client, "_get_json") as mock_get_json:
+            mock_get_json.return_value = v1_payload
+
+            result = await client.get_user_settings()
+
+            mock_get_json.assert_called_once_with("/api/v1/settings")
+            assert result["llm_model"] == "gpt-4o-mini"
+            assert result["llm_base_url"] == "https://llm-proxy.example.com"
+            assert result["agent"] == "CodeActAgent"
+            assert result["language"] == "en"
+            assert result["llm_api_key_set"] is True
+            # Nested payload preserved for callers that need full data.
+            assert result["agent_settings"] == v1_payload["agent_settings"]
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_success(self):
+        """Test successful user info retrieval."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        expected_user_info = {
+            "id": "user123",
+            "email": "user@example.com",
+            "name": "Test User",
+        }
+
+        with patch.object(client, "_get_json") as mock_get_json:
+            mock_get_json.return_value = expected_user_info
+
+            result = await client.get_user_info()
+
+            assert result == expected_user_info
+            mock_get_json.assert_called_once_with("/api/v1/users/me")
+
+    @pytest.mark.asyncio
+    async def test_get_json_non_json_response(self):
+        """A 2xx response with a non-JSON body (e.g. SPA HTML fallback) must
+        raise ApiClientError, not leak the raw JSONDecodeError."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        mock_response = httpx.Response(status_code=200)
+        mock_response._content = b"<!doctype html><html></html>"
+
+        with patch.object(client, "get") as mock_get:
+            mock_get.return_value = mock_response
+
+            with pytest.raises(
+                ApiClientError,
+                match=r"Request to '/test' returned a non-JSON response \(HTTP 200\)",
+            ):
+                await client._get_json("/test")
+
+    @pytest.mark.asyncio
+    async def test_get_json_401_error(self):
+        """Test JSON GET request with 401 Unauthorized error."""
+        client = OpenHandsApiClient("https://api.example.com", "test-key")
+
+        with patch.object(client, "get") as mock_get:
+            from openhands_cli.auth.http_client import AuthHttpError
+
+            mock_get.side_effect = AuthHttpError("HTTP 401: Unauthorized")
+
+            with pytest.raises(
+                UnauthenticatedError,
+                match="Authentication failed for '/test': HTTP 401: Unauthorized",
+            ):
+                await client._get_json("/test")
+
+    def test_v1_conversations_path_without_endpoint(self):
+        assert (
+            OpenHandsApiClient._v1_conversations_path("abc")
+            == "/api/v1/app-conversations?ids=abc"
+        )
+
+    def test_v1_conversations_path_with_endpoint(self):
+        assert (
+            OpenHandsApiClient._v1_conversations_path("abc", "start-tasks")
+            == "/api/v1/app-conversations/start-tasks?ids=abc"
+        )
+
+
+class TestHelperFunctions:
+    """Test cases for helper functions in api_client module."""
+
+    def test_create_and_save_agent_configuration(self):
+        """Test agent creation and saving from settings."""
+        llm_api_key = "test-llm-key"
+        settings = {
+            "llm_model": "gpt-4o",
+            "llm_base_url": "https://llm-proxy.eval.all-hands.dev/",
+            "agent": "CodeActAgent",
+            "language": "en",
+        }
+
+        with patch("openhands_cli.auth.api_client.AgentStore") as mock_store_class:
+            with patch("openhands_cli.auth.api_client.console_print") as mock_print:
+                mock_store = MagicMock()
+                mock_agent = MagicMock()
+                mock_llm = MagicMock()
+                mock_llm.model = "gpt-4o"
+                mock_llm.base_url = "https://api.openai.com"
+                mock_llm.usage_id = "test-agent"
+                mock_agent.llm = mock_llm
+                mock_agent.tools = [MagicMock(), MagicMock()]
+                mock_agent.condenser = MagicMock()
+
+                mock_store.create_and_save_from_settings.return_value = mock_agent
+                mock_store.load_from_disk.return_value = None  # No existing agent
+                mock_store_class.return_value = mock_store
+
+                create_and_save_agent_configuration(llm_api_key, settings)
+
+                mock_store.create_and_save_from_settings.assert_called_once_with(
+                    llm_api_key=llm_api_key,
+                    settings=settings,
+                )
+                assert mock_print.call_count >= 5  # Multiple print statements
+
+    @pytest.mark.asyncio
+    async def test_fetch_user_data_after_oauth_success(self):
+        """Test successful user data fetching after OAuth."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        with patch(
+            "openhands_cli.auth.api_client.OpenHandsApiClient"
+        ) as mock_client_class:
+            with patch(
+                "openhands_cli.auth.api_client.create_and_save_agent_configuration"
+            ) as mock_create_and_save:
+                with patch("openhands_cli.auth.api_client.console_print"):
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    mock_client.get_llm_api_key.return_value = "llm-key-123"
+                    mock_client.get_user_settings.return_value = {
+                        "llm_model": "gpt-4o",
+                        "agent": "CodeActAgent",
+                    }
+
+                    result = await fetch_user_data_after_oauth(server_url, api_key)
+
+                    expected_result = {
+                        "llm_api_key": "llm-key-123",
+                        "settings": {
+                            "llm_model": "gpt-4o",
+                            "agent": "CodeActAgent",
+                        },
+                    }
+                    assert result == expected_result
+
+                    mock_client.get_llm_api_key.assert_called_once()
+                    mock_client.get_user_settings.assert_called_once()
+                    mock_create_and_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_user_data_after_oauth_no_llm_key(self):
+        """Test user data fetching when no LLM API key is available."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        with patch(
+            "openhands_cli.auth.api_client.OpenHandsApiClient"
+        ) as mock_client_class:
+            with patch("openhands_cli.auth.api_client.console_print"):
+                mock_client = AsyncMock()
+                mock_client_class.return_value = mock_client
+
+                mock_client.get_llm_api_key.return_value = None
+                mock_client.get_user_settings.return_value = {"agent": "CodeActAgent"}
+
+                result = await fetch_user_data_after_oauth(server_url, api_key)
+
+                expected_result = {
+                    "llm_api_key": None,
+                    "settings": {"agent": "CodeActAgent"},
+                }
+                assert result == expected_result
+
+    @pytest.mark.asyncio
+    async def test_fetch_user_data_after_oauth_no_settings(self):
+        """Test user data fetching when no settings are available."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        with patch(
+            "openhands_cli.auth.api_client.OpenHandsApiClient"
+        ) as mock_client_class:
+            with patch("openhands_cli.auth.api_client.console_print"):
+                mock_client = AsyncMock()
+                mock_client_class.return_value = mock_client
+
+                mock_client.get_llm_api_key.return_value = "llm-key-123"
+                mock_client.get_user_settings.return_value = None
+
+                result = await fetch_user_data_after_oauth(server_url, api_key)
+
+                expected_result = {"llm_api_key": "llm-key-123", "settings": None}
+                assert result == expected_result
+
+    @pytest.mark.asyncio
+    async def test_fetch_user_data_after_oauth_agent_creation_error(self):
+        """Test user data fetching when agent creation fails."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        with patch(
+            "openhands_cli.auth.api_client.OpenHandsApiClient"
+        ) as mock_client_class:
+            with patch(
+                "openhands_cli.auth.api_client.create_and_save_agent_configuration"
+            ) as mock_create_and_save:
+                with patch("openhands_cli.auth.api_client.console_print"):
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    mock_client.get_llm_api_key.return_value = "llm-key-123"
+                    mock_client.get_user_settings.return_value = {
+                        "agent": "CodeActAgent"
+                    }
+
+                    mock_create_and_save.side_effect = Exception(
+                        "Agent creation failed"
+                    )
+
+                    result = await fetch_user_data_after_oauth(server_url, api_key)
+
+                    # Should still return data even if agent creation fails
+                    expected_result = {
+                        "llm_api_key": "llm-key-123",
+                        "settings": {"agent": "CodeActAgent"},
+                    }
+                    assert result == expected_result
+
+    @pytest.mark.asyncio
+    async def test_fetch_user_data_after_oauth_api_error(self):
+        """Test user data fetching with API client error."""
+        server_url = "https://api.example.com"
+        api_key = "test-api-key"
+
+        with patch(
+            "openhands_cli.auth.api_client.OpenHandsApiClient"
+        ) as mock_client_class:
+            with patch("openhands_cli.auth.api_client.console_print"):
+                mock_client = AsyncMock()
+                mock_client_class.return_value = mock_client
+
+                mock_client.get_llm_api_key.side_effect = ApiClientError("API error")
+
+                with pytest.raises(ApiClientError, match="API error"):
+                    await fetch_user_data_after_oauth(server_url, api_key)
+
+    def test_ask_user_consent_for_overwrite_no_base_url_print(self):
+        """Test that Base URL print statement doesn't occur when base_url is None."""
+        # Create a mock agent with None base_url
+        mock_agent = MagicMock()
+        mock_llm = MagicMock()
+        mock_llm.model = "gpt-4o"
+        mock_llm.base_url = None  # This is the key test condition
+        mock_agent.llm = mock_llm
+
+        # New settings also doesn't have llm_base_url
+        new_settings = {"llm_model": "claude-sonnet-4-5-20250929"}
+
+        with patch("openhands_cli.auth.api_client.console_print") as mock_print:
+            with patch("builtins.input", return_value="n"):  # User says no
+                result = _ask_user_consent_for_overwrite(mock_agent, new_settings)
+
+                # Verify the function returns False (user declined)
+                assert result is False
+
+                # Check all the print calls
+                print_calls = [call.args[0] for call in mock_print.call_args_list]
+
+                # Count Base URL prints - should be 0 when both base_urls are None
+                all_base_url_prints = [
+                    call for call in print_calls if "Base URL" in call
+                ]
+                assert len(all_base_url_prints) == 0, (
+                    f"Expected no Base URL prints when both base_urls are None, "
+                    f"but found {len(all_base_url_prints)}: {all_base_url_prints}"
+                )
