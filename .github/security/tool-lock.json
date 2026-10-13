@@ -10,5 +10,6 @@
   "rules_source": "https://raw.githubusercontent.com/gitleaks/gitleaks/v8.28.0/config/gitleaks.toml",
   "upstream_rules_sha256": "c3bee40d87bb4689e3f5ffa5cc0315f7e6e4d43f4e9388397fca59f29407b432",
   "candidate_rules_sha256": "9f581d81a887e17bbccfe05d0899ea34b4bf66633fe9eec6f8c58732a51507b5",
-  "removed_path_allowlist_blocks": 4
+  "removed_path_allowlist_blocks": 4,
+  "rules_delivery": "Download official pinned rules into a temporary directory; verify original and stripped candidate SHA256; no tracked literal sample keys"
 }
