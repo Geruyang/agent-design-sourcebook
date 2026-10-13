@@ -1,3 +1,5 @@
 # Secret scanning scope
 
 Incremental gate scans introduced commits/staged additions, not legacy baseline cleanliness. Separate full-history audit intentionally fails on unreviewed findings. Pattern matches do not prove credential validity. Sourcebook alert #8 remains unknown and is never allowlisted; reviewed-evidence entries are documentation only, not suppressions. No repository-wide source/test/vendor path exclusions. Official scanner and assets are pinned in tool-lock.json. PR policy is taken from base commit; initial bootstrap PR reads policy blobs only from pinned, previously validated commit SHAs; never arbitrary PR HEAD. No application code, credentials or account business is executed by scans. Reports publish metadata only.
+
+Both incremental and full-history scans include --diff-merges=separate, including conflict-resolution-only merge changes. PR target is GitHub-generated merge SHA, while policy remains trusted base/reviewed bootstrap. Per-parent merge patches may duplicate pattern counts; counts are not unique credentials.

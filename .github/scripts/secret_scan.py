@@ -32,12 +32,12 @@ def main():
     if a.staged:
         scope = 'staged additions'
     elif a.audit:
-        scope = '--all'
+        scope = '--all --diff-merges=separate'
     else:
         if not a.base or not re.fullmatch('[a-f0-9]{40,64}', a.base):
             raise ValueError('explicit full base commit SHA required; zero/new branch needs audit')
         base = subprocess.check_output(['git', '-C', a.repo, 'rev-parse', '--verify', a.base + '^{commit}'], env=env).decode().strip()
-        scope = base + '..' + head
+        scope = base + '..' + head + ' --diff-merges=separate'
     with tempfile.TemporaryDirectory(prefix='secret-scan-') as temp:
         raw = Path(temp) / 'redacted.json'
         cmd = [a.scanner, 'git', a.repo, '--log-opts', scope, '--config', str(policy / 'gitleaks.toml'), '--gitleaks-ignore-path', str(policy / 'empty.gitleaksignore'), '--ignore-gitleaks-allow', '--redact=100', '--no-banner', '--no-color', '--report-format=json', '--report-path', str(raw)]
