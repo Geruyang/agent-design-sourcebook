@@ -1,0 +1,14 @@
+{
+  "version": "8.28.0",
+  "release": "https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/",
+  "windows_asset": "gitleaks_8.28.0_windows_x64.zip",
+  "windows_sha256": "da6458e8864af553807de1c46a7a8eac0880bd6b99ba56288e87e86a45af884f",
+  "windows_exe_sha256": "54230c22688d19939f316cd3e2e040cd067ece40a3a8c5b684e5110c62ecbf52",
+  "linux_asset": "gitleaks_8.28.0_linux_x64.tar.gz",
+  "linux_sha256": "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb",
+  "checksum_manifest_sha256": "4ea55cd2e433edbe3151e0ff49b044df310e29967a38f38b68b1434a3660dcb8",
+  "rules_source": "https://raw.githubusercontent.com/gitleaks/gitleaks/v8.28.0/config/gitleaks.toml",
+  "upstream_rules_sha256": "c3bee40d87bb4689e3f5ffa5cc0315f7e6e4d43f4e9388397fca59f29407b432",
+  "candidate_rules_sha256": "9f581d81a887e17bbccfe05d0899ea34b4bf66633fe9eec6f8c58732a51507b5",
+  "removed_path_allowlist_blocks": 4
+}

@@ -1,0 +1,114 @@
+{
+  "reviewed": [
+    {
+      "alert": 1,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L136",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "line": 136,
+      "published_file_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "evidence_comment": "Synthetic repeated-x fixture in environment-sanitization unit tests. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L136",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 2,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/continuedev/continue/blob/5522c6f44ca0ac3528b37244818fbfa39b5af470/extensions/cli/src/util/apiKeyValidation.test.ts#L12",
+      "upstream_commit": "5522c6f44ca0ac3528b37244818fbfa39b5af470",
+      "published_file": "code/continuedev/continue/extensions/cli/src/util/apiKeyValidation.test.ts",
+      "line": 12,
+      "published_file_sha256": "40ab96f4740b028c50f5afa43d26741d2d2591a246dd11c829d66baf627e0bc1",
+      "evidence_comment": "Constructed numeric-sequence fixture in Anthropic-key format tests; detected as OpenAI. https://github.com/continuedev/continue/blob/5522c6f44ca0ac3528b37244818fbfa39b5af470/extensions/cli/src/util/apiKeyValidation.test.ts#L12",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 3,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/openai/codex/blob/72f999edc7848961b99c4b98bf1e62d12fa35798/codex-rs/cli/src/doctor/output.rs#L1891",
+      "upstream_commit": "72f999edc7848961b99c4b98bf1e62d12fa35798",
+      "published_file": "code/openai/codex/codex-rs/cli/src/doctor/output.rs",
+      "line": 1891,
+      "published_file_sha256": "01cba4990598e29d49a443f9f5ca7ce271b33d798ae3d335efef3a7060bdcf01",
+      "evidence_comment": "Synthetic sequential-letter AWS ID in Codex redaction unit tests. https://github.com/openai/codex/blob/72f999edc7848961b99c4b98bf1e62d12fa35798/codex-rs/cli/src/doctor/output.rs#L1891",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 4,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L130",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "line": 130,
+      "published_file_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "evidence_comment": "Synthetic repeated-x fixture in environment-sanitization unit tests. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L130",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 5,
+      "resolution": "wont_fix",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/code_assist/oauth2.ts#L85",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/code_assist/oauth2.ts",
+      "line": 85,
+      "published_file_sha256": "a3f8c55ad885656ed62144fb74e3f737117f58606a98c095f5e96f0707d9fd68",
+      "evidence_comment": "Public installed-app OAuth client shipped by Gemini CLI; intentional per upstream L79-85. Not a user token. Retained, not revoked. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/code_assist/oauth2.ts#L85",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 6,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L138",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "line": 138,
+      "published_file_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "evidence_comment": "Synthetic repeated-x fixture in environment-sanitization unit tests. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L138",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 7,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L139",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "line": 139,
+      "published_file_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "evidence_comment": "Synthetic repeated-x fixture in environment-sanitization unit tests. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L139",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 9,
+      "resolution": "used_in_tests",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L137",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "line": 137,
+      "published_file_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "evidence_comment": "Synthetic repeated-x fixture in environment-sanitization unit tests. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/services/environmentSanitization.test.ts#L137",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    },
+    {
+      "alert": 10,
+      "resolution": "wont_fix",
+      "upstream_url": "https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/code_assist/oauth2.ts#L77",
+      "upstream_commit": "9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83",
+      "published_file": "code/google-gemini/gemini-cli/packages/core/src/code_assist/oauth2.ts",
+      "line": 77,
+      "published_file_sha256": "a3f8c55ad885656ed62144fb74e3f737117f58606a98c095f5e96f0707d9fd68",
+      "evidence_comment": "Public installed-app OAuth client shipped by Gemini CLI; intentional per upstream L79-85. Not a user token. Retained, not revoked. https://github.com/google-gemini/gemini-cli/blob/9b6e0265d16bbd29ca51e33c9e0c01dc4cec5e83/packages/core/src/code_assist/oauth2.ts#L77",
+      "scanner_exception_enabled": false,
+      "review_required_if_file_value_or_context_changes": true
+    }
+  ],
+  "unknown_alert8_allowlisted": false,
+  "automatic_exceptions": []
+}
