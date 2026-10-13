@@ -1,0 +1,2192 @@
+{
+  "schema_version": 1,
+  "scope": "Exact initial sourcebook snapshot only",
+  "user_decision": "保留源码，历史未决项持续警告；接受这些参考资料的历史风险",
+  "credential_values_included": false,
+  "findings": [
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/ai/provider/cherryai.ts",
+      "StartLine": 11,
+      "EndLine": 11,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/ai/provider/cherryai.ts:generic-api-key:11",
+      "blob_sha256": "d81cb596a050bcb1e35039e57ff3d827a49f488def5aa5db9f754151a183ed76",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/tests/apis/agents/sessions.http",
+      "StartLine": 3,
+      "EndLine": 3,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/tests/apis/agents/sessions.http:generic-api-key:3",
+      "blob_sha256": "ea144e6ea97bbe882709a736631ad3c590def8464ba49739d0f51cbcca208599",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/tests/apis/agents/agents.http",
+      "StartLine": 2,
+      "EndLine": 2,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/tests/apis/agents/agents.http:generic-api-key:2",
+      "blob_sha256": "03e9982371c0542f1fcf8cac8d747a656056b66a8eea02ac5d1d0caa1af38cb8",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/tests/apis/chat.http",
+      "StartLine": 2,
+      "EndLine": 2,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/tests/apis/chat.http:generic-api-key:2",
+      "blob_sha256": "308ab5e611c1626433ec0f970fcb2c3e8f72b8eb705094bd37af3c42625524fa",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/.devcontainer/docker-compose.yml",
+      "StartLine": 60,
+      "EndLine": 60,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/.devcontainer/docker-compose.yml:generic-api-key:60",
+      "blob_sha256": "f7da3ec4396bdf99a722a15395b21e90aa6e062ff20fa6e18d878afcce2c1f19",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/api/test/.env.test.example",
+      "StartLine": 5,
+      "EndLine": 5,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/api/test/.env.test.example:generic-api-key:5",
+      "blob_sha256": "855113c8d7bf862f946253acd730f2f7747acb5634353c86f99de5cc240405c5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/api/test/.env.test.example",
+      "StartLine": 6,
+      "EndLine": 6,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/api/test/.env.test.example:generic-api-key:6",
+      "blob_sha256": "855113c8d7bf862f946253acd730f2f7747acb5634353c86f99de5cc240405c5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "jwt",
+      "File": "code/LibreChat-AI/LibreChat/client/src/lib/rum/redact.spec.ts",
+      "StartLine": 9,
+      "EndLine": 9,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/client/src/lib/rum/redact.spec.ts:jwt:9",
+      "blob_sha256": "07e0187bf8766e846fab5a50367c013c83e578bd2695770db9904b6ba2bc8eea",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts",
+      "StartLine": 177,
+      "EndLine": 177,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts:generic-api-key:177",
+      "blob_sha256": "43a182436e4e17fb7e225708b22266d87390e4d98c326bb721b33524d5bbfb20",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts",
+      "StartLine": 178,
+      "EndLine": 178,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts:generic-api-key:178",
+      "blob_sha256": "43a182436e4e17fb7e225708b22266d87390e4d98c326bb721b33524d5bbfb20",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts",
+      "StartLine": 188,
+      "EndLine": 188,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts:generic-api-key:188",
+      "blob_sha256": "43a182436e4e17fb7e225708b22266d87390e4d98c326bb721b33524d5bbfb20",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts",
+      "StartLine": 189,
+      "EndLine": 189,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts:generic-api-key:189",
+      "blob_sha256": "43a182436e4e17fb7e225708b22266d87390e4d98c326bb721b33524d5bbfb20",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts",
+      "StartLine": 205,
+      "EndLine": 205,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/credentials.spec.ts:generic-api-key:205",
+      "blob_sha256": "43a182436e4e17fb7e225708b22266d87390e4d98c326bb721b33524d5bbfb20",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "jwt",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts",
+      "StartLine": 97,
+      "EndLine": 97,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts:jwt:97",
+      "blob_sha256": "42bf87b8f71c0c40cbbc97e36e752075581a200698439f47e9d45b5ae1b3d934",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/ag-ui-protocol/ag-ui/docs/docs.json",
+      "StartLine": 345,
+      "EndLine": 345,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/ag-ui-protocol/ag-ui/docs/docs.json:generic-api-key:345",
+      "blob_sha256": "0c56b2871a2aa04468bbac3a8ce31c2bc8e9670e3d3b66a43730a6edba7d5865",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "jwt",
+      "File": "code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json",
+      "StartLine": 172,
+      "EndLine": 172,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json:jwt:172",
+      "blob_sha256": "b66db2142bb7d47c91e1abe0c3e148d1de931840f915a6861cedd9439fad20a4",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "jwt",
+      "File": "code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json",
+      "StartLine": 188,
+      "EndLine": 188,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json:jwt:188",
+      "blob_sha256": "b66db2142bb7d47c91e1abe0c3e148d1de931840f915a6861cedd9439fad20a4",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "jwt",
+      "File": "code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json",
+      "StartLine": 195,
+      "EndLine": 195,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/ai/test/fixtures/recordings/runway-video/generates-a-video.json:jwt:195",
+      "blob_sha256": "b66db2142bb7d47c91e1abe0c3e148d1de931840f915a6861cedd9439fad20a4",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/dev/observability/langfuse.compose.yaml",
+      "StartLine": 8,
+      "EndLine": 8,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/dev/observability/langfuse.compose.yaml:generic-api-key:8",
+      "blob_sha256": "0779f0e5800b161edc99168adefcb4c08e8bcb90d3b97d4e5891ccb494103e9d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts",
+      "StartLine": 134,
+      "EndLine": 134,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/services/environmentSanitization.test.ts:generic-api-key:134",
+      "blob_sha256": "272ffc144463d6e2d1c694d555064bee09d38a8e653f6584eb0d6e65133f9039",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/services/memoryService.test.ts",
+      "StartLine": 1391,
+      "EndLine": 1391,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/services/memoryService.test.ts:curl-auth-header:1391",
+      "blob_sha256": "01a758a2570e5878d0255c26bd5f7d54341390c62b1860970faa1071610a3f4f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/services/sessionSummaryUtils.test.ts",
+      "StartLine": 785,
+      "EndLine": 785,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/services/sessionSummaryUtils.test.ts:curl-auth-header:785",
+      "blob_sha256": "13483f415d22e6e9cfdd5e1eb052402f4d8572f4b6752163526434bf4c0afc07",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/telemetry/sanitize.test.ts",
+      "StartLine": 446,
+      "EndLine": 446,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/telemetry/sanitize.test.ts:curl-auth-header:446",
+      "blob_sha256": "81e3bf8fc17c2187f87b6d8a0974825af9adeb747bca5c37f0ea2cea3828134b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.env.desktop",
+      "StartLine": 4,
+      "EndLine": 4,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.env.desktop:generic-api-key:4",
+      "blob_sha256": "90e2b086949768cbed35bf94b1c56f3291ccb83ce2fcb4258100c11c12bad350",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/desktop-core-dry-run.yml",
+      "StartLine": 44,
+      "EndLine": 44,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/desktop-core-dry-run.yml:generic-api-key:44",
+      "blob_sha256": "6c6683b14b71d527cf8a475a73ca93b566045fca47d16222a08fcd4551d1fe9e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.env.example.development",
+      "StartLine": 12,
+      "EndLine": 12,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.env.example.development:generic-api-key:12",
+      "blob_sha256": "54e18e6e3b10a9d45d7ab1f66ee15913042cb37a2c11c9f08d7e12611cc1971f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.env.example.development",
+      "StartLine": 13,
+      "EndLine": 13,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.env.example.development:generic-api-key:13",
+      "blob_sha256": "54e18e6e3b10a9d45d7ab1f66ee15913042cb37a2c11c9f08d7e12611cc1971f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml",
+      "StartLine": 132,
+      "EndLine": 132,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml:generic-api-key:132",
+      "blob_sha256": "37281efb015b43a7663ea2211e8f5f960fc581968d77db38669c941163d0d781",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml",
+      "StartLine": 202,
+      "EndLine": 202,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml:generic-api-key:202",
+      "blob_sha256": "37281efb015b43a7663ea2211e8f5f960fc581968d77db38669c941163d0d781",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml",
+      "StartLine": 248,
+      "EndLine": 248,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/manual-build-desktop.yml:generic-api-key:248",
+      "blob_sha256": "37281efb015b43a7663ea2211e8f5f960fc581968d77db38669c941163d0d781",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml",
+      "StartLine": 139,
+      "EndLine": 139,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml:generic-api-key:139",
+      "blob_sha256": "2014749c1c0b0f26d7b0069a329c36249aef02c34ca6241f098437726796c134",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml",
+      "StartLine": 163,
+      "EndLine": 163,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml:generic-api-key:163",
+      "blob_sha256": "2014749c1c0b0f26d7b0069a329c36249aef02c34ca6241f098437726796c134",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml",
+      "StartLine": 180,
+      "EndLine": 180,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/pr-build-desktop.yml:generic-api-key:180",
+      "blob_sha256": "2014749c1c0b0f26d7b0069a329c36249aef02c34ca6241f098437726796c134",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml",
+      "StartLine": 149,
+      "EndLine": 149,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml:generic-api-key:149",
+      "blob_sha256": "37d21eef5d542244510c557ac4a2a74766f2e1a6046c37e18386239b6faddcf5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml",
+      "StartLine": 171,
+      "EndLine": 171,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml:generic-api-key:171",
+      "blob_sha256": "37d21eef5d542244510c557ac4a2a74766f2e1a6046c37e18386239b6faddcf5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml",
+      "StartLine": 189,
+      "EndLine": 189,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-beta.yml:generic-api-key:189",
+      "blob_sha256": "37d21eef5d542244510c557ac4a2a74766f2e1a6046c37e18386239b6faddcf5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-core-ota.yml",
+      "StartLine": 240,
+      "EndLine": 240,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-core-ota.yml:generic-api-key:240",
+      "blob_sha256": "e42fdc0c3f643a10312d6133317d0d9269c90a288850cd7df61acfb892e56bc0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml",
+      "StartLine": 265,
+      "EndLine": 265,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml:generic-api-key:265",
+      "blob_sha256": "f5362e8527fab8df954f1e6db2d7d05bb8f500debf7a6db94076d89d552fe92e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml",
+      "StartLine": 290,
+      "EndLine": 290,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml:generic-api-key:290",
+      "blob_sha256": "f5362e8527fab8df954f1e6db2d7d05bb8f500debf7a6db94076d89d552fe92e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml",
+      "StartLine": 309,
+      "EndLine": 309,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-stable.yml:generic-api-key:309",
+      "blob_sha256": "f5362e8527fab8df954f1e6db2d7d05bb8f500debf7a6db94076d89d552fe92e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/e2e.yml",
+      "StartLine": 52,
+      "EndLine": 52,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/e2e.yml:generic-api-key:52",
+      "blob_sha256": "de52cc7fe20ff00b86ac5487764e188a0ca2ee8b1b8141687345389a03fcee83",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml",
+      "StartLine": 332,
+      "EndLine": 332,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml:generic-api-key:332",
+      "blob_sha256": "f319133b53913c005262e939471056a0fc8a29aaac4d2b9c541e39cf696deb04",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml",
+      "StartLine": 355,
+      "EndLine": 355,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml:generic-api-key:355",
+      "blob_sha256": "f319133b53913c005262e939471056a0fc8a29aaac4d2b9c541e39cf696deb04",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml",
+      "StartLine": 374,
+      "EndLine": 374,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release-desktop-canary.yml:generic-api-key:374",
+      "blob_sha256": "f319133b53913c005262e939471056a0fc8a29aaac4d2b9c541e39cf696deb04",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/release.yml",
+      "StartLine": 60,
+      "EndLine": 60,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/release.yml:generic-api-key:60",
+      "blob_sha256": "7cd31ec75080f27ce5c10fed60d336f3004fe29df617bf081a4dde867e6309c0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/.github/workflows/test.yml",
+      "StartLine": 502,
+      "EndLine": 502,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/.github/workflows/test.yml:generic-api-key:502",
+      "blob_sha256": "60de726a2a076303cebfbbe94ca9136498c120792d92633a4df726c8d2258224",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/desktop/scripts/core-ota-test/run.mjs",
+      "StartLine": 87,
+      "EndLine": 87,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/desktop/scripts/core-ota-test/run.mjs:generic-api-key:87",
+      "blob_sha256": "eee5f374b30a84f101bf24e40168d0b8f44519a94647f26536e443c8d6edd994",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/modules/KeyVaultsEncrypt/index.test.ts",
+      "StartLine": 13,
+      "EndLine": 13,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/modules/KeyVaultsEncrypt/index.test.ts:generic-api-key:13",
+      "blob_sha256": "6228718e1df5ecdcf247a75a0968ad0ff74e40d9d156aebbd987876f2c4cb12e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/modules/KeyVaultsEncrypt/index.test.ts",
+      "StartLine": 86,
+      "EndLine": 86,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/modules/KeyVaultsEncrypt/index.test.ts:generic-api-key:86",
+      "blob_sha256": "6228718e1df5ecdcf247a75a0968ad0ff74e40d9d156aebbd987876f2c4cb12e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 73,
+      "EndLine": 73,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:generic-api-key:73",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 545,
+      "EndLine": 545,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:generic-api-key:545",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 255,
+      "EndLine": 260,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:255",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 352,
+      "EndLine": 357,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:352",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 411,
+      "EndLine": 416,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:411",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 500,
+      "EndLine": 504,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:500",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 590,
+      "EndLine": 594,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:590",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 700,
+      "EndLine": 705,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:700",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 803,
+      "EndLine": 808,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:803",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 867,
+      "EndLine": 872,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:867",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 978,
+      "EndLine": 982,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:978",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md",
+      "StartLine": 1094,
+      "EndLine": 1098,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/feishu/protocol-spec.md:curl-auth-header:1094",
+      "blob_sha256": "02d96661413ac671bc30f7726c71c790fe0c243d21c15de01cd524c53c6d3fc3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/qq/protocol-spec.md",
+      "StartLine": 1119,
+      "EndLine": 1119,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/qq/protocol-spec.md:generic-api-key:1119",
+      "blob_sha256": "e58cc8db4e4a741a1cb1bad64201cbd46469fc2706b5bfe06b56af7bccb70d91",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 422,
+      "EndLine": 422,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:422",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 468,
+      "EndLine": 468,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:468",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 473,
+      "EndLine": 473,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:473",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 476,
+      "EndLine": 476,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:476",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 506,
+      "EndLine": 506,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:506",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 534,
+      "EndLine": 534,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:534",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 566,
+      "EndLine": 566,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:566",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 574,
+      "EndLine": 574,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:574",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 941,
+      "EndLine": 941,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:941",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 945,
+      "EndLine": 945,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:945",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 996,
+      "EndLine": 996,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:996",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 1003,
+      "EndLine": 1003,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:1003",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 1031,
+      "EndLine": 1031,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:1031",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 1055,
+      "EndLine": 1055,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:1055",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 1071,
+      "EndLine": 1071,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:generic-api-key:1071",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 305,
+      "EndLine": 309,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:curl-auth-header:305",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 683,
+      "EndLine": 687,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:curl-auth-header:683",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 827,
+      "EndLine": 831,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:curl-auth-header:827",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 889,
+      "EndLine": 893,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:curl-auth-header:889",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "curl-auth-header",
+      "File": "code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md",
+      "StartLine": 989,
+      "EndLine": 993,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/server/src/services/bot/platforms/wechat/protocol-spec.md:curl-auth-header:989",
+      "blob_sha256": "5c93816af4be48ceacedf75d6b4d7a897544b7899fcedc54b9183647965e0f85",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/deploy/.env.example",
+      "StartLine": 40,
+      "EndLine": 40,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/deploy/.env.example:generic-api-key:40",
+      "blob_sha256": "1228bb320bebdc88ff6f12dd518c5a65aad9ff2df45128e2ee2bc27606ef6d8f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/deploy/.env.zh-CN.example",
+      "StartLine": 36,
+      "EndLine": 36,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/deploy/.env.zh-CN.example:generic-api-key:36",
+      "blob_sha256": "e18817d20aa94877855d733128be8929f0b1c8e505beb7a6b0e8c55f8e22b792",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/.env.zh-CN.example",
+      "StartLine": 24,
+      "EndLine": 24,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/.env.zh-CN.example:generic-api-key:24",
+      "blob_sha256": "b57c6c0beee851bed4bc7f503651b030d5268e9155df9a434d3ccd300e2014a2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/.env.zh-CN.example",
+      "StartLine": 29,
+      "EndLine": 29,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/.env.zh-CN.example:generic-api-key:29",
+      "blob_sha256": "b57c6c0beee851bed4bc7f503651b030d5268e9155df9a434d3ccd300e2014a2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/.env.example",
+      "StartLine": 24,
+      "EndLine": 24,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/.env.example:generic-api-key:24",
+      "blob_sha256": "6a2ff0b0cd7c18820469b2be958fc865bdd3b869314e3c7cfc3fa8301e09674b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/.env.example",
+      "StartLine": 29,
+      "EndLine": 29,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/.env.example:generic-api-key:29",
+      "blob_sha256": "6a2ff0b0cd7c18820469b2be958fc865bdd3b869314e3c7cfc3fa8301e09674b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/docker-compose.yml",
+      "StartLine": 177,
+      "EndLine": 177,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/docker-compose.yml:generic-api-key:177",
+      "blob_sha256": "ec5c57122dfa9a9fdd39dfd185b447652164fa796be101450bfa57e0b5077766",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/docker-compose.yml",
+      "StartLine": 178,
+      "EndLine": 178,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/docker-compose.yml:generic-api-key:178",
+      "blob_sha256": "ec5c57122dfa9a9fdd39dfd185b447652164fa796be101450bfa57e0b5077766",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/eval/.env.example",
+      "StartLine": 47,
+      "EndLine": 47,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/eval/.env.example:generic-api-key:47",
+      "blob_sha256": "352e8e9666feda14623e09c343974d389e043caca7403b3b2ff969fa7791be88",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/eval/.env.example",
+      "StartLine": 48,
+      "EndLine": 48,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/eval/.env.example:generic-api-key:48",
+      "blob_sha256": "352e8e9666feda14623e09c343974d389e043caca7403b3b2ff969fa7791be88",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/eval/.env.example",
+      "StartLine": 49,
+      "EndLine": 49,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/eval/.env.example:generic-api-key:49",
+      "blob_sha256": "352e8e9666feda14623e09c343974d389e043caca7403b3b2ff969fa7791be88",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/dev/searxng-settings.yml",
+      "StartLine": 98,
+      "EndLine": 98,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/dev/searxng-settings.yml:generic-api-key:98",
+      "blob_sha256": "ba12159c7ef88da0935bbacd3ffb89c8788921e48bbcac537d9a735d8555a080",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/searxng-settings.yml",
+      "StartLine": 98,
+      "EndLine": 98,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/searxng-settings.yml:generic-api-key:98",
+      "blob_sha256": "8dc4bd4c0bb8740543a7b7a82277d85a9729e8616be07270b9c661e55f27e21a",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/init_data.json",
+      "StartLine": 343,
+      "EndLine": 343,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/init_data.json:generic-api-key:343",
+      "blob_sha256": "ad6116ac072e1319605bf0f5ada11cb49f8f91f3aec87038a90bf7cbc5355d1e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/init_data.json",
+      "StartLine": 552,
+      "EndLine": 552,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/init_data.json:generic-api-key:552",
+      "blob_sha256": "ad6116ac072e1319605bf0f5ada11cb49f8f91f3aec87038a90bf7cbc5355d1e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.zh-CN.mdx",
+      "StartLine": 69,
+      "EndLine": 69,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.zh-CN.mdx:generic-api-key:69",
+      "blob_sha256": "b6ee36a3369c976e7b86e6facc7327e2ffcd1288890a2b97a158bd11d5b156d3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.zh-CN.mdx",
+      "StartLine": 110,
+      "EndLine": 110,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.zh-CN.mdx:generic-api-key:110",
+      "blob_sha256": "b6ee36a3369c976e7b86e6facc7327e2ffcd1288890a2b97a158bd11d5b156d3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.mdx",
+      "StartLine": 70,
+      "EndLine": 70,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.mdx:generic-api-key:70",
+      "blob_sha256": "5f7ab799b425d9067bf8b2597c2b9167540a2129680844fb68e12006370ea1f3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.mdx",
+      "StartLine": 113,
+      "EndLine": 113,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/advanced/s3/cloudflare-r2.mdx:generic-api-key:113",
+      "blob_sha256": "5f7ab799b425d9067bf8b2597c2b9167540a2129680844fb68e12006370ea1f3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docker-compose/deploy/searxng-settings.yml",
+      "StartLine": 98,
+      "EndLine": 98,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/deploy/searxng-settings.yml:generic-api-key:98",
+      "blob_sha256": "8dc4bd4c0bb8740543a7b7a82277d85a9729e8616be07270b9c661e55f27e21a",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx",
+      "StartLine": 73,
+      "EndLine": 73,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx:generic-api-key:73",
+      "blob_sha256": "b786a46ec6a9eba1674a337ec32c7b9fcc224812dd8021db739f9800c659a352",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx",
+      "StartLine": 80,
+      "EndLine": 80,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx:generic-api-key:80",
+      "blob_sha256": "b786a46ec6a9eba1674a337ec32c7b9fcc224812dd8021db739f9800c659a352",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx",
+      "StartLine": 139,
+      "EndLine": 139,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx:generic-api-key:139",
+      "blob_sha256": "b786a46ec6a9eba1674a337ec32c7b9fcc224812dd8021db739f9800c659a352",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx",
+      "StartLine": 140,
+      "EndLine": 140,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.zh-CN.mdx:generic-api-key:140",
+      "blob_sha256": "b786a46ec6a9eba1674a337ec32c7b9fcc224812dd8021db739f9800c659a352",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx",
+      "StartLine": 78,
+      "EndLine": 78,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx:generic-api-key:78",
+      "blob_sha256": "8a9d5f1eb190ea4f24ff2820384a0a5a9e73a5dcf2762615e37143bb1e196ea3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx",
+      "StartLine": 85,
+      "EndLine": 85,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx:generic-api-key:85",
+      "blob_sha256": "8a9d5f1eb190ea4f24ff2820384a0a5a9e73a5dcf2762615e37143bb1e196ea3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx",
+      "StartLine": 142,
+      "EndLine": 142,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx:generic-api-key:142",
+      "blob_sha256": "8a9d5f1eb190ea4f24ff2820384a0a5a9e73a5dcf2762615e37143bb1e196ea3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx",
+      "StartLine": 143,
+      "EndLine": 143,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/docker.mdx:generic-api-key:143",
+      "blob_sha256": "8a9d5f1eb190ea4f24ff2820384a0a5a9e73a5dcf2762615e37143bb1e196ea3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx",
+      "StartLine": 182,
+      "EndLine": 182,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx:generic-api-key:182",
+      "blob_sha256": "01517b091cfee76d6294b4a8da6008888bc47d4bcaf0d360b2c3f01879300de6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx",
+      "StartLine": 194,
+      "EndLine": 194,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx:generic-api-key:194",
+      "blob_sha256": "01517b091cfee76d6294b4a8da6008888bc47d4bcaf0d360b2c3f01879300de6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx",
+      "StartLine": 405,
+      "EndLine": 405,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx:generic-api-key:405",
+      "blob_sha256": "01517b091cfee76d6294b4a8da6008888bc47d4bcaf0d360b2c3f01879300de6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx",
+      "StartLine": 408,
+      "EndLine": 408,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx:generic-api-key:408",
+      "blob_sha256": "01517b091cfee76d6294b4a8da6008888bc47d4bcaf0d360b2c3f01879300de6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx",
+      "StartLine": 414,
+      "EndLine": 414,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.zh-CN.mdx:generic-api-key:414",
+      "blob_sha256": "01517b091cfee76d6294b4a8da6008888bc47d4bcaf0d360b2c3f01879300de6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx",
+      "StartLine": 185,
+      "EndLine": 185,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx:generic-api-key:185",
+      "blob_sha256": "f47dbe78eea9ba02931a5ae91d81710a5684cc4d4a66d6f0cfe3bf7149bc437c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx",
+      "StartLine": 199,
+      "EndLine": 199,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx:generic-api-key:199",
+      "blob_sha256": "f47dbe78eea9ba02931a5ae91d81710a5684cc4d4a66d6f0cfe3bf7149bc437c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx",
+      "StartLine": 410,
+      "EndLine": 410,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx:generic-api-key:410",
+      "blob_sha256": "f47dbe78eea9ba02931a5ae91d81710a5684cc4d4a66d6f0cfe3bf7149bc437c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx",
+      "StartLine": 413,
+      "EndLine": 413,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx:generic-api-key:413",
+      "blob_sha256": "f47dbe78eea9ba02931a5ae91d81710a5684cc4d4a66d6f0cfe3bf7149bc437c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx",
+      "StartLine": 419,
+      "EndLine": 419,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docs/self-hosting/platform/vercel.mdx:generic-api-key:419",
+      "blob_sha256": "f47dbe78eea9ba02931a5ae91d81710a5684cc4d4a66d6f0cfe3bf7149bc437c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/e2e/docs/local-setup.md",
+      "StartLine": 91,
+      "EndLine": 91,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/e2e/docs/local-setup.md:generic-api-key:91",
+      "blob_sha256": "5b3bab526d0fa4ea86cab9addb44e3f2cdc99d05b87825bc5c4b807e947476f6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/e2e/docs/local-setup.md",
+      "StartLine": 100,
+      "EndLine": 100,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/e2e/docs/local-setup.md:generic-api-key:100",
+      "blob_sha256": "5b3bab526d0fa4ea86cab9addb44e3f2cdc99d05b87825bc5c4b807e947476f6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/e2e/docs/local-setup.md",
+      "StartLine": 113,
+      "EndLine": 113,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/e2e/docs/local-setup.md:generic-api-key:113",
+      "blob_sha256": "5b3bab526d0fa4ea86cab9addb44e3f2cdc99d05b87825bc5c4b807e947476f6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/e2e/scripts/setup.ts",
+      "StartLine": 49,
+      "EndLine": 49,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/e2e/scripts/setup.ts:generic-api-key:49",
+      "blob_sha256": "86874068a7affef1353cb6c484fe4c35784c1c97ee0e0005524e6fba323dd26a",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/e2e/src/support/webServer.ts",
+      "StartLine": 148,
+      "EndLine": 148,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/e2e/src/support/webServer.ts:generic-api-key:148",
+      "blob_sha256": "984fbf900ab3f717d1cd121b9d216ef1ee792b59322a36b5e8f65f738e193160",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts",
+      "StartLine": 192,
+      "EndLine": 192,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts:generic-api-key:192",
+      "blob_sha256": "245fceba5b0c5ecf0a77460b9f7192f731646cd1b14dd08d01d6d6c2a0ef15d2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts",
+      "StartLine": 200,
+      "EndLine": 200,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts:generic-api-key:200",
+      "blob_sha256": "245fceba5b0c5ecf0a77460b9f7192f731646cd1b14dd08d01d6d6c2a0ef15d2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts",
+      "StartLine": 238,
+      "EndLine": 238,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts:generic-api-key:238",
+      "blob_sha256": "245fceba5b0c5ecf0a77460b9f7192f731646cd1b14dd08d01d6d6c2a0ef15d2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts",
+      "StartLine": 247,
+      "EndLine": 247,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/api.test.ts:generic-api-key:247",
+      "blob_sha256": "245fceba5b0c5ecf0a77460b9f7192f731646cd1b14dd08d01d6d6c2a0ef15d2",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 234,
+      "EndLine": 234,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:234",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 316,
+      "EndLine": 316,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:316",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 317,
+      "EndLine": 317,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:317",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 352,
+      "EndLine": 352,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:352",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 382,
+      "EndLine": 382,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:382",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 405,
+      "EndLine": 405,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:405",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts",
+      "StartLine": 769,
+      "EndLine": 769,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-wechat/src/adapter.test.ts:generic-api-key:769",
+      "blob_sha256": "df480210218b9e1c14ffd633000500fbc83191f064e30b3f292c13ea9cee412c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/models/__tests__/agentQuota.pipeline.test.ts",
+      "StartLine": 34,
+      "EndLine": 34,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/models/__tests__/agentQuota.pipeline.test.ts:generic-api-key:34",
+      "blob_sha256": "514440067c456c996bf17859d6eb810c172a35cfe31995729e0c96f18239b60d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/models/__tests__/agentQuota.test.ts",
+      "StartLine": 21,
+      "EndLine": 21,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/models/__tests__/agentQuota.test.ts:generic-api-key:21",
+      "blob_sha256": "57f68e3857d72c6ec6c444dd468097d7f6bcdce2bc69918df67d5e1f4ef0fe99",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/models/__tests__/apiKey.test.ts",
+      "StartLine": 16,
+      "EndLine": 16,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/models/__tests__/apiKey.test.ts:generic-api-key:16",
+      "blob_sha256": "d725086e68060840c9de722cad4b8b3be9f31830a09fe55de9db5e3f2b8fe784",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/models/__tests__/apiKey.test.ts",
+      "StartLine": 198,
+      "EndLine": 198,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/models/__tests__/apiKey.test.ts:generic-api-key:198",
+      "blob_sha256": "d725086e68060840c9de722cad4b8b3be9f31830a09fe55de9db5e3f2b8fe784",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/models/__tests__/oidcClient.test.ts",
+      "StartLine": 15,
+      "EndLine": 15,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/models/__tests__/oidcClient.test.ts:generic-api-key:15",
+      "blob_sha256": "6a63a109786de0e0c3f4ad7ea484aa6298480c50f4cc92c394bccec63fb231fb",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/repositories/dataImporter/__tests__/fixtures/with-client-id.json",
+      "StartLine": 62,
+      "EndLine": 62,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/repositories/dataImporter/__tests__/fixtures/with-client-id.json:generic-api-key:62",
+      "blob_sha256": "a61fff5f5076fc6c915f52243de71346c7720633591e097f3ad490c098be239e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/repositories/dataImporter/__tests__/fixtures/with-client-id.json",
+      "StartLine": 583,
+      "EndLine": 583,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/repositories/dataImporter/__tests__/fixtures/with-client-id.json:generic-api-key:583",
+      "blob_sha256": "a61fff5f5076fc6c915f52243de71346c7720633591e097f3ad490c098be239e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/database/src/server/models/__tests__/user.test.ts",
+      "StartLine": 25,
+      "EndLine": 25,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/database/src/server/models/__tests__/user.test.ts:generic-api-key:25",
+      "blob_sha256": "a1091081b8846c2f423a45dc97bfefc171fe4d6b54ff603db66107a54b705273",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "aws-access-token",
+      "File": "code/openai/codex/codex-rs/cli/src/doctor/output.rs",
+      "StartLine": 1890,
+      "EndLine": 1890,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/src/doctor/output.rs:aws-access-token:1890",
+      "blob_sha256": "01cba4990598e29d49a443f9f5ca7ce271b33d798ae3d335efef3a7060bdcf01",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "aws-access-token",
+      "File": "code/openai/codex/codex-rs/cli/src/doctor/output.rs",
+      "StartLine": 1891,
+      "EndLine": 1891,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/src/doctor/output.rs:aws-access-token:1891",
+      "blob_sha256": "01cba4990598e29d49a443f9f5ca7ce271b33d798ae3d335efef3a7060bdcf01",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/codex-mcp/src/connection_manager_tests.rs",
+      "StartLine": 6480,
+      "EndLine": 6480,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/codex-mcp/src/connection_manager_tests.rs:generic-api-key:6480",
+      "blob_sha256": "69c4838881264604c78a59601003d7c46f5aabdcd0fc023bc600ad35f21105ee",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/codex-mcp/src/trusted_access_tests.rs",
+      "StartLine": 260,
+      "EndLine": 260,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/codex-mcp/src/trusted_access_tests.rs:generic-api-key:260",
+      "blob_sha256": "27b30e233faa2352b8bd3aa9c5db30943b9e55f6f4ec9ffeb4541a277401933b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/ext/guardian-v2/src/async_scorer/sampler_routing_tests.rs",
+      "StartLine": 232,
+      "EndLine": 232,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/ext/guardian-v2/src/async_scorer/sampler_routing_tests.rs:generic-api-key:232",
+      "blob_sha256": "13c2299caf74aaebb0c17a3362e4106751ee03c043c1e50fa113ba0bc34ddaa0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "aws-access-token",
+      "File": "code/openai/codex/codex-rs/secrets/src/sanitizer.rs",
+      "StartLine": 52,
+      "EndLine": 52,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/secrets/src/sanitizer.rs:aws-access-token:52",
+      "blob_sha256": "ccdd4ff1f672191c81f0586f106b8ebb35168ff10b9c186d1c8175dd69b3465b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-js/integration-tests/node/sandbox-storage-mounts.mjs",
+      "StartLine": 25,
+      "EndLine": 26,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-js/integration-tests/node/sandbox-storage-mounts.mjs:generic-api-key:25",
+      "blob_sha256": "2979885a39b564e58c17fb0979f4d3c67da2d9feef5eb7db0024681a6e23183d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/tests/fixtures/run_state/features/v1_3_resumed_trace_state.json",
+      "StartLine": 56,
+      "EndLine": 56,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/tests/fixtures/run_state/features/v1_3_resumed_trace_state.json:generic-api-key:56",
+      "blob_sha256": "e74dac896091d275b7bdf8762bdf7f70ae45340651709a39ab5e5e3654787605",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/github/.mcp.json",
+      "StartLine": 8,
+      "EndLine": 8,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/github/.mcp.json:generic-api-key:8",
+      "blob_sha256": "c2c7dfc03ad9465becee0a5a68a6416f7a20425bb7619e266f8702ba210847a3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md",
+      "StartLine": 93,
+      "EndLine": 93,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md:generic-api-key:93",
+      "blob_sha256": "65216273a612ffc1812edc1b361e62d2aebf0e91612aebb332a8cc0c41a5f644",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md",
+      "StartLine": 103,
+      "EndLine": 103,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md:generic-api-key:103",
+      "blob_sha256": "65216273a612ffc1812edc1b361e62d2aebf0e91612aebb332a8cc0c41a5f644",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md",
+      "StartLine": 104,
+      "EndLine": 104,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/zoom/skills/rest-api/examples/webhook-server.md:generic-api-key:104",
+      "blob_sha256": "65216273a612ffc1812edc1b361e62d2aebf0e91612aebb332a8cc0c41a5f644",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "unknown_reference_risk_acknowledged",
+      "evidence": "Explicit user choice: retain collected source; exact historical unresolved values remain warning records and are not declared false positives, revoked or inactive. New/changed findings and tool errors still fail."
+    }
+  ]
+}

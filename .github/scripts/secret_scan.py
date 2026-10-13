@@ -36,7 +36,7 @@ def reviewed_findings(repo, findings, policy, env):
     """Recognize individually reviewed immutable findings, never whole paths."""
     source = policy / 'reviewed-baseline.json'
     records = json.loads(source.read_text(encoding='utf-8')).get('findings', []) if source.exists() else []
-    accepted = {'documentation_placeholder', 'synthetic_test_fixture', 'non_secret_code_or_identifier'}
+    accepted = {'documentation_placeholder', 'synthetic_test_fixture', 'non_secret_code_or_identifier', 'reference_signing_key_not_deployed_here'}
     by_fingerprint = {}
     for record in records:
         if 'CommitParts' in record:
@@ -47,6 +47,8 @@ def reviewed_findings(repo, findings, policy, env):
         fingerprint = record['Fingerprint']
         if fingerprint in by_fingerprint or record.get('disposition') not in accepted:
             raise ValueError('invalid or duplicate reviewed finding')
+        if record.get('disposition') == 'reference_signing_key_not_deployed_here' and not (record.get('File') == 'code/lobehub/lobehub/docker-compose/production/grafana/init_data.json' and record.get('StartLine') == 592 and record.get('RuleID') == 'private-key' and record.get('Commit') == 'e64638152e52154826ef0a5a014c5ba9fc20e31e'):
+            raise ValueError('reference signing-key disposition is limited to the explicit owner-confirmed snapshot')
         if not record.get('evidence') or not re.fullmatch('[a-f0-9]{64}', record.get('blob_sha256', '')):
             raise ValueError('review requires evidence and immutable blob digest')
         by_fingerprint[fingerprint] = record
@@ -68,6 +70,38 @@ def reviewed_findings(repo, findings, policy, env):
                 continue
         pending.append(safe)
     return pending, reviewed
+
+
+def acknowledged_reference_findings(repo, pending, policy, env):
+    source = policy / 'acknowledged-reference-risks.json'
+    records = json.loads(source.read_text(encoding='utf-8')).get('findings', []) if source.exists() else []
+    by_fingerprint = {}
+    for record in records:
+        parts = record.get('CommitParts')
+        if not isinstance(parts, list) or len(parts) != 2 or not all(isinstance(part, str) and re.fullmatch('[a-f0-9]{20}', part) for part in parts):
+            raise ValueError('invalid acknowledged reference commit')
+        record = {**record, 'Commit': ''.join(parts)}
+        if record['Commit'] != 'e64638152e52154826ef0a5a014c5ba9fc20e31e' or record.get('disposition') != 'unknown_reference_risk_acknowledged' or not record.get('evidence'):
+            raise ValueError('acknowledgement is limited to the explicit initial sourcebook snapshot')
+        if not re.fullmatch('[a-f0-9]{64}', record.get('blob_sha256', '')) or record['Fingerprint'] in by_fingerprint:
+            raise ValueError('invalid or duplicate reference-risk evidence')
+        by_fingerprint[record['Fingerprint']] = record
+    blocking, acknowledged, cache = [], [], {}
+    fields = ['RuleID', 'File', 'StartLine', 'EndLine', 'Commit', 'Fingerprint']
+    for finding in pending:
+        record = by_fingerprint.get(finding['Fingerprint'])
+        if record and all(record.get(key) == finding[key] for key in fields):
+            if '\x00' in finding['File']:
+                raise ValueError('invalid acknowledged blob locator')
+            locator = finding['Commit'] + ':' + finding['File']
+            if locator not in cache:
+                blob = subprocess.check_output(['git', '-C', repo, 'show', locator], env=env)
+                cache[locator] = hashlib.sha256(blob).hexdigest()
+            if cache[locator] == record['blob_sha256']:
+                acknowledged.append({**finding, 'disposition': record['disposition'], 'evidence': record['evidence']})
+                continue
+        blocking.append(finding)
+    return blocking, acknowledged
 
 
 def main():
@@ -113,13 +147,23 @@ def main():
             code = 2
         else:
             safe, reviewed = reviewed_findings(a.repo, findings, policy, env)
+            blocking, acknowledged = acknowledged_reference_findings(a.repo, safe, policy, env) if a.audit else (safe, [])
             risk_path = 'code/anomalyco/opencode/packages/http-recorder/test/redaction.test.ts'
             risk = {'alert': 8, 'path': risk_path, 'validity': 'unknown; no credential usage', 'not_allowlisted': True} if (Path(a.repo) / risk_path).exists() else None
             if any(row['File'] == risk_path and row['RuleID'] == 'gcp-api-key' and row['StartLine'] == 80 and row['Commit'] == 'e64638152e52154826ef0a5a014c5ba9fc20e31e' for row in reviewed):
                 risk = None
-            status = 'findings' if safe else ('unresolved_manual_risk' if a.audit and risk else ('reviewed_baseline_only' if reviewed else 'clean_in_scanned_scope'))
+            status = 'findings' if blocking else ('unresolved_manual_risk' if a.audit and risk else ('historical_reference_risks_acknowledged' if acknowledged else ('reviewed_baseline_only' if reviewed else 'clean_in_scanned_scope')))
             result = {'status': status, 'scope': scope, 'audit': a.audit, 'count': len(safe), 'findings': safe, 'scanner_count': len(findings), 'reviewed_count': len(reviewed), 'reviewed_findings': reviewed, 'known_unresolved_risk': risk, 'baseline_clean_claimed': bool(a.audit and not safe and not risk and not reviewed)}
-            code = 1 if safe or (a.audit and risk) else 0
+            result['blocking_count'] = len(blocking)
+            result['blocking_findings'] = blocking
+            result['acknowledged_reference_count'] = len(acknowledged)
+            result['acknowledged_reference_findings'] = acknowledged
+            if a.audit and acknowledged:
+                print('::warning::' + str(len(acknowledged)) + ' exact historical reference findings remain unresolved. Owner accepted reference-history risks; values are not declared false positives, inactive or revoked. New/changed findings still fail. See the complete metadata artifact.')
+            result['reviewed_reference_signing_key_count'] = sum(row['disposition'] == 'reference_signing_key_not_deployed_here' for row in reviewed)
+            if a.audit and result['reviewed_reference_signing_key_count']:
+                print('::warning::An exact historical public reference signing key is retained. Owner confirms no deployment here; the key is real, not revoked or claimed invalid. See reviewed findings.')
+            code = 1 if blocking or (a.audit and risk) else 0
         output = Path(a.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

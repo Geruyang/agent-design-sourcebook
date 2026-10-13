@@ -23,3 +23,7 @@ Both its original checksum and the checksum after removing the same four broad
 path allowlists are enforced. The effective rules remain byte-for-byte identical
 to the previous reviewed policy. Known-public sample literals embedded in that
 upstream rule file are no longer copied into the tracked repository.
+
+The exact Casdoor initialization signing key in the historical snapshot is a real, public reference key. The owner confirms these sources were collected only and never deployed here. It is recorded under a separate bounded disposition with an audit warning, not called a false positive, revoked key, or safe production key. New commits/keys still fail pending review.
+
+The owner explicitly chose to retain collected source and accept the exact unresolved initial-reference risks. cknowledged-reference-risks.json records only those immutable initial-commit fingerprints and blob digests. Full audits preserve these unresolved findings in count/findings and emit visible warnings; blocking_count excludes only these exact acknowledged historical records. They are not labelled false positives, inactive, or revoked. Incremental scans do not apply this manifest; new commits, changed bytes or metadata, unmatched findings and scanner errors still fail.

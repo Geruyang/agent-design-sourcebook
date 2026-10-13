@@ -5,6 +5,60 @@
   "findings": [
     {
       "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/aider/analytics.py",
+      "StartLine": 55,
+      "EndLine": 55,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/aider/analytics.py:generic-api-key:55",
+      "blob_sha256": "739ba368270c737c86fbdaf3ff4a12b2a070995411c499ee8ba884ff20f263f3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/aider/analytics.py",
+      "StartLine": 56,
+      "EndLine": 56,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/aider/analytics.py:generic-api-key:56",
+      "blob_sha256": "739ba368270c737c86fbdaf3ff4a12b2a070995411c499ee8ba884ff20f263f3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/aider/website/_config.yml",
+      "StartLine": 7,
+      "EndLine": 7,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/aider/website/_config.yml:generic-api-key:7",
+      "blob_sha256": "e105447457a3d124218940e641de1221d164a529afa422ef34363c61eae38f4e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/Aider-AI/aider/tests/basic/test_main.py",
       "StartLine": 946,
       "EndLine": 946,
@@ -17,6 +71,491 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "constructed repeated/sequence/test-labelled matched value in unit test fixture"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/basic/test_main.py",
+      "StartLine": 952,
+      "EndLine": 952,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/basic/test_main.py:generic-api-key:952",
+      "blob_sha256": "142235548fc5ca33a99973f8a45b12b00b904f053d55e0192aea8f8264676a13",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Captured provider=key1 CLI argument is consumed by environment-setting test and immediately asserted as key1/key2 with --exit; deterministic label fixture, no model request.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 12910,
+      "EndLine": 12910,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:12910",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 12922,
+      "EndLine": 12922,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:12922",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13163,
+      "EndLine": 13163,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13163",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13186,
+      "EndLine": 13186,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13186",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13414,
+      "EndLine": 13414,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13414",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13428,
+      "EndLine": 13428,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13428",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13627,
+      "EndLine": 13627,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13627",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 13667,
+      "EndLine": 13667,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:13667",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 16602,
+      "EndLine": 16602,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:16602",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 16638,
+      "EndLine": 16638,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:16638",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt",
+      "StartLine": 16639,
+      "EndLine": 16639,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history-search-replace-gold.txt:generic-api-key:16639",
+      "blob_sha256": "0bac323e554c1d7e7bbc56a24a7a7b5c8f2b1c17230969213660566f90c8f2b5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 48951,
+      "EndLine": 48951,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:48951",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 48963,
+      "EndLine": 48963,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:48963",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 49614,
+      "EndLine": 49614,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:49614",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 49637,
+      "EndLine": 49637,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:49637",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 50499,
+      "EndLine": 50499,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:50499",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 50513,
+      "EndLine": 50513,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:50513",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 50585,
+      "EndLine": 50585,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:50585",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 50928,
+      "EndLine": 50928,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:50928",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 50968,
+      "EndLine": 50968,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:50968",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61492,
+      "EndLine": 61492,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61492",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61511,
+      "EndLine": 61511,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61511",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61512,
+      "EndLine": 61512,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61512",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61621,
+      "EndLine": 61621,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61621",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61657,
+      "EndLine": 61657,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61657",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider mixpanel_project_token source anchor in controlled memory; historical chat code passes same project_token to Mixpanel constructor and track event consumer. Current source retains constant but no Mixpanel call. Not api_secret/import/query credentials.",
+        "Official Mixpanel browser SDK embeds project token in frontend initialization. Python SDK distinguishes constructor project token from API secret required for import/merge; security questionnaire distinguishes project tags from credentials used to retrieve project data. Publishable-ingestion interpretation is inference from these official contracts plus actual SDK flow.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/Aider-AI/aider/tests/fixtures/chat-history.md",
+      "StartLine": 61658,
+      "EndLine": 61658,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/Aider-AI/aider/tests/fixtures/chat-history.md:generic-api-key:61658",
+      "blob_sha256": "a9a89dfd830af253103f86ff25dcba55364b22db779664d2fb36a3c2fd058710",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured literal equals Aider project_api_key anchor in controlled memory; SDK initializes Posthog with it and calls capture, not private management API.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
       ]
     },
     {
@@ -1300,6 +1839,23 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/ai/__tests__/fixtures/lmstudio-models.json",
+      "StartLine": 6,
+      "EndLine": 6,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/ai/__tests__/fixtures/lmstudio-models.json:generic-api-key:6",
+      "blob_sha256": "e06949ad965a935a779cc1cc4cfb02b22feb2f8e932cd80802c6384d90d2674a",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is LM Studio model key in model descriptor beside publisher/architecture/quantization fields, not an authentication key.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "private-key",
       "File": "code/CherryHQ/cherry-studio/src/main/ai/channels/security/__tests__/OutputSanitizer.test.ts",
       "StartLine": 38,
@@ -1460,6 +2016,74 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts",
+      "StartLine": 105,
+      "EndLine": 105,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts:generic-api-key:105",
+      "blob_sha256": "90326a0c52a05fb67068461d671144224abbd3ac74d548cb337cc4c130458369",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts",
+      "StartLine": 133,
+      "EndLine": 133,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts:generic-api-key:133",
+      "blob_sha256": "90326a0c52a05fb67068461d671144224abbd3ac74d548cb337cc4c130458369",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts",
+      "StartLine": 57,
+      "EndLine": 57,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts:generic-api-key:57",
+      "blob_sha256": "90326a0c52a05fb67068461d671144224abbd3ac74d548cb337cc4c130458369",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts",
+      "StartLine": 85,
+      "EndLine": 85,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/main/features/apiGateway/middleware/__tests__/auth.test.ts:generic-api-key:85",
+      "blob_sha256": "90326a0c52a05fb67068461d671144224abbd3ac74d548cb337cc4c130458369",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "private-key",
       "File": "code/CherryHQ/cherry-studio/src/main/services/VertexAiService.ts",
       "StartLine": 36,
@@ -1524,6 +2148,40 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/renderer/pages/settings/ProviderSettings/ModelList/__tests__/ApiKeyCheckResults.test.tsx",
+      "StartLine": 22,
+      "EndLine": 22,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/renderer/pages/settings/ProviderSettings/ModelList/__tests__/ApiKeyCheckResults.test.tsx:generic-api-key:22",
+      "blob_sha256": "47cb30c1027958d91e7f6ff1796d88d78ee4043b4994a853da96d800c0771606",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/CherryHQ/cherry-studio/src/renderer/pages/settings/ProviderSettings/ModelList/__tests__/ApiKeyCheckResults.test.tsx",
+      "StartLine": 59,
+      "EndLine": 59,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/CherryHQ/cherry-studio/src/renderer/pages/settings/ProviderSettings/ModelList/__tests__/ApiKeyCheckResults.test.tsx:generic-api-key:59",
+      "blob_sha256": "47cb30c1027958d91e7f6ff1796d88d78ee4043b4994a853da96d800c0771606",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Short human-readable fake key labels are injected by mock preference/provider UI objects and asserted by local middleware/render tests; consumers perform local equality/UI operations, not external provider authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "private-key",
       "File": "code/CherryHQ/cherry-studio/src/renderer/utils/__tests__/vertexAi.test.ts",
       "StartLine": 15,
@@ -1553,6 +2211,74 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "Matching PEM-like strings are invalid non-key parser inputs; offline crypto parser finds no parseable key, and local unit assertions only parse malformed service-account input."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/.github/workflows/docker-smoke.yml",
+      "StartLine": 228,
+      "EndLine": 228,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/.github/workflows/docker-smoke.yml:generic-api-key:228",
+      "blob_sha256": "0399ec0f37e9b7233bbad59dd7598801ba417ecad2506249921f3328c728262d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Captured encryption bytes use explicit ordered/repeated sequence construction in Docker smoke invocation; localhost/container test database and smoke-labelled JWT settings show isolated smoke setup. Does not exempt production defaults.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/.github/workflows/docker-smoke.yml",
+      "StartLine": 229,
+      "EndLine": 229,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/.github/workflows/docker-smoke.yml:generic-api-key:229",
+      "blob_sha256": "0399ec0f37e9b7233bbad59dd7598801ba417ecad2506249921f3328c728262d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Captured encryption bytes use explicit ordered/repeated sequence construction in Docker smoke invocation; localhost/container test database and smoke-labelled JWT settings show isolated smoke setup. Does not exempt production defaults.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/api/server/controllers/agents/__tests__/resume.spec.js",
+      "StartLine": 594,
+      "EndLine": 594,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/api/server/controllers/agents/__tests__/resume.spec.js:generic-api-key:594",
+      "blob_sha256": "776bbc3d2a9583500144a028a04d2d8482c0e4fc474e21745837e97e5db2241b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is agentEventDeliveryKey event-delivery identity alongside invocation/binding/retention metadata; identifies a stored job/event rather than granting service access.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/api/server/controllers/agents/__tests__/v1.duplicate-actions.spec.js",
+      "StartLine": 169,
+      "EndLine": 169,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/api/server/controllers/agents/__tests__/v1.duplicate-actions.spec.js:generic-api-key:169",
+      "blob_sha256": "043da00da6130827ab72d604824294966082592040d7cc5a474615ea5aa3d941",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Constructed descriptive API-key label accompanies client_id_xyz/client_secret_xyz metadata in mocked duplicate-actions test; consumption is copying action metadata and assertions, not credential validation against service.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -1893,6 +2619,108 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/client/src/lib/rum/logs.spec.ts",
+      "StartLine": 141,
+      "EndLine": 141,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/client/src/lib/rum/logs.spec.ts:generic-api-key:141",
+      "blob_sha256": "7c66a96019a865af15dbd2e2ea972e408a01647406dfb5371831d5a31c6f0a77",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/client/src/locales/en/translation.json",
+      "StartLine": 1059,
+      "EndLine": 1060,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/client/src/locales/en/translation.json:generic-api-key:1059",
+      "blob_sha256": "ef720ec6d70ca9b5aa525b6db1c4886bd879413b2f282b06c81d7c4cd887048c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/client/src/locales/en/translation.json",
+      "StartLine": 1063,
+      "EndLine": 1064,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/client/src/locales/en/translation.json:generic-api-key:1063",
+      "blob_sha256": "ef720ec6d70ca9b5aa525b6db1c4886bd879413b2f282b06c81d7c4cd887048c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/client/src/locales/lt/translation.json",
+      "StartLine": 9,
+      "EndLine": 10,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/client/src/locales/lt/translation.json:generic-api-key:9",
+      "blob_sha256": "dfe692df01ce3b2e0a6e4b8bde5e4e19d8ea2171ff2fca2c67187928de743699",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/admin/secrets.spec.ts",
+      "StartLine": 781,
+      "EndLine": 781,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/admin/secrets.spec.ts:generic-api-key:781",
+      "blob_sha256": "617322f83f151579f6866a6d15bb03d296ce75fbf397584a6421403eb39d635d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/agents/triggers/outcome.spec.ts",
+      "StartLine": 286,
+      "EndLine": 286,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/agents/triggers/outcome.spec.ts:generic-api-key:286",
+      "blob_sha256": "759376e0f581e4e640d81667950460ab858d3fb3b6c29b30ca643a6f0c7c2007",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is agentEventDeliveryKey event-delivery identity alongside invocation/binding/retention metadata; identifies a stored job/event rather than granting service access.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/LibreChat-AI/LibreChat/packages/api/src/agents/triggers/outcome.spec.ts",
       "StartLine": 304,
       "EndLine": 304,
@@ -1905,6 +2733,23 @@
       "disposition": "non_secret_code_or_identifier",
       "evidence": [
         "Actual capture is a deduplication, ordering, activity, or storage object identifier; property context checked, not an authentication token field."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/agents/triggers/outcome.spec.ts",
+      "StartLine": 538,
+      "EndLine": 538,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/agents/triggers/outcome.spec.ts:generic-api-key:538",
+      "blob_sha256": "759376e0f581e4e640d81667950460ab858d3fb3b6c29b30ca643a6f0c7c2007",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is agentEventDeliveryKey event-delivery identity alongside invocation/binding/retention metadata; identifies a stored job/event rather than granting service access.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -2021,6 +2866,23 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/endpoints/openai/config.anthropic.spec.ts",
+      "StartLine": 903,
+      "EndLine": 903,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/endpoints/openai/config.anthropic.spec.ts:generic-api-key:903",
+      "blob_sha256": "81600982dad434eac75bbd3c5a46c2c2161f06d258bfa47f18c517f70e860271",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/LibreChat-AI/LibreChat/packages/api/src/mcp/__tests__/mcp.spec.ts",
       "StartLine": 859,
       "EndLine": 859,
@@ -2100,6 +2962,40 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/stream/__tests__/RedisJobStore.spec.ts",
+      "StartLine": 341,
+      "EndLine": 341,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/stream/__tests__/RedisJobStore.spec.ts:generic-api-key:341",
+      "blob_sha256": "4b4587ff1b1955c6f9e5b9fd9b405fedd17e6f53480d48c86edf0d60f4f21b54",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is agentEventDeliveryKey event-delivery identity alongside invocation/binding/retention metadata; identifies a stored job/event rather than granting service access.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/api/src/stream/__tests__/RedisJobStore.spec.ts",
+      "StartLine": 441,
+      "EndLine": 441,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/api/src/stream/__tests__/RedisJobStore.spec.ts:generic-api-key:441",
+      "blob_sha256": "4b4587ff1b1955c6f9e5b9fd9b405fedd17e6f53480d48c86edf0d60f4f21b54",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is agentEventDeliveryKey event-delivery identity alongside invocation/binding/retention metadata; identifies a stored job/event rather than granting service access.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "private-key",
       "File": "code/LibreChat-AI/LibreChat/packages/api/src/utils/key.test.ts",
       "StartLine": 114,
@@ -2161,6 +3057,108 @@
       "disposition": "documentation_placeholder",
       "evidence": [
         "matched value contains explicit template/environment/ellipsis marker"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-provider/specs/azure.spec.ts",
+      "StartLine": 68,
+      "EndLine": 68,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-provider/specs/azure.spec.ts:generic-api-key:68",
+      "blob_sha256": "610c4cc042da139445ffbfd27d00cc0965b038c15a492197781c6f599705d520",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-provider/specs/azure.spec.ts",
+      "StartLine": 738,
+      "EndLine": 738,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-provider/specs/azure.spec.ts:generic-api-key:738",
+      "blob_sha256": "610c4cc042da139445ffbfd27d00cc0965b038c15a492197781c6f599705d520",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is a model/deployment identifier used in expected provider configuration, not the API key property.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts",
+      "StartLine": 126,
+      "EndLine": 126,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts:generic-api-key:126",
+      "blob_sha256": "42bf87b8f71c0c40cbbc97e36e752075581a200698439f47e9d45b5ae1b3d934",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts",
+      "StartLine": 48,
+      "EndLine": 48,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-schemas/src/config/parsers.spec.ts:generic-api-key:48",
+      "blob_sha256": "42bf87b8f71c0c40cbbc97e36e752075581a200698439f47e9d45b5ae1b3d934",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-schemas/src/methods/conversation.spec.ts",
+      "StartLine": 6788,
+      "EndLine": 6788,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-schemas/src/methods/conversation.spec.ts:generic-api-key:6788",
+      "blob_sha256": "406a91354e50e90684f0aef99ace87b49b102b2ec13e22b5a1d0a00b95a42437",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/LibreChat-AI/LibreChat/packages/data-schemas/src/methods/conversation.spec.ts",
+      "StartLine": 6796,
+      "EndLine": 6796,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/LibreChat-AI/LibreChat/packages/data-schemas/src/methods/conversation.spec.ts:generic-api-key:6796",
+      "blob_sha256": "406a91354e50e90684f0aef99ace87b49b102b2ec13e22b5a1d0a00b95a42437",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -2277,6 +3275,24 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands-CLI/openhands_cli/tui/utils/critic/feedback.py",
+      "StartLine": 29,
+      "EndLine": 29,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands-CLI/openhands_cli/tui/utils/critic/feedback.py:generic-api-key:29",
+      "blob_sha256": "8b4a6ca5ef38fc57b37cfe8e4be3267fb7c5b009cf01f151fd216a57a3686d79",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured phc_ project token is passed to Posthog instance used only to capture feedback events.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/OpenHands/OpenHands-CLI/tests/auth/test_token_storage.py",
       "StartLine": 168,
       "EndLine": 168,
@@ -2337,6 +3353,177 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "matched literal names a test/mock/example value; surrounding test/example context"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/.agents/skills/verify-openhands/references/feature-map/F05-composer.md",
+      "StartLine": 54,
+      "EndLine": 54,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/.agents/skills/verify-openhands/references/feature-map/F05-composer.md:generic-api-key:54",
+      "blob_sha256": "cea5141c4e0d6adb2412641208487db389599c3d21168015e7265331735b383b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Document explicitly sets QA_DUMMY_KEY for --no-validate and says agent errors immediately; constructed stand-in used only to create UI conversations when no real model key exists.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx",
+      "StartLine": 582,
+      "EndLine": 582,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx:generic-api-key:582",
+      "blob_sha256": "6eeef0f9cfdf89fb65393eb492339ba2b6e8481048a842136fc371593693a389",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx",
+      "StartLine": 627,
+      "EndLine": 627,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx:generic-api-key:627",
+      "blob_sha256": "6eeef0f9cfdf89fb65393eb492339ba2b6e8481048a842136fc371593693a389",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx",
+      "StartLine": 671,
+      "EndLine": 671,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx:generic-api-key:671",
+      "blob_sha256": "6eeef0f9cfdf89fb65393eb492339ba2b6e8481048a842136fc371593693a389",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx",
+      "StartLine": 710,
+      "EndLine": 710,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx:generic-api-key:710",
+      "blob_sha256": "6eeef0f9cfdf89fb65393eb492339ba2b6e8481048a842136fc371593693a389",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx",
+      "StartLine": 779,
+      "EndLine": 779,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/components/settings/llm-profiles/llm-settings-local-view.test.tsx:generic-api-key:779",
+      "blob_sha256": "6eeef0f9cfdf89fb65393eb492339ba2b6e8481048a842136fc371593693a389",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/__tests__/scripts/ingress.test.ts",
+      "StartLine": 686,
+      "EndLine": 686,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/__tests__/scripts/ingress.test.ts:generic-api-key:686",
+      "blob_sha256": "1e2b3488b158078c6ad01a292a4f60683d2afa37dfff2200c12643859e72d311",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/OpenHands/config/defaults.json",
+      "StartLine": 38,
+      "EndLine": 38,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/OpenHands/config/defaults.json:generic-api-key:38",
+      "blob_sha256": "10c21684953935046494e696e50c96f41aa279ceb3c10af57e8ba455392368f5",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Captured phc_ value is telemetry.posthogApiKey; telemetry.ts consumes that configuration in posthog.init and records frontend events.",
+        "Official PostHog privacy documentation explicitly permits publishing phc_ project tokens and distinguishes private phx_ personal keys; API docs distinguish public ingestion from private management APIs.",
+        "Publishable project ingestion identifier; may permit injecting analytics, so this is not a claim of no abuse capability or an invalid/revoked credential. No requests used these tokens."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/software-agent-sdk/clients/typescript/src/__tests__/secret-registry.test.ts",
+      "StartLine": 163,
+      "EndLine": 163,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/software-agent-sdk/clients/typescript/src/__tests__/secret-registry.test.ts:generic-api-key:163",
+      "blob_sha256": "d04c3d12526c7c10d28116c7556e7c26482e5d98c03e5dc4a00cfdb5bd448c1e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/software-agent-sdk/openhands-sdk/openhands/sdk/skills/utils.py",
+      "StartLine": 295,
+      "EndLine": 295,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/software-agent-sdk/openhands-sdk/openhands/sdk/skills/utils.py:generic-api-key:295",
+      "blob_sha256": "6c198dec170c68b16e59e044b3d825b98c1b793bb4568c260ae46644deacadc0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Python keyword-argument/configuration expression in expand_mcp_variables call, not a string credential literal.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -2404,6 +3591,23 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/software-agent-sdk/tests/sdk/persisted_settings_baselines/v6/agent_settings_acp.json",
+      "StartLine": 14,
+      "EndLine": 14,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/software-agent-sdk/tests/sdk/persisted_settings_baselines/v6/agent_settings_acp.json:generic-api-key:14",
+      "blob_sha256": "5052c4ebfa060b52c74f00fb3e796dc2bd23ae1f1a09448b8df1c484a6024931",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "curl-auth-header",
       "File": "code/OpenHands/software-agent-sdk/tests/sdk/utils/test_command.py",
       "StartLine": 118,
@@ -2417,6 +3621,40 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "constructed repeated/sequence/test-labelled matched value in unit test fixture"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/software-agent-sdk/tests/sdk/utils/test_redact.py",
+      "StartLine": 307,
+      "EndLine": 307,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/software-agent-sdk/tests/sdk/utils/test_redact.py:generic-api-key:307",
+      "blob_sha256": "1aeae4207c2c0cacd423ff9b4b3caba9ef5f385d8157f0639248a2936a793b49",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/OpenHands/software-agent-sdk/tests/sdk/utils/test_redact.py",
+      "StartLine": 321,
+      "EndLine": 321,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/OpenHands/software-agent-sdk/tests/sdk/utils/test_redact.py:generic-api-key:321",
+      "blob_sha256": "1aeae4207c2c0cacd423ff9b4b3caba9ef5f385d8157f0639248a2936a793b49",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -2449,6 +3687,40 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "matched literal names a test/mock/example value; surrounding test/example context"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/RooCodeInc/Roo-Code/src/api/providers/qwen-code.ts",
+      "StartLine": 21,
+      "EndLine": 21,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/RooCodeInc/Roo-Code/src/api/providers/qwen-code.ts:generic-api-key:21",
+      "blob_sha256": "df4ea98217b42c9a2187fa14ff9a45ff2607522a29a9ea3b2f8a266b926905f7",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an OAuth client ID public application identifier, used as client_id rather than client_secret/access_token in the source flow; no credential validity request made.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/RooCodeInc/Roo-Code/src/core/config/__tests__/ContextProxy.spec.ts",
+      "StartLine": 538,
+      "EndLine": 538,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/RooCodeInc/Roo-Code/src/core/config/__tests__/ContextProxy.spec.ts:generic-api-key:538",
+      "blob_sha256": "79d932f1c475cbea21a6ce40e0c241cbf6c128e6030b7dfc6ec406e81cdde079",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is a model/deployment identifier used in expected provider configuration, not the API key property.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -2724,6 +3996,261 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 106,
+      "EndLine": 106,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:106",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Sec-WebSocket-Key public handshake challenge beside Upgrade:websocket headers. It is a protocol nonce, not authentication; this one differs from the RFC example nonce.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 127,
+      "EndLine": 127,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:127",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 149,
+      "EndLine": 149,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:149",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 172,
+      "EndLine": 172,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:172",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 195,
+      "EndLine": 195,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:195",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 217,
+      "EndLine": 217,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:217",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 239,
+      "EndLine": 239,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:239",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 261,
+      "EndLine": 261,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:261",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 283,
+      "EndLine": 283,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:283",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 305,
+      "EndLine": 305,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:305",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 327,
+      "EndLine": 327,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:327",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 349,
+      "EndLine": 349,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:349",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 375,
+      "EndLine": 375,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:375",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 401,
+      "EndLine": 401,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:401",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs",
+      "StartLine": 428,
+      "EndLine": 428,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/aaif-goose/goose/crates/goose/tests/acp_transport_auth_test.rs:generic-api-key:428",
+      "blob_sha256": "9274da232455f90ac638ec442003e6bb37c8dbb45f00792cb7e88ce5fa2dc0a1",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "linkedin-client-secret",
       "File": "code/aaif-goose/goose/documentation/blog/authors.yml",
       "StartLine": 114,
@@ -2821,6 +4348,23 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/ag-ui-protocol/ag-ui/integrations/aws-strands/typescript/src/__tests__/url-fetch-policy.test.ts",
+      "StartLine": 2159,
+      "EndLine": 2159,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/ag-ui-protocol/ag-ui/integrations/aws-strands/typescript/src/__tests__/url-fetch-policy.test.ts:generic-api-key:2159",
+      "blob_sha256": "2eb20e34d9d1961747cd87cdb24016a51e33765166b8b8cedf04568b4de92c32",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/ag-ui-protocol/ag-ui/integrations/community/genkit/go/examples/go.sum",
       "StartLine": 3,
       "EndLine": 3,
@@ -2881,6 +4425,23 @@
       "disposition": "non_secret_code_or_identifier",
       "evidence": [
         "Actual capture is the reserved A2UI operations JSON property name in declaration/assertion context; not credential material."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/ag-ui-protocol/ag-ui/render.yaml",
+      "StartLine": 516,
+      "EndLine": 516,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/ag-ui-protocol/ag-ui/render.yaml:generic-api-key:516",
+      "blob_sha256": "82ed48e9dc03601fb54d2c0b01677bd5120fbbbae4602a155e1c35f702b9224f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Render environment-variable field name; corresponding value is a public middleware URL.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -3013,6 +4574,244 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/package.json",
+      "StartLine": 9,
+      "EndLine": 9,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/package.json:generic-api-key:9",
+      "blob_sha256": "a2bbfcf9fcd2c25598f676845313aee416eb649f8ce84eea10d92a31eb95819d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Captured development command uses explicit test-labelled environment key stand-in in package script; not an opaque production key.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/ar.ts",
+      "StartLine": 374,
+      "EndLine": 375,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/ar.ts:generic-api-key:374",
+      "blob_sha256": "030b6c53933a60b45782f2f3ceccca0a9cca0450be1a741d112207e0722c092d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/br.ts",
+      "StartLine": 383,
+      "EndLine": 384,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/br.ts:generic-api-key:383",
+      "blob_sha256": "eaa1619ee12044345ef864b051e780c8652e6e8a28afc98bd6968c7bd206b819",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/da.ts",
+      "StartLine": 379,
+      "EndLine": 380,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/da.ts:generic-api-key:379",
+      "blob_sha256": "0009a919055a725ba1509083d48f1ede910e0f02144bee86d9424ea7c88f2a98",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/de.ts",
+      "StartLine": 381,
+      "EndLine": 382,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/de.ts:generic-api-key:381",
+      "blob_sha256": "37d9d63b083db01d1349389db3b33bf1ea984841ebe886d42d7640a9f8ce9a13",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/en.ts",
+      "StartLine": 379,
+      "EndLine": 380,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/en.ts:generic-api-key:379",
+      "blob_sha256": "3f0d6225e5c865238c97daf073997cfab4be770630d4a9721ed50aeb9c3b29fa",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/es.ts",
+      "StartLine": 384,
+      "EndLine": 385,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/es.ts:generic-api-key:384",
+      "blob_sha256": "41fc88c7561c924a58b3f3b8abeb7698ce64085c9594b5b48835587afba1a0ca",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/fr.ts",
+      "StartLine": 384,
+      "EndLine": 385,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/fr.ts:generic-api-key:384",
+      "blob_sha256": "25b393cff6c7b9b33586b27bde7494c988adbb4cc4b6dde4f7faf3cac026c194",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/it.ts",
+      "StartLine": 380,
+      "EndLine": 381,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/it.ts:generic-api-key:380",
+      "blob_sha256": "999c38a141331d7c3646e719d9886059c4dc9531a1a1615bdb06fb504738bef3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/no.ts",
+      "StartLine": 379,
+      "EndLine": 380,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/no.ts:generic-api-key:379",
+      "blob_sha256": "39914c159e1bc80df91f2323257c652d521767119bdf7c45b7ce1a0070b7b8d6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/pl.ts",
+      "StartLine": 381,
+      "EndLine": 382,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/pl.ts:generic-api-key:381",
+      "blob_sha256": "7902d0eae889805c215ce437daa01fb55e095382edd94e7270c297117d1bb297",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/ru.ts",
+      "StartLine": 385,
+      "EndLine": 386,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/ru.ts:generic-api-key:385",
+      "blob_sha256": "64a31f87d53c63f628076a3b048d2c91d9b33ccd57cb1ae571e52bc5b6c72f5f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/th.ts",
+      "StartLine": 377,
+      "EndLine": 378,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/th.ts:generic-api-key:377",
+      "blob_sha256": "454e5dba78c94ec7a4466f9cfa5666af5fc9ef76e2e4ef931d8a1005486d1f39",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/console/app/src/i18n/uk.ts",
+      "StartLine": 379,
+      "EndLine": 380,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/console/app/src/i18n/uk.ts:generic-api-key:379",
+      "blob_sha256": "a6518349bf5c977065349ea4e72e420220a506738fb2633af6de499a524d7e91",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is the left-hand translation lookup property, whose right-hand value is human-readable UI prose; no credential value assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/anomalyco/opencode/packages/http-recorder/test/http.test.ts",
       "StartLine": 100,
       "EndLine": 100,
@@ -3040,7 +4839,7 @@
       ],
       "disposition": "synthetic_test_fixture",
       "evidence": [
-        "User explicitly confirmed on 2026-10-13 that alert #8 is a constructed test value (构造测试假值).",
+        "User explicitly confirmed in this chat that alert #8 is a constructed test value (构造测试假值).",
         "Independent file inspection establishes the exact redaction unit-test location and immutable Git blob; provider validity has not been tested."
       ]
     },
@@ -3090,6 +4889,40 @@
       "disposition": "non_secret_code_or_identifier",
       "evidence": [
         "Actual capture is a type name or runtime UI expression; full match contains no credential literal."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/tui/test/config-v2.test.tsx",
+      "StartLine": 162,
+      "EndLine": 162,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/tui/test/config-v2.test.tsx:generic-api-key:162",
+      "blob_sha256": "1935636a84b4815001bb51863a7f33cdc52492b5085a92bb0695113881bff709",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is keyboard shortcut in keybind expectation, not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/anomalyco/opencode/packages/tui/test/config.test.tsx",
+      "StartLine": 133,
+      "EndLine": 133,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/anomalyco/opencode/packages/tui/test/config.test.tsx:generic-api-key:133",
+      "blob_sha256": "5b64376c3706d08c3be1180206833f73ac3302cd12c2a4c43198980965abf8a9",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is keyboard shortcut in keybind expectation, not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -7820,6 +9653,40 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/cline/cline/sdk/packages/core/src/hub/server/index.test.ts",
+      "StartLine": 714,
+      "EndLine": 714,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/cline/cline/sdk/packages/core/src/hub/server/index.test.ts:generic-api-key:714",
+      "blob_sha256": "b928a60501470ab3d258da3e4005ad1a3d2b9f816167b40aa500a0949a47358d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/cline/cline/sdk/packages/core/src/hub/server/index.test.ts",
+      "StartLine": 757,
+      "EndLine": 757,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/cline/cline/sdk/packages/core/src/hub/server/index.test.ts:generic-api-key:757",
+      "blob_sha256": "b928a60501470ab3d258da3e4005ad1a3d2b9f816167b40aa500a0949a47358d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/cline/cline/sdk/packages/core/src/services/storage/provider-settings-legacy-migration.test.ts",
       "StartLine": 1297,
       "EndLine": 1297,
@@ -7884,6 +9751,57 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/docs/a13n-harness/model-authentication.md",
+      "StartLine": 87,
+      "EndLine": 87,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/docs/a13n-harness/model-authentication.md:generic-api-key:87",
+      "blob_sha256": "8ae9807fc8eac4ebe7a654bb73646fd112d7316b539184b3c952bedfec71f13d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is English prose describing token timestamps and other fields, not a supplied token value.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/docs/a13n-service/agents-and-runs.md",
+      "StartLine": 158,
+      "EndLine": 158,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/docs/a13n-service/agents-and-runs.md:generic-api-key:158",
+      "blob_sha256": "d3e77768f480edae43e57c1ba793faadf199f62ebe0a0e3a7f0cd72057cada1f",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Idempotency-Key request deduplication header in documented request; authentication is handled by a separate Authorization header.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/docs/a13n-service/agents-and-runs.zh-CN.md",
+      "StartLine": 158,
+      "EndLine": 158,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/docs/a13n-service/agents-and-runs.zh-CN.md:generic-api-key:158",
+      "blob_sha256": "e8a6045e3b1fdefa5f647272c971f8cb0aab9c34ecb074eafa05e9d750746fcb",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Idempotency-Key request deduplication header in documented request; authentication is handled by a separate Authorization header.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/converge-ai-labs/agent-foundation/frontend/apps/a13n-harness-ui/src/app.tsx",
       "StartLine": 26,
       "EndLine": 26,
@@ -7896,6 +9814,23 @@
       "disposition": "non_secret_code_or_identifier",
       "evidence": [
         "Actual capture is a local storage or metadata property name declared as a constant; checked naming and use context."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/frontend/apps/a13n-harness-ui/src/shell/notifications.test.tsx",
+      "StartLine": 216,
+      "EndLine": 216,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/frontend/apps/a13n-harness-ui/src/shell/notifications.test.tsx:generic-api-key:216",
+      "blob_sha256": "1a2c6b192266da7fadccc77e152607b5587dbb21cfb6b6cc09758a6986216ec4",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is browser StorageEvent key used to notify UI storage updates, not stored credential contents.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -7932,6 +9867,278 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-harness-ui/a13n_harness_ui/model_accounts/grok.py",
+      "StartLine": 47,
+      "EndLine": 47,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-harness-ui/a13n_harness_ui/model_accounts/grok.py:generic-api-key:47",
+      "blob_sha256": "9ec2429d729d9c0436a7f7989ab0587acc42e6378091faed4e85a9bf83e6edc4",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an OAuth client ID public application identifier, used as client_id rather than client_secret/access_token in the source flow; no credential validity request made.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/_trace.py",
+      "StartLine": 67,
+      "EndLine": 67,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/_trace.py:generic-api-key:67",
+      "blob_sha256": "232c33ff9926aed61867f8b6e583ce619df9bb80eca3907c3f80bfd6869de99b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an internal trace/policy/presentation metadata dictionary key constant; consumers use it to index metadata, not to authenticate.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/tools/approval.py",
+      "StartLine": 19,
+      "EndLine": 19,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/tools/approval.py:generic-api-key:19",
+      "blob_sha256": "8854d4d1e497eea023d3cda6595a0d0cc685cb576fd966eaff264a9b3a85f9e0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an internal trace/policy/presentation metadata dictionary key constant; consumers use it to index metadata, not to authenticate.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/tools/invocation.py",
+      "StartLine": 602,
+      "EndLine": 602,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-harness/a13n_harness/tools/invocation.py:generic-api-key:602",
+      "blob_sha256": "6030f18e7a7efc9e120a399c55f691166ed19f6595377a68a08f87e1c08eec5e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an internal trace/policy/presentation metadata dictionary key constant; consumers use it to index metadata, not to authenticate.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1078,
+      "EndLine": 1078,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1078",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1180,
+      "EndLine": 1180,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1180",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1283,
+      "EndLine": 1283,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1283",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1382,
+      "EndLine": 1382,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1382",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1481,
+      "EndLine": 1481,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1481",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1587,
+      "EndLine": 1587,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1587",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1704,
+      "EndLine": 1704,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1704",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1826,
+      "EndLine": 1826,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1826",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 1961,
+      "EndLine": 1961,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:1961",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 2076,
+      "EndLine": 2076,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:2076",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 849,
+      "EndLine": 849,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:849",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json",
+      "StartLine": 969,
+      "EndLine": 969,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/converge-ai-labs/agent-foundation/packages/a13n-stream-protocol/tests/fixtures/display-normalization.json:generic-api-key:969",
+      "blob_sha256": "e6125437b36173df1329dc57689227659330fb76c9776caf3bb8aaa3840eb643",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is event key adjacent to timestamp/sequence/event payload in display-normalization snapshots; a record identifier, not a bearer secret.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/google-gemini/gemini-cli/packages/core/src/agents/browser/browserAgentInvocation.test.ts",
       "StartLine": 590,
       "EndLine": 590,
@@ -7944,6 +10151,23 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "matched literal names a test/mock/example value; surrounding test/example context"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/code_assist/oauth2.ts",
+      "StartLine": 85,
+      "EndLine": 85,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/code_assist/oauth2.ts:generic-api-key:85",
+      "blob_sha256": "a3f8c55ad885656ed62144fb74e3f737117f58606a98c095f5e96f0707d9fd68",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Source explicitly documents installed-application OAuth shared client secret as not treated as secret and embeds it in distributable application. This is a public OAuth client parameter, not a user credential; source comment is the evidence, not repository origin.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -7976,6 +10200,74 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "constructed repeated/sequence/test-labelled matched value in unit test fixture"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/telemetry/config.ts",
+      "StartLine": 139,
+      "EndLine": 139,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/telemetry/config.ts:generic-api-key:139",
+      "blob_sha256": "624740f3b7eed40679aa4c384aeecf56e4a5cfb69a668d79d2e84c50265f68c7",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Capture appears only in parseOtlpHeaders doc-comment syntax example, describing key=value header parsing; no deployed credential assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/google-gemini/gemini-cli/packages/core/src/tools/mcp-client.test.ts",
+      "StartLine": 2626,
+      "EndLine": 2626,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/google-gemini/gemini-cli/packages/core/src/tools/mcp-client.test.ts:generic-api-key:2626",
+      "blob_sha256": "5c8d27d4a3ab498b829a98cb7643968913704952ee8208aa464d6d173a3bbaea",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/cli/src/commands/bot.test.ts",
+      "StartLine": 153,
+      "EndLine": 153,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/cli/src/commands/bot.test.ts:generic-api-key:153",
+      "blob_sha256": "8ceeb1bb3ac089890fc9a8d46963cbbb0a0d3a034e4145b51d12b48146ebe51d",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/apps/cli/src/commands/provider.test.ts",
+      "StartLine": 218,
+      "EndLine": 218,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/apps/cli/src/commands/provider.test.ts:generic-api-key:218",
+      "blob_sha256": "b54ecb6923571523c1a8741277d735d2d5ede958168ee5c4ced6dbc98bd0ee6c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -8139,6 +10431,92 @@
       ]
     },
     {
+      "RuleID": "private-key",
+      "File": "code/lobehub/lobehub/docker-compose/production/grafana/init_data.json",
+      "StartLine": 592,
+      "EndLine": 592,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/docker-compose/production/grafana/init_data.json:private-key:592",
+      "blob_sha256": "ad6116ac072e1319605bf0f5ada11cb49f8f91f3aec87038a90bf7cbc5355d1e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "reference_signing_key_not_deployed_here",
+      "evidence": [
+        "User explicitly confirms the Casdoor/LobeChat files are collected source only and were never deployed here.",
+        "Offline verification establishes a complete RSA signing key matching the snapshot certificate; this is a real public reference key, not claimed invalid, expired or revoked.",
+        "The exact upstream source snapshot is retained for reference; this disposition does not authorize deployment or exempt future keys."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-feishu/src/docLinks.test.ts",
+      "StartLine": 12,
+      "EndLine": 12,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-feishu/src/docLinks.test.ts:generic-api-key:12",
+      "blob_sha256": "2426f10627dd8082ac225be5161559e331537543458c587074b9a3fe9e079247",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is document/image resource identifier returned by link/content parser fixtures; no auth token transmission.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/chat-adapter-feishu/src/docLinks.test.ts",
+      "StartLine": 92,
+      "EndLine": 92,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/chat-adapter-feishu/src/docLinks.test.ts:generic-api-key:92",
+      "blob_sha256": "2426f10627dd8082ac225be5161559e331537543458c587074b9a3fe9e079247",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is document/image resource identifier returned by link/content parser fixtures; no auth token transmission.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/heterogeneous-agents/src/quota-sampler/kimiCodeQuota.ts",
+      "StartLine": 28,
+      "EndLine": 28,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/heterogeneous-agents/src/quota-sampler/kimiCodeQuota.ts:generic-api-key:28",
+      "blob_sha256": "329138199f2a4abe2f672f06e19171073491c01251ef3c32e8afb8777204c46b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is an OAuth client ID public application identifier, used as client_id rather than client_secret/access_token in the source flow; no credential validity request made.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/packages/secret-channel/test/vectors/hpke.json",
+      "StartLine": 89,
+      "EndLine": 89,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/packages/secret-channel/test/vectors/hpke.json:generic-api-key:89",
+      "blob_sha256": "aa6b8551ac20bf5d53641c294d77349427e74844712ca00fd30e996224ccc951",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "secretHex is deterministic encoding of adjacent explicitly TEST-labelled Unicode secretUtf8 in HPKE test vector. It represents constructed payload bytes rather than service authentication.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "generic-api-key",
       "File": "code/lobehub/lobehub/packages/utils/src/apiKey.test.ts",
       "StartLine": 45,
@@ -8152,6 +10530,23 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "constructed repeated/sequence/test-labelled matched value in unit test fixture"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/features/ChatInput/hooks/useReasoningEffortControl.ts",
+      "StartLine": 46,
+      "EndLine": 46,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/features/ChatInput/hooks/useReasoningEffortControl.ts:generic-api-key:46",
+      "blob_sha256": "c87bfacfe75da90d4ec0acde2a2b7a5c0a1ce452b6e4894bc11812c4a120763c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is reasoning-effort configuration property name compared against effortKey, not secret contents.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -8731,6 +11126,87 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/features/SettingsSearch/analytics.test.ts",
+      "StartLine": 139,
+      "EndLine": 139,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/features/SettingsSearch/analytics.test.ts:generic-api-key:139",
+      "blob_sha256": "d1a9ae435cb3b3ccc57f092660a4cf7e16c2a7634d8aa644dcb9ef76dc5ecc43",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts",
+      "StartLine": 73,
+      "EndLine": 73,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts:generic-api-key:73",
+      "blob_sha256": "86bc7acf87c1391320d1744830de15388e31526f4d6b9aa5c5db024b8365f693",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is public Android APK signing-key hash in android:apk-key-hash: passkey origin literal, used only as expected getPasskeyOrigins result. Signing fingerprint identifies allowed app; it is not private signing material or bearer token. Fixed blob capture and SHA256 verified."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts",
+      "StartLine": 74,
+      "EndLine": 74,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts:generic-api-key:74",
+      "blob_sha256": "86bc7acf87c1391320d1744830de15388e31526f4d6b9aa5c5db024b8365f693",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is public Android APK signing-key hash in android:apk-key-hash: passkey origin literal, used only as expected getPasskeyOrigins result. Signing fingerprint identifies allowed app; it is not private signing material or bearer token. Fixed blob capture and SHA256 verified."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts",
+      "StartLine": 75,
+      "EndLine": 75,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts:generic-api-key:75",
+      "blob_sha256": "86bc7acf87c1391320d1744830de15388e31526f4d6b9aa5c5db024b8365f693",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is public Android APK signing-key hash in android:apk-key-hash: passkey origin literal, used only as expected getPasskeyOrigins result. Signing fingerprint identifies allowed app; it is not private signing material or bearer token. Fixed blob capture and SHA256 verified."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts",
+      "StartLine": 76,
+      "EndLine": 76,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/lobehub/lobehub/src/libs/better-auth/utils/config.test.ts:generic-api-key:76",
+      "blob_sha256": "86bc7acf87c1391320d1744830de15388e31526f4d6b9aa5c5db024b8365f693",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is public Android APK signing-key hash in android:apk-key-hash: passkey origin literal, used only as expected getPasskeyOrigins result. Signing fingerprint identifies allowed app; it is not private signing material or bearer token. Fixed blob capture and SHA256 verified."
+      ]
+    },
+    {
       "RuleID": "jwt",
       "File": "code/lobehub/lobehub/src/services/chat/mecha/clientModelRuntime.test.ts",
       "StartLine": 47,
@@ -8795,6 +11271,74 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/modelcontextprotocol/typescript-sdk/test/e2e/requirements.ts",
+      "StartLine": 2810,
+      "EndLine": 2810,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/modelcontextprotocol/typescript-sdk/test/e2e/requirements.ts:generic-api-key:2810",
+      "blob_sha256": "76136cd24e2b939a741b7c3b3105d667886fa221c8369e0bb099ba4939729842",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is e2e requirement identifier/string label passed to verifies and used as requirements-map property; no authentication value.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/modelcontextprotocol/typescript-sdk/test/e2e/scenarios/hosting-entry-auth.test.ts",
+      "StartLine": 238,
+      "EndLine": 238,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/modelcontextprotocol/typescript-sdk/test/e2e/scenarios/hosting-entry-auth.test.ts:generic-api-key:238",
+      "blob_sha256": "4ede12bc38e62881bfba440817cc060fb0916d9c6c64b696e4808c2a8e91b4ce",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is e2e requirement identifier/string label passed to verifies and used as requirements-map property; no authentication value.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/obra/superpowers/tests/brainstorm-server/ws-protocol.test.js",
+      "StartLine": 53,
+      "EndLine": 53,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/obra/superpowers/tests/brainstorm-server/ws-protocol.test.js:generic-api-key:53",
+      "blob_sha256": "abd0a10eaffe4e30a9918c79c7692775db36c8a3e132e04d52ec06d6cddaa132",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Exact capture equals RFC 6455 example client nonce; source uses Sec-WebSocket-Key handshake challenge or local computeAcceptKey assertion. Public handshake nonce is not an authentication credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/Cargo.lock",
+      "StartLine": 5891,
+      "EndLine": 5892,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/Cargo.lock:generic-api-key:5891",
+      "blob_sha256": "f57eb1be1b2b89a7fb09a5b4a871da91aeab0a67cdf4839ebf096894a86f4034",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Cargo dependency package name in dependencies list, not a key assignment.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "private-key",
       "File": "code/openai/codex/codex-rs/agent-identity/src/lib.rs",
       "StartLine": 832,
@@ -8828,6 +11372,57 @@
     },
     {
       "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/cli/src/login.rs",
+      "StartLine": 670,
+      "EndLine": 670,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/src/login.rs:generic-api-key:670",
+      "blob_sha256": "954abc236750e19fb16efce2aa32520638c06f726154642a0c467bf43724d1bd",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/cli/src/login.rs",
+      "StartLine": 676,
+      "EndLine": 676,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/src/login.rs:generic-api-key:676",
+      "blob_sha256": "954abc236750e19fb16efce2aa32520638c06f726154642a0c467bf43724d1bd",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/cli/tests/cloud_auth.rs",
+      "StartLine": 26,
+      "EndLine": 26,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/tests/cloud_auth.rs:generic-api-key:26",
+      "blob_sha256": "cb14a63c7fc5b347fc142d2cb41a1d4bdc592e04cded28aa0738ed2f15650c4e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
       "File": "code/openai/codex/codex-rs/cli/tests/exec_server_websocket_auth.rs",
       "StartLine": 40,
       "EndLine": 40,
@@ -8840,6 +11435,57 @@
       "disposition": "synthetic_test_fixture",
       "evidence": [
         "constructed repeated/sequence/test-labelled matched value in unit test fixture"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/cli/tests/login.rs",
+      "StartLine": 356,
+      "EndLine": 356,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/tests/login.rs:generic-api-key:356",
+      "blob_sha256": "f0854fe69a7c47dac3188e58780780cab4b8006f7057ecc60dbfda2760bf4b9e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/cli/tests/login.rs",
+      "StartLine": 372,
+      "EndLine": 372,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/cli/tests/login.rs:generic-api-key:372",
+      "blob_sha256": "f0854fe69a7c47dac3188e58780780cab4b8006f7057ecc60dbfda2760bf4b9e",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "synthetic_test_fixture",
+      "evidence": [
+        "Inspected actual capture plus consumer: descriptive short/fixture-labelled value supplied to mocked responses, parser/formatter/redaction/config validation/local state assertions. No complete opaque service-shaped credential, no external authentication consumer. Classification is value-and-consumer specific, not based on test path.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/codex/codex-rs/core-plugins/src/remote/catalog_cache.rs",
+      "StartLine": 175,
+      "EndLine": 175,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/codex/codex-rs/core-plugins/src/remote/catalog_cache.rs:generic-api-key:175",
+      "blob_sha256": "db0e9f48e0d294c46ac1378a8e5f659f66148994805d40261fd3c0cec32c89d3",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is numeric initial hash constant in local cache hashing algorithm; subsequent XOR/wrapping multiplication makes its non-secret computation role explicit.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -8923,6 +11569,142 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/config.md",
+      "StartLine": 171,
+      "EndLine": 171,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/config.md:generic-api-key:171",
+      "blob_sha256": "133944cb938dd1a5e9785f637e18f812fb7cd99050a33d636d59b286823f7293",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/ja/config.md",
+      "StartLine": 175,
+      "EndLine": 175,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/ja/config.md:generic-api-key:175",
+      "blob_sha256": "80e662f1228e6043ad55d4e948d2bf5ae10cf0f5a29df6fba7cfc179c557e777",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/ja/tracing.md",
+      "StartLine": 212,
+      "EndLine": 212,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/ja/tracing.md:generic-api-key:212",
+      "blob_sha256": "03db1bb2cbaf7e236ff196706461a747d4db3454ab88d8be7cd6b1eee919ffd9",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/ko/config.md",
+      "StartLine": 175,
+      "EndLine": 175,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/ko/config.md:generic-api-key:175",
+      "blob_sha256": "2121e46cfd354008bb5cb06c662270569c6d6f87a7e62cb71f10fb2e38214c81",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/ko/tracing.md",
+      "StartLine": 212,
+      "EndLine": 212,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/ko/tracing.md:generic-api-key:212",
+      "blob_sha256": "afe561ce8b06fe9cb0a91f96261b829061162fcf4d4de95c2f569266352520da",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/tracing.md",
+      "StartLine": 209,
+      "EndLine": 209,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/tracing.md:generic-api-key:209",
+      "blob_sha256": "32caacd2f435b2a2ea42a6c8f8916e64253b0915e56319e17f9e3e4bfe81dd9c",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/zh/config.md",
+      "StartLine": 175,
+      "EndLine": 175,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/zh/config.md:generic-api-key:175",
+      "blob_sha256": "ec728a3898c62e074c6dbd9cc1ed154eb61ac61ffc8caa2b9b6a53a534c2c9ba",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/openai-agents-python/docs/zh/tracing.md",
+      "StartLine": 212,
+      "EndLine": 212,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/openai-agents-python/docs/zh/tracing.md:generic-api-key:212",
+      "blob_sha256": "f6c267f60ef9de39310ea013680253f77e3e0c34b8c1b8b17e6d932b62e31b18",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "curl-auth-header",
       "File": "code/openai/plugins/plugins/cloudflare/skills/cloudflare/references/argo-smart-routing/README.md",
       "StartLine": 13,
@@ -8968,6 +11750,40 @@
       "disposition": "documentation_placeholder",
       "evidence": [
         "matched value contains explicit template/environment/ellipsis marker"
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/cloudflare/skills/cloudflare/references/bindings/patterns.md",
+      "StartLine": 182,
+      "EndLine": 182,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/cloudflare/skills/cloudflare/references/bindings/patterns.md:generic-api-key:182",
+      "blob_sha256": "eba14eae23aa66b87381961918eeae3a36230c0d8435b2f29885e6d42d2cfa5b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/plugins/plugins/cloudflare/skills/cloudflare/references/bindings/patterns.md",
+      "StartLine": 82,
+      "EndLine": 82,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/plugins/plugins/cloudflare/skills/cloudflare/references/bindings/patterns.md:generic-api-key:82",
+      "blob_sha256": "eba14eae23aa66b87381961918eeae3a36230c0d8435b2f29885e6d42d2cfa5b",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
@@ -9467,6 +12283,40 @@
       ]
     },
     {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/skills/skills/.curated/cloudflare-deploy/references/bindings/patterns.md",
+      "StartLine": 182,
+      "EndLine": 182,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/skills/skills/.curated/cloudflare-deploy/references/bindings/patterns.md:generic-api-key:182",
+      "blob_sha256": "189274aa2bdf605781b59b105c347c689d320a09fb62f9ed300d1f64e93281f6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/skills/skills/.curated/cloudflare-deploy/references/bindings/patterns.md",
+      "StartLine": 82,
+      "EndLine": 82,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/skills/skills/.curated/cloudflare-deploy/references/bindings/patterns.md:generic-api-key:82",
+      "blob_sha256": "189274aa2bdf605781b59b105c347c689d320a09fb62f9ed300d1f64e93281f6",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "documentation_placeholder",
+      "evidence": [
+        "Short descriptive stand-in used in tutorial tracing configuration or anti-pattern hardcoding example; actual captured literal is a transparent example label, not an opaque provider credential.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
       "RuleID": "curl-auth-header",
       "File": "code/openai/skills/skills/.curated/cloudflare-deploy/references/pipelines/api.md",
       "StartLine": 113,
@@ -9624,6 +12474,57 @@
       "disposition": "non_secret_code_or_identifier",
       "evidence": [
         "Actual capture is a Figma file resource identifier used alongside a node ID; resource locator is not authentication credential."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md",
+      "StartLine": 776,
+      "EndLine": 776,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md:generic-api-key:776",
+      "blob_sha256": "ccfe860f37e76fcdc87b36731e47c4bfd58d1b9ddf7fdae24058f21dfb4b4dd0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Figma pluginData idempotency identity for matching existing collection/variable objects; consumer compares metadata keys, not credentials.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md",
+      "StartLine": 804,
+      "EndLine": 804,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md:generic-api-key:804",
+      "blob_sha256": "ccfe860f37e76fcdc87b36731e47c4bfd58d1b9ddf7fdae24058f21dfb4b4dd0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Figma pluginData idempotency identity for matching existing collection/variable objects; consumer compares metadata keys, not credentials.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
+      ]
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md",
+      "StartLine": 81,
+      "EndLine": 81,
+      "Fingerprint": "e64638152e52154826ef0a5a014c5ba9fc20e31e:code/openai/skills/skills/.curated/figma-generate-library/references/token-creation.md:generic-api-key:81",
+      "blob_sha256": "ccfe860f37e76fcdc87b36731e47c4bfd58d1b9ddf7fdae24058f21dfb4b4dd0",
+      "CommitParts": [
+        "e64638152e52154826ef",
+        "0a5a014c5ba9fc20e31e"
+      ],
+      "disposition": "non_secret_code_or_identifier",
+      "evidence": [
+        "Capture is Figma pluginData idempotency identity for matching existing collection/variable objects; consumer compares metadata keys, not credentials.",
+        "Exact fixed-commit blob digest checked; actual pinned-rule capture reproduced at same file/rule/line. No secret values retained."
       ]
     },
     {
